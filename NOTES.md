@@ -3,18 +3,22 @@
 Working notes kept *outside* `SKILL.md` (which stays user-facing): open decisions
 and rough edges from the first cut.
 
-## Backlog (open as issues)
+## Backlog (tracked issues)
 
-- [ ] **Semantic dedup / synthesis (reduce step).** Signature dedup (file +
-  line-bucket + claim-class + severity) is insufficient — the same concept raised
-  by several personas with *different* file:lines does not collapse. Add a semantic
-  clustering/reduce step at the orchestration layer that folds findings into
-  canonical issues, feeding **both** stall/convergence detection and the human
-  output. Design detail in "Semantic dedup — where it should live" below. **First
-  issue to file.**
-- [ ] Make the completeness-critic + survivability personas first-class (next section).
-- [ ] Persona mandate "stay strictly in your lens" clause; per-persona tool
-  tailoring; model-mix for high-criticality (see follow-ups below).
+- **#1** — **Semantic dedup / synthesis (reduce step).** *Priority.* Signature
+  dedup (file + line-bucket + claim-class + severity) is insufficient — the same
+  concept raised by several personas with *different* file:lines does not collapse.
+  Add a semantic clustering/reduce step at the orchestration layer that folds
+  findings into canonical issues, feeding **both** stall/convergence detection and
+  the human output. Design detail in "Semantic dedup — where it should live" below.
+- **#2** — Make the completeness-critic + survivability personas first-class (next
+  section).
+- **#3** — Persona quality: "stay strictly in your lens" mandate clause; per-persona
+  tool tailoring; model-mix for high-criticality (see follow-ups below).
+- **#4** — Permission hardening: ship a `--settings` profile + sandbox (see
+  "Permission model").
+- **#5** — Robustness/cost: `--max-turns` cap; cross-epoch memory pruning;
+  structured-output robustness (see "Other first-cut follow-ups").
 
 ## Make the completeness-critic and survivability personas explicit (priority)
 
