@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blackice"
+version = "0.1.0"
+description = "HITL adversarial review panel: a bounded loop of adversarial reviewer agents with a ruin-class circuit-breaker."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Agilit Ltd" }]
+keywords = ["code-review", "adversarial", "agents", "claude-code", "llm"]
+dependencies = []  # stdlib only
+
+[project.optional-dependencies]
+# Only needed if a target repo defines its panel in panel.yaml (panel.md needs nothing).
+yaml = ["pyyaml>=6.0"]
+
+[project.scripts]
+blackice = "blackice:main"
+
+[tool.setuptools]
+py-modules = ["loop", "claude_code_backend", "blackice"]

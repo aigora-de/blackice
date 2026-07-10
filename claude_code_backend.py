@@ -1,0 +1,407 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 Agilit Ltd
+"""Claude Code CLI backend for the adversarial review loop.
+
+Binds ``loop.SpawnPersona`` to the ``claude`` binary in headless print
+mode: **one ``claude -p`` subprocess per persona per epoch**, driven from the
+terminal. No SDK dependency — it shells out to the same ``claude`` the user runs,
+so it "works in Claude Code" by *being* Claude Code.
+
+Design choices realised here (see ``two-pass-adversarial-review-pattern.md`` and
+the design discussion):
+
+* **Persona sourcing (layered):** parse ``CLAUDE.md`` "Resident Experts" when
+  present -> else ``panel.yaml`` / ``panel.md`` -> else a distilled default set.
+* **Open-ended mandates.** A persona's *identity* (its role/responsibilities from
+  ``CLAUDE.md``) is its lens; we do not impose a prescriptive checklist that would
+  "lead the witness".
+* **Tools as behavioural grounding.** Every reviewer gets read-only source
+  inspection + test/lint *execution* (``Read``/``Grep``/``git``/``pytest``/
+  ``ruff``) and **no edit tools** — biasing them to verify against source and run
+  the tests rather than speculate.
+* **Independent within an epoch;** epoch > 1 is handed *all* prior epochs'
+  findings (cross-epoch memory), so the panel builds on itself without
+  intra-epoch debate (which would reintroduce groupthink).
+* **Structured findings** enforced by an output contract appended to each prompt.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _resolve_claude_bin() -> str:
+    """Locate the ``claude`` executable robustly (child PATH may differ).
+
+    Order: ``$CLAUDE_BIN`` -> ``PATH`` -> ``~/.local/bin/claude``. Falls back to
+    the bare name so the failure, if any, is a clear FileNotFoundError.
+    """
+    for cand in (os.environ.get("CLAUDE_BIN"), shutil.which("claude"),
+                 os.path.expanduser("~/.local/bin/claude")):
+        if cand and os.path.exists(cand):
+            return cand
+    return "claude"
+
+from loop import (
+    EpochResult,
+    Finding,
+    GateDecision,
+    PersonaReport,
+    ReviewRun,
+    ReviewSpec,
+    Severity,
+)
+
+# Read-only permission policy (DENY-BY-DEFAULT). Reviewers may READ the diff and
+# source (Read/Grep/Glob); they may NOT run shell or mutate anything.
+#
+# IMPORTANT — how permissions work headless: in `claude -p` there is no
+# interactive prompt. An *allowed* tool runs UNSUPERVISED; an unallowed one is
+# auto-DENIED (never asked). Putting bare `Bash` here would pre-approve *all*
+# shell for an LLM reviewing an untrusted diff (rm, git push, network egress),
+# with no human in the per-command loop. In this design HITL is per-EPOCH
+# (convene / synthesise / gate), not per-command, so per-command safety must come
+# from POLICY, not prompts. Verification tools (pytest/git/ruff) are a deliberate,
+# SCOPED add-on for a later version — e.g. --allowedTools "Bash(pytest:*)"
+# "Bash(git diff:*)" — ideally shipped via a `--settings` profile and sandboxed
+# (no internet). Never bare `Bash`. See panel-review-NOTES.md.
+DEFAULT_ALLOWED_TOOLS = ["Read", "Grep", "Glob"]
+DEFAULT_DISALLOWED_TOOLS = ["Edit", "Write", "NotebookEdit", "Bash"]
+
+
+# =============================================================================
+# Persona model + sourcing
+# =============================================================================
+
+@dataclass
+class Persona:
+    """A reviewer. ``grounding`` is an open-ended lens, not a checklist."""
+
+    name: str
+    grounding: str
+    tools: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_TOOLS))
+    model: str | None = None
+
+
+# Distilled generic default panel — used only when a repo defines no experts.
+# The lenses are deliberately broad (adversarial, not box-ticking). Prior art
+# that informed these roles is credited in two-pass-adversarial-review-pattern.md
+# (agent-review-panel, Deep Review, CodeProbe); no text is copied from them.
+DEFAULT_PERSONAS: list[Persona] = [
+    Persona("correctness", "Does the change compute the right thing? Hunt logic "
+            "errors, wrong assumptions, and boundary/edge cases."),
+    Persona("adversary", "Try to break it. Worst-case and malformed inputs, "
+            "race conditions, resource exhaustion, pathological states."),
+    Persona("constraints", "What external rules must this not violate? "
+            "Security, privacy, regulatory, licensing, API contracts."),
+    Persona("engineer", "Code quality, hidden state, error handling, "
+            "maintainability, and change discipline (scope creep / drift)."),
+    Persona("empiricist", "Test rigour: would each test fail without the change? "
+            "Run the tests, mutation-check load-bearing ones, find coverage gaps."),
+]
+
+# Always-present specialists, regardless of source.
+COMPLETENESS_CRITIC = Persona(
+    "completeness-critic",
+    "Your only job is to find what everyone else MISSED: an unexamined modality, "
+    "an unverified claim, an execution path or failure mode nobody reviewed. "
+    "Assume the other reviewers suffered from shared blind spots.",
+)
+SURVIVABILITY = Persona(
+    "survivability",
+    "Hunt ONLY ruin-class hazards: non-linear, multiplicative, cascading or "
+    "irreversible failures that threaten survivability in this system's context "
+    "(e.g. data/records corruption, unbounded loss, cascading feedback). "
+    "Tag any such finding UGLY — it is a circuit-breaker.",
+)
+
+
+def parse_claude_md_experts(text: str) -> list[Persona]:
+    """Extract personas from a ``CLAUDE.md`` "Resident Experts" section.
+
+    Recognises subsections of the form ``## <emoji?> Name — Role`` (em-dash or
+    hyphen) and uses the whole subsection body as the persona's open-ended
+    grounding. Returns ``[]`` if no experts section/subsections are found.
+    """
+    # Isolate the Resident Experts region (from its heading to EOF or next H1).
+    m = re.search(r"(?im)^#+\s*Resident Experts\b.*?$", text)
+    if not m:
+        return []
+    region = text[m.end():]
+    next_h1 = re.search(r"(?m)^#\s+\S", region)
+    if next_h1:
+        region = region[: next_h1.start()]
+
+    personas: list[Persona] = []
+    # Split on level-2 headings; capture "Name — Role" and the body.
+    parts = re.split(r"(?m)^##\s+", region)
+    for part in parts[1:]:
+        header, _, body = part.partition("\n")
+        name_role = re.split(r"\s+[—–-]\s+", header.strip(), maxsplit=1)
+        if len(name_role) < 2:
+            # A subsection with no "Name — Role" separator is a process/meta
+            # heading (e.g. "Invoking the Experts"), not a persona. Skip it.
+            continue
+        raw_name, role = name_role[0], name_role[1].strip()
+        # Strip a leading emoji/symbol token if present.
+        name = re.sub(r"^[^\w]+", "", raw_name).strip() or raw_name.strip()
+        grounding = f"You are {name} — {role}.\n\n{body}".strip()
+        personas.append(Persona(name=name, grounding=grounding))
+    return personas
+
+
+def _load_panel_file(repo_root: Path) -> list[Persona]:
+    """Load personas from ``panel.yaml`` or ``panel.md`` if present (best effort)."""
+    yml = repo_root / "panel.yaml"
+    if yml.exists():
+        try:
+            import yaml  # optional dependency
+            data = yaml.safe_load(yml.read_text()) or {}
+            return [
+                Persona(name=p["name"], grounding=p.get("grounding", ""),
+                        tools=p.get("tools", list(DEFAULT_ALLOWED_TOOLS)),
+                        model=p.get("model"))
+                for p in data.get("personas", [])
+            ]
+        except Exception as exc:  # noqa: BLE001
+            print(f"[panel] failed to parse panel.yaml: {exc}", file=sys.stderr)
+    md = repo_root / "panel.md"
+    if md.exists():
+        return parse_claude_md_experts(md.read_text())
+    return []
+
+
+def load_personas(repo_root: Path) -> tuple[list[Persona], str]:
+    """Resolve the persona set by precedence. Returns (personas, source_label)."""
+    claude_md = repo_root / "CLAUDE.md"
+    if claude_md.exists():
+        experts = parse_claude_md_experts(claude_md.read_text())
+        if experts:
+            return _ensure_specialists(experts), "CLAUDE.md"
+    panel = _load_panel_file(repo_root)
+    if panel:
+        return _ensure_specialists(panel), "panel file"
+    return _ensure_specialists(list(DEFAULT_PERSONAS)), "default"
+
+
+def _ensure_specialists(personas: list[Persona]) -> list[Persona]:
+    """Guarantee a completeness-critic and a survivability (ruin) lens are present.
+
+    A sourced persona already covering one of these roles suppresses the default,
+    detected by capability keywords over each persona's **name + grounding** — not
+    by any project's persona names (a per-persona capability tag would be more
+    robust; see NOTES.md).
+    """
+    texts = [(p.name + " " + p.grounding).lower() for p in personas]
+    out = list(personas)
+    if not any(k in t for t in texts
+               for k in ("completeness", "blind spot", "what everyone else")):
+        out.append(COMPLETENESS_CRITIC)
+    _RUIN_KEYS = ("survivab", "ruin", "antifragil", "tail risk", "tail-risk",
+                  "cascading", "fat-tail")
+    if not any(k in t for t in texts for k in _RUIN_KEYS):
+        out.append(SURVIVABILITY)
+    return out
+
+
+# =============================================================================
+# Prompt assembly + the structured-findings contract
+# =============================================================================
+
+_SEV = "NOTE | NON_BLOCKING | BLOCKER | UGLY"
+
+FINDINGS_CONTRACT = f"""
+---
+OUTPUT CONTRACT (mandatory). Verify every claim against the source before making
+it — read the files, run the tests. Do NOT speculate. End your reply with EXACTLY
+one fenced ```json block and nothing after it:
+
+```json
+{{"verdict": "YES | NO",
+  "findings": [
+    {{"title": "...", "severity": "{_SEV}", "claim_class": "short-category",
+      "file": "path/or/null", "line": 0, "evidence": "what you checked and found"}}
+  ]}}
+```
+
+Severity: UGLY = a ruin-class hazard (non-linear/multiplicative/cascading/
+irreversible) — use it only for that. BLOCKER = must be fixed or tracked before
+approval. Set verdict "YES" only if you found nothing you cannot approve.
+"""
+
+
+def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str) -> str:
+    """Assemble the per-epoch review task handed to every persona."""
+    scope = ""
+    if spec.in_scope:
+        scope += "\nIN SCOPE: " + "; ".join(spec.in_scope)
+    if spec.out_of_scope:
+        scope += "\nOUT OF SCOPE (deferred, do not fault): " + "; ".join(spec.out_of_scope)
+    memory = ""
+    if epoch > 1 and prior:
+        memory = ("\n\nPRIOR EPOCHS' FINDINGS (build on these; say if they are "
+                  f"resolved, and look for what they missed):\n{prior}\n")
+    return (
+        f"Adversarially review this change. Be critical: find where it is wrong, "
+        f"incomplete, or dangerous — approve only what you cannot break.\n\n"
+        f"WHY THIS MATTERS: {spec.why}\nWHAT CHANGED: {spec.what}{scope}\n"
+        f"{memory}\n--- REVIEW SURFACE (diff) ---\n{surface}\n{FINDINGS_CONTRACT}"
+    )
+
+
+def parse_findings(persona: str, result_text: str) -> PersonaReport:
+    """Extract the fenced JSON contract from a persona's reply (defensively)."""
+    blocks = re.findall(r"```json\s*(.*?)```", result_text, re.DOTALL)
+    if not blocks:
+        return PersonaReport(persona=persona, verdict=None, findings=[
+            Finding(persona, "no structured output (parse failure)",
+                    Severity.NOTE, "meta", evidence=result_text[:400])])
+    try:
+        data = json.loads(blocks[-1])
+    except json.JSONDecodeError as exc:
+        return PersonaReport(persona=persona, verdict=None, findings=[
+            Finding(persona, f"unparseable JSON findings: {exc}",
+                    Severity.NOTE, "meta", evidence=blocks[-1][:400])])
+    findings = []
+    for f in data.get("findings", []):
+        try:
+            sev = Severity[str(f.get("severity", "NOTE")).strip().upper()]
+        except KeyError:
+            sev = Severity.NOTE
+        line = f.get("line") or None
+        findings.append(Finding(
+            persona=persona, title=str(f.get("title", "")), severity=sev,
+            claim_class=str(f.get("claim_class", "uncategorised")),
+            file=f.get("file") or None, line=int(line) if line else None,
+            evidence=str(f.get("evidence", ""))))
+    return PersonaReport(persona=persona, verdict=data.get("verdict"), findings=findings)
+
+
+def _is_parse_failure(report: PersonaReport) -> bool:
+    """True if a report is the contract-miss sentinel (no parseable JSON block)."""
+    return (report.verdict is None and len(report.findings) == 1
+            and report.findings[0].claim_class == "meta")
+
+
+# =============================================================================
+# The session: gather / spawn / checkpoint / gate, sharing cross-epoch state
+# =============================================================================
+
+@dataclass
+class PanelSession:
+    """Wires the loop seams to the ``claude`` CLI and carries cross-epoch memory."""
+
+    repo_root: Path
+    spec: ReviewSpec
+    personas: dict[str, Persona]
+    base: str
+    head: str = "HEAD"
+    default_model: str | None = None
+    dry_run: bool = False
+    claude_bin: str = field(default_factory=_resolve_claude_bin)
+    disallowed_tools: list[str] = field(
+        default_factory=lambda: list(DEFAULT_DISALLOWED_TOOLS))
+    permission_mode: str = "plan"
+    tokens: int = 0
+    prior_summary: str = ""
+
+    # --- gather: the review surface (re-read each epoch so fixes are visible) ---
+    def gather(self, epoch: int) -> str:  # noqa: ARG002
+        out = subprocess.run(
+            ["git", "-C", str(self.repo_root), "diff", f"{self.base}...{self.head}"],
+            capture_output=True, text=True)
+        return out.stdout or "(empty diff)"
+
+    # --- one `claude -p` call: returns (result_text, output_tokens, error) ---
+    def _run_claude(self, prompt: str, mandate: str, tools: list[str],
+                    model: str | None) -> tuple[str, int, str | None]:
+        argv = [
+            self.claude_bin, "-p", prompt,
+            "--append-system-prompt", mandate,
+            "--allowedTools", *tools,
+            "--disallowedTools", *self.disallowed_tools,
+            "--permission-mode", self.permission_mode,
+            "--output-format", "json",
+            "--add-dir", str(self.repo_root),
+        ]
+        if model:
+            argv += ["--model", model]
+        proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(self.repo_root))
+        if proc.returncode != 0:
+            return "", 0, f"claude exited {proc.returncode}: {proc.stderr[:300]}"
+        try:
+            env = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return proc.stdout, 0, None  # tolerate raw text
+        return env.get("result", ""), int((env.get("usage") or {}).get("output_tokens", 0)), None
+
+    # --- spawn: one persona review, with retry-on-contract-miss ---
+    def spawn(self, persona: str, mandate: str, surface: str, epoch: int) -> PersonaReport:
+        p = self.personas[persona]
+        model = p.model or self.default_model
+        prompt = build_prompt(self.spec, surface, epoch, self.prior_summary)
+
+        if self.dry_run:
+            preview = (prompt[:280] + "…") if len(prompt) > 280 else prompt
+            print(f"\n[dry-run] persona={persona} model={model or 'default'}"
+                  f"\n  tools={p.tools} disallow={self.disallowed_tools} mode={self.permission_mode}"
+                  f"\n  prompt≈ {preview!r}")
+            return PersonaReport(persona=persona, verdict="YES")
+
+        text, toks, err = self._run_claude(prompt, mandate, p.tools, model)
+        self.tokens += toks
+        if err:
+            return PersonaReport(persona=persona, verdict=None, findings=[
+                Finding(persona, err, Severity.NOTE, "meta")])
+        report = parse_findings(persona, text)
+        report.tokens = toks
+
+        # Retry-on-contract-miss: the persona reviewed but did not emit the JSON
+        # contract (so its findings were lost). Reformat its raw review into the
+        # contract via one cheap follow-up call rather than discarding it.
+        if _is_parse_failure(report):
+            reformat = (
+                "Extract the findings from the review below into the EXACT JSON "
+                "contract. Output ONLY the fenced ```json block, nothing else.\n\n"
+                f"REVIEW:\n{text}\n\n{FINDINGS_CONTRACT}")
+            text2, toks2, err2 = self._run_claude(
+                reformat, "You are a formatter: reformat, do not review.", ["Read"], model)
+            self.tokens += toks2
+            if not err2:
+                report2 = parse_findings(persona, text2)
+                if not _is_parse_failure(report2):
+                    report2.tokens = toks + toks2
+                    return report2
+        return report
+
+    # --- checkpoint: refresh cross-epoch memory from the ledger ---
+    def on_epoch(self, run: ReviewRun) -> None:
+        lines = []
+        for f in run.ledger.values():
+            state = "resolved" if not f.counts_open else "open"
+            loc = f"{f.file}:{f.line}" if f.file else "-"
+            lines.append(f"- [{f.severity.name}/{state}] ({f.persona}) {f.title} @ {loc}")
+        self.prior_summary = "\n".join(lines)
+
+    def budget_spent(self) -> int:
+        return self.tokens
+
+    # --- gate: the HITL touchpoint between epochs ---
+    def interactive_gate(self, result: EpochResult, run: ReviewRun) -> GateDecision:
+        print(f"\n=== epoch {result.index} synthesis ===")
+        print(f"new findings: {len(result.new_findings)} | open blockers: "
+              f"{result.open_blockers} | open uglies: {result.open_uglies} | "
+              f"tokens: {self.tokens}")
+        for f in result.new_findings:
+            print(f"  [{f.severity.name}] ({f.persona}) {f.title}")
+        if not sys.stdin.isatty():
+            return GateDecision(stop=False)
+        ans = input("gate — [c]ontinue / [s]top? ").strip().lower()
+        return GateDecision(stop=ans.startswith("s"))

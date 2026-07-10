@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Tooling / OS
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+
+# blackice run artefacts (panel outputs are ephemeral)
+*.dogfood.txt
+dogfood*.txt
+panel-run-*.txt
+*.out
