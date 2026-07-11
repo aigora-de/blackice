@@ -52,7 +52,12 @@ python blackice.py --repo <root> --base <base> --head <head> \
 # Permissioned: let reviewers verify against source / run the suite (scoped)
 python blackice.py --repo <root> --base <base> --head <head> \
   --allow-tools Read Grep Glob 'Bash(git:*)' 'Bash(pytest:*)' --permission-mode default
+
+# Path mode: review existing code (whole files/dirs), not a diff — proactive
+# bug-hunting, or a repo with no reviewable diff. Dirs expand via git ls-files.
+python blackice.py --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
 ```
+Exactly one mode per run: `--base/--head` (diff) **or** `--paths` (whole-file).
 
 ## Personas
 Sourced by precedence: a repo's **`CLAUDE.md` "Resident Experts"** →
