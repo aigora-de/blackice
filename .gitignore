@@ -16,6 +16,7 @@ env/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+.idea/
 
 # blackice run artefacts (panel outputs are ephemeral)
 *.dogfood.txt
