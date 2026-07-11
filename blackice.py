@@ -51,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="override the disallowed-tools list (default: Edit Write NotebookEdit Bash)")
     ap.add_argument("--permission-mode", default="plan",
                     help="claude --permission-mode: plan|default|acceptEdits|bypassPermissions")
+    ap.add_argument("--semantic-dedup", action="store_true",
+                    help="fold same-concept findings into canonical clusters via a "
+                         "cheap model call each epoch (default: deterministic "
+                         "signature dedup only, no extra call)")
+    ap.add_argument("--cluster-model", default=None,
+                    help="model for the --semantic-dedup clusterer (default: --model)")
     ap.add_argument("--dry-run", action="store_true", help="print the wiring, spawn nothing")
     ap.add_argument("--no-parallel", action="store_true")
     args = ap.parse_args(argv)
@@ -80,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=repo, spec=spec, base=args.base or "", head=args.head,
         paths=args.paths, max_surface_bytes=args.max_surface_bytes,
         personas={p.name: p for p in personas},
-        default_model=args.model, dry_run=args.dry_run,
+        default_model=args.model, cluster_model=args.cluster_model,
+        dry_run=args.dry_run,
         disallowed_tools=(list(args.disallow_tools) if args.disallow_tools is not None
                           else list(DEFAULT_DISALLOWED_TOOLS)),
         permission_mode=args.permission_mode)
@@ -88,17 +95,27 @@ def main(argv: list[str] | None = None) -> int:
     halting = HaltingSet(token_budget=args.token_budget, max_epochs=args.max_epochs,
                          stall_patience=args.stall_patience, require_scope_complete=False)
 
+    # Opt-in semantic reduce; otherwise the engine's deterministic identity default.
+    reduce_kwargs = {"reduce": session.reduce} if args.semantic_dedup else {}
     review_run = run(
         spec, halting, panel,
         spawn=session.spawn, gather=session.gather,
         human_gate=session.interactive_gate, checkpoint=session.on_epoch,
-        budget_spent=session.budget_spent, parallel=not args.no_parallel)
+        budget_spent=session.budget_spent, parallel=not args.no_parallel,
+        **reduce_kwargs)
 
     print(f"\n=== HALT: {review_run.halt_reason.value} after {len(review_run.epochs)} epoch(s) ===")
     print(f"open uglies: {len(review_run.open_uglies)} | open blockers: {len(review_run.open_blockers)}"
           f" | tokens: {session.tokens}")
     for f in review_run.open_uglies + review_run.open_blockers:
         print(f"  [{f.severity.name}] ({f.persona}) {f.title} @ {f.file}:{f.line}")
+    # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
+    # finding stays visible above; this groups them (panel is raw material).
+    if args.semantic_dedup and review_run.clusters:
+        print(f"\ncanonical issues: {len(review_run.clusters)} "
+              f"(reduced from {len(review_run.ledger)} raw findings)")
+        for c in sorted(review_run.clusters, key=lambda c: c.severity, reverse=True):
+            print(f"  [{c.severity.name}] ({len(c.members)}x) {c.title}")
     # Machine-readable output for the convening (synthesis) session to consume.
     print("\n--- JSON ---")
     print(json.dumps({
@@ -111,6 +128,16 @@ def main(argv: list[str] | None = None) -> int:
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open}
             for f in review_run.ledger.values()],
+        # Canonical clusters (the reduce/view). With the default identity reduce
+        # this is one cluster per finding; with --semantic-dedup it collapses
+        # same-concept findings while every raw finding stays under "findings".
+        "clusters": [
+            {"title": c.title, "severity": c.severity.name, "open": c.counts_open,
+             "size": len(c.members),
+             "members": [{"persona": m.persona, "severity": m.severity.name,
+                          "title": m.title, "file": m.file, "line": m.line}
+                         for m in c.members]}
+            for c in review_run.clusters],
     }, indent=2))
     return 3 if review_run.halt_reason.value == "escalate_ugly" else 0
 

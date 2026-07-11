@@ -24,6 +24,11 @@ offline — it does not itself depend on any particular LLM SDK):
 * ``Adjudicate``     — verify a finding's claim against source -> bool. Refuted
                        findings are dropped (the "author withdraws on the
                        evidence" step). Optional; defaults to "trust".
+* ``Reduce``         — fold an epoch's signature-deduped findings into canonical
+                       *clusters* (the semantic dedup / synthesis step), feeding
+                       BOTH stall/convergence detection AND the human view.
+                       Deterministic default (identity = one cluster per
+                       signature); an LLM clusterer is a backend concern.
 * ``GatherSurface``  — produce the review surface for an epoch (e.g. ``git diff``).
 * ``HumanGate``      — the HITL touchpoint between epochs: apply fixes / adjust
                        scope / file issues / stop. "Human-on-the-loop", not in
@@ -126,6 +131,45 @@ class Finding:
         return self.verified is not False
 
 
+@dataclass(frozen=True)
+class Cluster:
+    """A canonical issue: raw findings a reduce step judged 'the same concept'.
+
+    A cluster is a *view over* the deduped ledger, never a replacement for it —
+    every member finding (persona + evidence) stays visible, grouped. ``severity``
+    is the ``max`` of its members (UGLY-preserving: a merge can never hide a
+    ruin-class finding); ``open_severity`` — the max over members still *open* — is
+    what the halt gate reads, so a withdrawn UGLY does not keep the breaker latched.
+    """
+
+    members: tuple[Finding, ...]
+    title: str = ""
+
+    @property
+    def severity(self) -> Severity:
+        """Highest severity among all members (UGLY-preserving)."""
+        return max((m.severity for m in self.members), default=Severity.NOTE)
+
+    @property
+    def open_severity(self) -> Severity | None:
+        """Highest severity among *open* members, or ``None`` if all resolved."""
+        open_sevs = [m.severity for m in self.members if m.counts_open]
+        return max(open_sevs) if open_sevs else None
+
+    @property
+    def counts_open(self) -> bool:
+        return any(m.counts_open for m in self.members)
+
+    @property
+    def key(self) -> str:
+        """Deterministic canonical id: the smallest member signature.
+
+        Order-independent; for a singleton cluster it equals that finding's
+        ``key`` — so the identity reduce reproduces today's ledger keys exactly.
+        """
+        return min((m.key for m in self.members), default="")
+
+
 @dataclass
 class PersonaReport:
     """One persona's output for one epoch."""
@@ -143,8 +187,9 @@ class EpochResult:
     index: int
     reports: list[PersonaReport]
     new_findings: list[Finding]      # material findings not seen in prior epochs
-    open_blockers: int
-    open_uglies: int
+    open_blockers: int               # cluster-level count (canonical issues)
+    open_uglies: int                 # cluster-level count (canonical issues)
+    new_clusters: list[Cluster] = field(default_factory=list)  # new canonical issues
     halt: HaltReason | None = None
 
 
@@ -154,12 +199,14 @@ class ReviewRun:
 
     epochs: list[EpochResult] = field(default_factory=list)
     ledger: dict[str, Finding] = field(default_factory=dict)  # key -> first sighting
+    clusters: list[Cluster] = field(default_factory=list)     # latest epoch's reduce
     halt_reason: HaltReason | None = None
 
     @property
     def converged(self) -> bool:
         return self.halt_reason is HaltReason.CONVERGED
 
+    # --- raw, finding-level view (every panellist's claim stays visible) ---
     @property
     def open_uglies(self) -> list[Finding]:
         return [f for f in self.ledger.values() if f.severity.is_ugly and f.counts_open]
@@ -170,6 +217,19 @@ class ReviewRun:
             f for f in self.ledger.values()
             if f.severity is Severity.BLOCKER and f.counts_open
         ]
+
+    # --- canonical, cluster-level view (what the halt gate counts) ---
+    # ``open_severity`` is the max over a cluster's *open* members, so these are
+    # zero exactly when the finding-level lists above are (a withdrawn UGLY does
+    # not count) — the breaker/convergence *timing* is unchanged, only the reported
+    # magnitude collapses to canonical issues.
+    @property
+    def open_ugly_clusters(self) -> list[Cluster]:
+        return [c for c in self.clusters if c.open_severity is Severity.UGLY]
+
+    @property
+    def open_blocker_clusters(self) -> list[Cluster]:
+        return [c for c in self.clusters if c.open_severity is Severity.BLOCKER]
 
 
 # =============================================================================
@@ -242,6 +302,19 @@ class Adjudicate(Protocol):
     def __call__(self, finding: Finding, surface: ReviewSurface) -> bool: ...
 
 
+class Reduce(Protocol):
+    """Fold the signature-deduped ledger into canonical clusters (the reduce step).
+
+    Must be a *pure function of its input* so the engine's control logic stays
+    reproducible given the seam's output (CLAUDE.md — "the engine is deterministic;
+    only the agents are not"). It must be a **partition**: every input finding
+    appears in exactly one output cluster (never drop a panellist's claim). The
+    default is deterministic identity; an LLM implementation lives in a backend.
+    """
+
+    def __call__(self, findings: Sequence[Finding]) -> list[Cluster]: ...
+
+
 @dataclass
 class GateDecision:
     """The human's decision at a between-epoch gate."""
@@ -254,6 +327,20 @@ class HumanGate(Protocol):
     """The HITL touchpoint between epochs (fixes/scope/file-issues/stop)."""
 
     def __call__(self, result: EpochResult, run: ReviewRun) -> GateDecision: ...
+
+
+def _identity_reduce(findings: Sequence[Finding]) -> list[Cluster]:
+    """Deterministic default reduce: one cluster per distinct signature.
+
+    Groups by ``Finding.key`` — reproducing today's signature dedup exactly. Each
+    finding becomes its own singleton cluster (``cluster.key == finding.key``), so
+    the cluster-level control logic collapses to the historical key-based
+    behaviour whenever no semantic reducer is injected.
+    """
+    groups: dict[str, list[Finding]] = {}
+    for f in findings:
+        groups.setdefault(f.key, []).append(f)
+    return [Cluster(members=tuple(v), title=v[0].title) for v in groups.values()]
 
 
 def _trust_all(finding: Finding, surface: ReviewSurface) -> bool:  # noqa: ARG001
@@ -318,6 +405,7 @@ def run(
     spawn: SpawnPersona,
     gather: GatherSurface,
     adjudicate: Adjudicate = _trust_all,
+    reduce: Reduce = _identity_reduce,
     human_gate: HumanGate = _auto_continue,
     budget_spent: Callable[[], int] = lambda: 0,
     clock: Callable[[], float] = lambda: 0.0,
@@ -334,6 +422,9 @@ def run(
         spawn: Runs one persona subagent over the surface.
         gather: Produces the review surface for each epoch.
         adjudicate: Verifies a finding against source; False refutes/drops it.
+        reduce: Folds the deduped ledger into canonical clusters (semantic dedup);
+            defaults to identity (one cluster per signature). Feeds stall/
+            convergence AND the human-facing grouping.
         human_gate: Called after each epoch; may stop the loop.
         budget_spent: Returns cumulative output tokens spent (for the budget gate).
         clock: Returns a monotonic time in seconds (for the time gate).
@@ -376,7 +467,10 @@ def run(
                 checked.append(f)
             report.findings = checked
 
-        # Dedup vs the running ledger to find *new material* findings.
+        # Layer 1 (deterministic, always on): signature dedup into the ledger.
+        # Snapshot the keys seen through *previous* epochs before this epoch's
+        # findings land, so we can tell which clusters are genuinely new below.
+        prior_keys = set(review_run.ledger)
         new_findings: list[Finding] = []
         for report in reports:
             for f in report.findings:
@@ -386,18 +480,29 @@ def run(
                     review_run.ledger[f.key] = f
                     new_findings.append(f)
 
-        open_blockers = len(review_run.open_blockers)
-        open_uglies = len(review_run.open_uglies)
+        # Layer 2 (reduce/view): fold the whole deduped ledger into canonical
+        # clusters. The default is identity (one cluster per signature); a semantic
+        # reducer collapses re-worded / re-located dups of a single concept.
+        review_run.clusters = reduce(list(review_run.ledger.values()))
+
+        # A cluster is *new this epoch* iff every member first appeared this epoch
+        # (no member key was seen before). A cluster that merges a new finding into
+        # a previously-seen concept therefore reads as NOT new — so a re-worded dup
+        # no longer inflates material or resets the stall counter.
+        new_clusters = [c for c in review_run.clusters
+                        if all(m.key not in prior_keys for m in c.members)]
+
         result = EpochResult(
             index=epoch,
             reports=reports,
             new_findings=new_findings,
-            open_blockers=open_blockers,
-            open_uglies=open_uglies,
+            new_clusters=new_clusters,
+            open_blockers=len(review_run.open_blocker_clusters),
+            open_uglies=len(review_run.open_ugly_clusters),
         )
 
-        # Stall accounting: only *material* (blocker/ugly) new findings reset it.
-        material_new = [f for f in new_findings if f.severity >= Severity.BLOCKER]
+        # Stall accounting: only *material* (blocker/ugly) new clusters reset it.
+        material_new = [c for c in new_clusters if c.severity >= Severity.BLOCKER]
         stall_epochs = 0 if material_new else stall_epochs + 1
 
         yes_votes = sum(1 for r in reports if (r.verdict or "").upper().startswith("YES"))
