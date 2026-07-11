@@ -28,7 +28,12 @@ human. You are the *synthesiser, not the judge* — the human decides.
 ## How to run it
 
 1. **Scope it.** Decide `--why` (the risk being guarded against) and `--what`
-   (the change), and the review surface (`--base`/`--head`, or the working diff).
+   (the change or code under review), and the review surface. Exactly one mode:
+   - **Diff mode** — `--base`/`--head`: review a *change*.
+   - **Path mode** — `--paths <file|dir> …`: review *existing code* in full
+     (proactive bug-hunting, or a repo with no reviewable diff). Directories
+     expand via `git ls-files` (honouring `.gitignore`); a total-size cap
+     (`--max-surface-bytes`) bounds the surface, naming anything it omits.
 2. **(Optional pre-flight)** `--dry-run` to confirm *which* personas were sourced
    (e.g. from `CLAUDE.md`) and eyeball the assembled prompt. This spawns **no**
    `claude` process — it only prints the planned wiring — so it costs nothing.

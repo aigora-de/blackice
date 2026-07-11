@@ -28,10 +28,18 @@ from claude_code_backend import DEFAULT_DISALLOWED_TOOLS, PanelSession, load_per
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Adversarial review panel loop over a git diff.")
     ap.add_argument("--repo", default=".", help="repository root")
-    ap.add_argument("--base", required=True, help="base ref (e.g. main)")
-    ap.add_argument("--head", default="HEAD", help="head ref")
+    # Exactly one review mode is active per run: diff mode (--base/--head) OR
+    # path mode (--paths). Neither is argparse-required; main() enforces the XOR.
+    ap.add_argument("--base", default=None, help="diff mode: base ref (e.g. main)")
+    ap.add_argument("--head", default="HEAD", help="diff mode: head ref")
+    ap.add_argument("--paths", nargs="*", default=None, metavar="PATH",
+                    help="path mode: adversarially review the full content of these "
+                         "files/directories (directories expand via git ls-files, "
+                         "honouring .gitignore) instead of a diff")
+    ap.add_argument("--max-surface-bytes", type=int, default=200_000,
+                    help="path mode: cap on total review-surface size (default 200000)")
     ap.add_argument("--why", default="mission-critical change", help="why the review matters")
-    ap.add_argument("--what", default="the pending diff", help="what changed")
+    ap.add_argument("--what", default=None, help="what changed / what to review")
     ap.add_argument("--max-epochs", type=int, default=3)
     ap.add_argument("--token-budget", type=int, default=None)
     ap.add_argument("--stall-patience", type=int, default=1)
@@ -47,6 +55,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-parallel", action="store_true")
     args = ap.parse_args(argv)
 
+    # Exactly-one-mode selection (deny ambiguity rather than silently prefer one).
+    path_mode = args.paths is not None
+    if path_mode and args.base is not None:
+        ap.error("choose one mode: --base/--head (diff) OR --paths (whole-file), not both")
+    if not path_mode and args.base is None:
+        ap.error("specify a review mode: --base <ref> (diff) or --paths <path...> (whole-file)")
+    if path_mode and not args.paths:
+        ap.error("--paths needs at least one file or directory")
+    what = args.what or ("existing code (full-file review)" if path_mode
+                         else "the pending diff")
+
     repo = Path(args.repo).resolve()
     personas, source = load_personas(repo)
     if args.allow_tools:  # override the read-only default for ALL personas
@@ -56,9 +75,10 @@ def main(argv: list[str] | None = None) -> int:
           f"{', '.join(p.name for p in personas)}")
     print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
 
-    spec = ReviewSpec(why=args.why, what=args.what)
+    spec = ReviewSpec(why=args.why, what=what)
     session = PanelSession(
-        repo_root=repo, spec=spec, base=args.base, head=args.head,
+        repo_root=repo, spec=spec, base=args.base or "", head=args.head,
+        paths=args.paths, max_surface_bytes=args.max_surface_bytes,
         personas={p.name: p for p in personas},
         default_model=args.model, dry_run=args.dry_run,
         disallowed_tools=(list(args.disallow_tools) if args.disallow_tools is not None

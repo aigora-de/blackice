@@ -237,8 +237,17 @@ approval. Set verdict "YES" only if you found nothing you cannot approve.
 """
 
 
-def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str) -> str:
-    """Assemble the per-epoch review task handed to every persona."""
+def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
+                 surface_kind: str = "diff") -> str:
+    """Assemble the per-epoch review task handed to every persona.
+
+    ``surface_kind`` selects the framing: ``"diff"`` reviews a change,
+    ``"files"`` reviews existing code presented as whole files (issue #6).
+    """
+    is_diff = surface_kind == "diff"
+    subject = "this change" if is_diff else "this code"
+    what_label = "WHAT CHANGED" if is_diff else "WHAT TO REVIEW"
+    surface_label = "diff" if is_diff else "files"
     scope = ""
     if spec.in_scope:
         scope += "\nIN SCOPE: " + "; ".join(spec.in_scope)
@@ -249,10 +258,10 @@ def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str) -> str:
         memory = ("\n\nPRIOR EPOCHS' FINDINGS (build on these; say if they are "
                   f"resolved, and look for what they missed):\n{prior}\n")
     return (
-        f"Adversarially review this change. Be critical: find where it is wrong, "
+        f"Adversarially review {subject}. Be critical: find where it is wrong, "
         f"incomplete, or dangerous — approve only what you cannot break.\n\n"
-        f"WHY THIS MATTERS: {spec.why}\nWHAT CHANGED: {spec.what}{scope}\n"
-        f"{memory}\n--- REVIEW SURFACE (diff) ---\n{surface}\n{FINDINGS_CONTRACT}"
+        f"WHY THIS MATTERS: {spec.why}\n{what_label}: {spec.what}{scope}\n"
+        f"{memory}\n--- REVIEW SURFACE ({surface_label}) ---\n{surface}\n{FINDINGS_CONTRACT}"
     )
 
 
@@ -291,6 +300,108 @@ def _is_parse_failure(report: PersonaReport) -> bool:
 
 
 # =============================================================================
+# Path / whole-file review surface (the non-diff gather mode)
+# =============================================================================
+
+def _expand_paths(repo_root: Path, paths: list[str]) -> tuple[list[Path], list[str]]:
+    """Expand file/dir arguments into an ordered, de-duplicated file list.
+
+    Directories are expanded via ``git ls-files`` so ``.gitignore`` is honoured
+    and only tracked files are surfaced — reusing git rather than reimplementing
+    ignore semantics. Plain files are taken as given. Returns the files plus the
+    arguments that resolved to nothing (missing, or an untracked directory) so the
+    caller can surface them rather than silently drop them.
+    """
+    repo_root = repo_root.resolve()
+    files: list[Path] = []
+    seen: set[Path] = set()
+    missing: list[str] = []
+    for raw in paths:
+        cand = Path(raw)
+        p = cand.resolve() if cand.is_absolute() else (repo_root / cand).resolve()
+        if p.is_dir():
+            out = subprocess.run(
+                ["git", "-C", str(repo_root), "ls-files", "-z", "--", str(p)],
+                capture_output=True, text=True)
+            found = False
+            for rel in out.stdout.split("\0"):
+                if not rel:
+                    continue
+                fp = (repo_root / rel).resolve()
+                if fp not in seen and fp.is_file():
+                    seen.add(fp)
+                    files.append(fp)
+                    found = True
+            if not found:
+                missing.append(raw)
+        elif p.is_file():
+            if p not in seen:
+                seen.add(p)
+                files.append(p)
+        else:
+            missing.append(raw)
+    return files, missing
+
+
+def _render_file(rel: str, text: str) -> str:
+    """Render one file with a path header and 1-based line numbers.
+
+    Line numbers let personas cite real ``file:line`` (as diff mode already does),
+    so adjudication and the human can trust cited locations.
+    """
+    lines = text.splitlines()
+    width = max(len(str(len(lines))), 1)
+    body = "\n".join(f"{i:>{width}}| {ln}" for i, ln in enumerate(lines, 1))
+    return f"\n--- FILE: {rel} ({len(lines)} lines) ---\n{body}\n"
+
+
+def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str:
+    """Assemble a whole-file review surface from the named files/directories.
+
+    Renders each file's full content with ``file:line`` fidelity, honouring a
+    total-size cap: once the cap is reached, remaining files are dropped and named
+    in an explicit OMITTED notice — never a silent truncation. A lone file that by
+    itself exceeds the cap is truncated in place with a marker, so there is always
+    something to review while the cap still bounds the surface.
+    """
+    repo_root = repo_root.resolve()
+    files, missing = _expand_paths(repo_root, paths)
+    chunks: list[str] = []
+    omitted: list[tuple[str, str]] = []
+    used = 0
+    for fp in files:
+        rel = os.path.relpath(fp, repo_root)
+        try:
+            text = fp.read_text()
+        except (OSError, UnicodeDecodeError):
+            omitted.append((rel, "unreadable/binary"))
+            continue
+        rendered = _render_file(rel, text)
+        if used + len(rendered) > max_bytes:
+            if not chunks:
+                # Nothing has fit yet: keep the cap by truncating this one file in
+                # place (a marker signals it), rather than omitting it wholesale.
+                budget = max(max_bytes - used, 0)
+                chunks.append(rendered[:budget]
+                              + f"\n… [truncated at surface cap: {rel}]\n")
+                used = max_bytes
+            else:
+                omitted.append((rel, "surface cap"))
+            continue
+        chunks.append(rendered)
+        used += len(rendered)
+
+    surface = "".join(chunks) if chunks else "(no reviewable files)"
+    if missing:
+        surface += ("\n--- PATHS WITH NO TRACKED FILES (missing/untracked) ---\n"
+                    + "\n".join(f"- {m}" for m in missing) + "\n")
+    if omitted:
+        surface += ("\n--- OMITTED (not shown) ---\n"
+                    + "\n".join(f"- {rel}: {why}" for rel, why in omitted) + "\n")
+    return surface
+
+
+# =============================================================================
 # The session: gather / spawn / checkpoint / gate, sharing cross-epoch state
 # =============================================================================
 
@@ -303,6 +414,8 @@ class PanelSession:
     personas: dict[str, Persona]
     base: str
     head: str = "HEAD"
+    paths: list[str] | None = None      # path mode (issue #6): review these files/dirs
+    max_surface_bytes: int = 200_000    # total-size cap for the path-mode surface
     default_model: str | None = None
     dry_run: bool = False
     claude_bin: str = field(default_factory=_resolve_claude_bin)
@@ -314,6 +427,8 @@ class PanelSession:
 
     # --- gather: the review surface (re-read each epoch so fixes are visible) ---
     def gather(self, epoch: int) -> str:  # noqa: ARG002
+        if self.paths:  # path mode: full content of the named files/dirs (issue #6)
+            return build_path_surface(self.repo_root, self.paths, self.max_surface_bytes)
         out = subprocess.run(
             ["git", "-C", str(self.repo_root), "diff", f"{self.base}...{self.head}"],
             capture_output=True, text=True)
@@ -346,7 +461,8 @@ class PanelSession:
     def spawn(self, persona: str, mandate: str, surface: str, epoch: int) -> PersonaReport:
         p = self.personas[persona]
         model = p.model or self.default_model
-        prompt = build_prompt(self.spec, surface, epoch, self.prior_summary)
+        surface_kind = "files" if self.paths else "diff"
+        prompt = build_prompt(self.spec, surface, epoch, self.prior_summary, surface_kind)
 
         if self.dry_run:
             preview = (prompt[:280] + "…") if len(prompt) > 280 else prompt

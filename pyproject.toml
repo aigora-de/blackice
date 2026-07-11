@@ -16,6 +16,8 @@ dependencies = []  # stdlib only
 [project.optional-dependencies]
 # Only needed if a target repo defines its panel in panel.yaml (panel.md needs nothing).
 yaml = ["pyyaml>=6.0"]
+# Test suite (stdlib-only core stays dependency-free; tests are opt-in).
+test = ["pytest>=8.0"]
 
 [project.scripts]
 blackice = "blackice:main"
