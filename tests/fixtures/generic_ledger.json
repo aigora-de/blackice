@@ -1,0 +1,29 @@
+{
+  "_comment": "Genericised evaluation fixture for the semantic reduce step (issue #1). A distilled, NON-proprietary analogue of a real dogfood ledger: money-movement / order-lifecycle framing, no foreign symbols or paths. 13 raw findings that signature dedup (file + line-bucket + claim-class + severity) leaves as 13 distinct keys, but which a semantic reduce collapses to 5 canonical issues. `claim_class` doubles as the ground-truth concept id, so a group-by-claim_class reduce reproduces the intended clustering. It encodes the two shapes signature dedup misses: (a) `settlement-drop` — one concept raised by 4 personas across two files spanning NON_BLOCKING->UGLY; (b) `expiry-key` — a wrong-key bug split across the 10-line bucket boundary (1686/1687 in bucket 168, 1690 in bucket 169) and by severity.",
+  "findings": [
+    {"persona": "P1", "severity": "NON_BLOCKING", "claim_class": "settlement-drop", "file": "gateway.py", "line": 499, "title": "Settlement confirmations share one unnamespaced result dict on the shared client", "evidence": "confirmation and quote responses collide on one dict"},
+    {"persona": "P2", "severity": "BLOCKER", "claim_class": "settlement-drop", "file": "gateway.py", "line": 517, "title": "Confirmation payload lacks the fields needed to build a LedgerEntry; no fee-report callback exists", "evidence": "payload missing amount/fee; nothing constructs the entry"},
+    {"persona": "P3", "severity": "UGLY", "claim_class": "settlement-drop", "file": "reconciler.py", "line": 1281, "title": "Reconciliation never touches the in-memory ledger — balances never move from real settlement activity", "evidence": "reconcile() computes but never writes to the Ledger"},
+    {"persona": "P4", "severity": "UGLY", "claim_class": "settlement-drop", "file": "gateway.py", "line": 499, "title": "Settlement confirmations never reach drain_confirmations() — all live settlements silently dropped", "evidence": "callback appends to a queue nothing drains"},
+
+    {"persona": "P1", "severity": "UGLY", "claim_class": "expiry-key", "file": "reconciler.py", "line": 1686, "title": "Expiry sweep cancels resting orders under the composite key, not the bare account used at submission", "evidence": "keys built as acct+sym; submission used bare acct"},
+    {"persona": "P3", "severity": "BLOCKER", "claim_class": "expiry-key", "file": "reconciler.py", "line": 1687, "title": "Expiry-path key derivation does not match the bare-account keys used everywhere else", "evidence": "derivation diverges one line below the sweep"},
+    {"persona": "P4", "severity": "UGLY", "claim_class": "expiry-key", "file": "reconciler.py", "line": 1690, "title": "Wrong-key expiry sweep orphans resting orders — permanent re-entry blackout", "evidence": "orphaned orders never cancelled; account locked out"},
+
+    {"persona": "P1", "severity": "BLOCKER", "claim_class": "ack-timeout", "file": "gateway.py", "line": 413, "title": "10s ack timeout treated as definitive rejection with no compensating cancel", "evidence": "order already transmitted; no cancel on timeout"},
+    {"persona": "P2", "severity": "NON_BLOCKING", "claim_class": "ack-timeout", "file": "gateway.py", "line": 413, "title": "Ack timeout may fire while the venue has accepted the order — resulting order untracked if it later settles", "evidence": "timeout path drops the pending order id"},
+
+    {"persona": "P2", "severity": "NON_BLOCKING", "claim_class": "unrecorded-entry", "file": "reconciler.py", "line": 1230, "title": "Naked entry: if every ladder placement fails, the entry transfer is left completely unrecorded", "evidence": "entry recorded only after ladder succeeds"},
+    {"persona": "P3", "severity": "BLOCKER", "claim_class": "unrecorded-entry", "file": "reconciler.py", "line": 1230, "title": "Ladder placement failure leaves the already-submitted entry transfer untracked", "evidence": "no record written on the failure branch"},
+    {"persona": "P4", "severity": "UGLY", "claim_class": "unrecorded-entry", "file": "reconciler.py", "line": 1230, "title": "Ladder failure leaves an unmanaged live transfer — guaranteed duplicate entry next cycle", "evidence": "next cycle re-submits; unbounded duplication"},
+
+    {"persona": "P2", "severity": "NOTE", "claim_class": "tz-reset", "file": "gateway.py", "line": 216, "title": "Daily circuit-breaker session reset uses local date.today(), not the UTC used elsewhere", "evidence": "reset boundary drifts by the local offset"}
+  ],
+  "canonical": {
+    "settlement-drop": {"severity": "UGLY", "size": 4},
+    "expiry-key": {"severity": "UGLY", "size": 3},
+    "ack-timeout": {"severity": "BLOCKER", "size": 2},
+    "unrecorded-entry": {"severity": "UGLY", "size": 3},
+    "tz-reset": {"severity": "NOTE", "size": 1}
+  }
+}

@@ -5,12 +5,13 @@ and rough edges from the first cut.
 
 ## Backlog (tracked issues)
 
-- **#1** — **Semantic dedup / synthesis (reduce step).** *Priority.* Signature
-  dedup (file + line-bucket + claim-class + severity) is insufficient — the same
-  concept raised by several personas with *different* file:lines does not collapse.
-  Add a semantic clustering/reduce step at the orchestration layer that folds
-  findings into canonical issues, feeding **both** stall/convergence detection and
-  the human output. Design detail in "Semantic dedup — where it should live" below.
+- **#1** — **Semantic dedup / synthesis (reduce step).** ✅ **Done** (PR #14).
+  Shipped as a dependency-injected `Reduce` seam in `loop.py` with a deterministic
+  identity default (one cluster per signature) and an opt-in LLM clusterer
+  (`--semantic-dedup`) in `claude_code_backend.py`. Findings fold into canonical
+  `Cluster`s (severity = max of members, UGLY-preserving) that feed **both**
+  stall/convergence and the human output; raw findings stay visible, grouped. See
+  "Semantic dedup — where it should live" below for what was decided vs shipped.
 - **#2** — Make the completeness-critic + survivability personas first-class (next
   section).
 - **#3** — Persona quality: "stay strictly in your lens" mandate clause; per-persona
@@ -88,7 +89,7 @@ safety must come from POLICY, not prompts.**
    silently deny; likely overkill — default-deny + re-run with a wider allow-list
    is usually enough.
 
-## Semantic dedup — where it should live
+## Semantic dedup — where it should live (shipped, PR #14)
 
 NOT per-persona (breaks independence; duplicated across mandates) and NOT the core
 review prompt. It belongs in the **orchestration/synthesis layer** as a dedicated
@@ -99,6 +100,18 @@ output. Either the engine runs a `synthesizer/clusterer` agent per epoch, or the
 convening `main` session does the semantic synthesis (the script's signature dedup
 stays a coarse backstop). Leaning toward an engine-level clusterer so
 stall/convergence is semantically accurate, not just the presentation.
+
+**What shipped:** the engine-level route. A `Reduce` seam in `loop.py` (deterministic
+identity default = one cluster per signature) with the LLM clusterer in
+`claude_code_backend.py`, opt-in via `--semantic-dedup`. Signature dedup stays the
+always-on Layer 1; the cluster is a reduce/*view* over the deduped ledger, so raw
+findings stay visible. New-material and the breaker/convergence counts moved to the
+cluster level (severity = max of members → UGLY-preserving; the breaker reads
+max-over-*open*-members, provably zero-equivalent to the old finding-level gate).
+The clusterer forces its output into a strict partition (never drops a finding) and
+degrades to the identity reduce on any failure. Not done: on-by-default (kept opt-in
+for reproducibility/cost); revisiting merge aggressiveness once dogfood evidence
+shows under-merging.
 
 ## Validation & lessons
 

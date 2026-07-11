@@ -18,7 +18,8 @@ description: >-
 A generalisation of the two-pass adversarial panel (see
 `two-pass-adversarial-review-pattern.md`) into a **bounded, human-convened
 iteration loop**. A deterministic Python engine (`loop.py`) owns the
-control logic — halting, semantic dedup, stall detection, token/time budget,
+control logic — halting, dedup (a coarse signature always-on, plus an opt-in
+semantic **reduce** into canonical clusters), stall detection, token/time budget,
 and the **UGLY circuit-breaker** — and binds to Claude Code via
 `claude_code_backend.py`, which spawns **one `claude -p` subprocess per persona
 per epoch** (read-only: no edit tools). You (the convening `main` session) supply
@@ -47,11 +48,19 @@ human. You are the *synthesiser, not the judge* — the human decides.
    python blackice.py \
      --repo <root> --base <base> --head <head> \
      --why "<why it matters>" --what "<what changed>" \
-     --max-epochs 3 --token-budget 400000 [--model <alias>]
+     --max-epochs 3 --token-budget 400000 [--model <alias>] [--semantic-dedup]
    ```
    The script prints a per-epoch synthesis, pauses at an interactive HITL gate
    (continue/stop) between epochs, and finally emits a `--- JSON ---` block for
-   you to consume. Exit code `3` means an UGLY circuit-break.
+   you to consume (with a `clusters` array alongside the raw `findings`). Exit
+   code `3` means an UGLY circuit-break.
+   - **`--semantic-dedup`** (opt-in) folds the same concern raised by multiple
+     personas — differently worded, at different lines, or across files — into one
+     **canonical cluster**, so stall/convergence and your synthesis count *issues*,
+     not restatements. A cluster's severity is the **max** of its members
+     (UGLY-preserving: a merge never hides ruin). It adds one cheap clustering call
+     per epoch (`--cluster-model` to choose the model); the default is a
+     deterministic signature dedup. Every raw finding stays visible, grouped.
 
 ## Your responsibilities as the convening session
 - **Between epochs / after halt: synthesise.** Present each persona's view
@@ -75,7 +84,9 @@ human. You are the *synthesiser, not the judge* — the human decides.
 - **BUDGET** — token or time ceiling reached (partial halt; BADs may remain **if
   tracked**).
 - **EPOCH** — max epochs reached.
-- **STALL** — K epochs with no new *material* findings while blockers remain open.
+- **STALL** — K epochs with no new *material* findings while blockers remain open
+  (with `--semantic-dedup`, a re-worded or re-located restatement of a known issue
+  no longer counts as new material).
 
 ## Good / Bad / Ugly (severity → behaviour)
 - **GOOD** — the absence of open blockers/uglies with scope covered (a halt target).
@@ -108,5 +119,7 @@ permissioned mode that lets the empiricist actually run the suite. A shipped
 Experimental, but exercised end-to-end (dogfooded over a real diff — it found
 bugs a human-convened two-pass run missed). Implemented: read-only default +
 `--allow-tools` for scoped verification; retry-on-contract-miss; the UGLY
-circuit-breaker. Open work is in `NOTES.md` (notably semantic dedup and a richer
-default persona set). The structured-findings contract is enforced via prompt.
+circuit-breaker; and an opt-in semantic **reduce** (`--semantic-dedup`) that
+clusters same-concept findings (UGLY-preserving, degrades to signature dedup on
+failure). Open work is in `NOTES.md` (notably a richer default persona set). The
+structured-findings contract is enforced via prompt.
