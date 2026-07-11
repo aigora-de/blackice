@@ -24,3 +24,10 @@ blackice = "blackice:main"
 
 [tool.setuptools]
 py-modules = ["loop", "claude_code_backend", "blackice"]
+
+[tool.pytest.ini_options]
+# Tests live in tests/; the flat source modules (loop, claude_code_backend,
+# blackice) sit at the repo root, so put the root on sys.path for imports —
+# rootdir insertion no longer covers them once tests are nested.
+testpaths = ["tests"]
+pythonpath = ["."]
