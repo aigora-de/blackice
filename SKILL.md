@@ -61,6 +61,16 @@ human. You are the *synthesiser, not the judge* — the human decides.
      (UGLY-preserving: a merge never hides ruin). It adds one cheap clustering call
      per epoch (`--cluster-model` to choose the model); the default is a
      deterministic signature dedup. Every raw finding stays visible, grouped.
+   - **`--prior-findings <path>`** seeds the panel with an earlier run's ledger,
+     for the hunt → fix → re-run loop. Without it every invocation starts cold and
+     re-derives what you already fixed. Accepts a saved `findings.json`, a run's
+     JSON output, or a raw `run.log` containing the `--- JSON ---` block. Injected
+     from **epoch 1** (a confirm-the-fixes re-run may only get one), with each
+     carried-in `file:line` marked **advisory** — the fixes moved the code, so
+     personas adjudicate against current source. Prior-run and this-run findings
+     arrive as separately labelled blocks, so a persona can tell "found before the
+     fixes" from "found now". Fails loudly on an unreadable seed rather than
+     starting silently cold.
 
 ## Your responsibilities as the convening session
 - **Between epochs / after halt: synthesise.** Present each persona's view

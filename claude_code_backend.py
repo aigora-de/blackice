@@ -241,12 +241,65 @@ approval. Set verdict "YES" only if you found nothing you cannot approve.
 """
 
 
+def load_prior_findings(path: str | Path) -> str:
+    """Render a previous run's ledger as a seed summary (issue #13).
+
+    Accepts, in order: a whole run envelope (``{"findings": [...]}`` — the object
+    printed under ``--- JSON ---``), a bare findings array, or a raw run log with
+    that block embedded.  The log is accepted because it is what the durable
+    archive actually holds; making an operator carve the JSON out by hand is how a
+    seeded re-run quietly gets nothing.
+
+    Raises:
+        FileNotFoundError: The path does not exist.
+        ValueError: The file carries no recognisable findings.  Loud by design — a
+            silently empty seed is indistinguishable from a working one, which is
+            the failure mode issue #11 already recorded for the surface cap.
+    """
+    text = Path(path).read_text()
+    payload = None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        # A raw run log: take the LAST --- JSON --- block, which is the run's own
+        # (an earlier one could be quoted inside a --why).
+        blocks = text.split("--- JSON ---")
+        if len(blocks) > 1:
+            try:
+                payload = json.loads(blocks[-1].strip())
+            except json.JSONDecodeError:
+                payload = None
+    findings = payload.get("findings") if isinstance(payload, dict) else payload
+    if not isinstance(findings, list) or not findings:
+        raise ValueError(
+            f"{path}: no findings to seed. Expected a blackice run's JSON output "
+            "(the object under '--- JSON ---', or its 'findings' array), or a raw "
+            "run log containing that block.")
+    lines = []
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        state = "open" if f.get("open", True) else "resolved"
+        loc = f"{f['file']}:{f['line']}" if f.get("file") else "-"
+        lines.append(f"- [{f.get('severity', 'NOTE')}/{state}] ({f.get('persona', '?')}) "
+                     f"{f.get('title', '(untitled)')} @ {loc}")
+    if not lines:
+        raise ValueError(f"{path}: findings present but none were readable.")
+    return "\n".join(lines)
+
+
 def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
-                 surface_kind: str = "diff") -> str:
+                 surface_kind: str = "diff", seeded: str = "") -> str:
     """Assemble the per-epoch review task handed to every persona.
 
     ``surface_kind`` selects the framing: ``"diff"`` reviews a change,
     ``"files"`` reviews existing code presented as whole files (issue #6).
+
+    ``prior`` is this run's cross-*epoch* memory and only means anything from
+    epoch 2.  ``seeded`` is cross-*run* memory loaded by ``--prior-findings``
+    (issue #13) and is injected from **epoch 1** — a re-run whose whole purpose is
+    confirming fixes may only ever get one epoch, so gating it behind ``epoch > 1``
+    would withhold it from the run that needs it most.
     """
     is_diff = surface_kind == "diff"
     subject = "this change" if is_diff else "this code"
@@ -258,9 +311,20 @@ def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
     if spec.out_of_scope:
         scope += "\nOUT OF SCOPE (deferred, do not fault): " + "; ".join(spec.out_of_scope)
     memory = ""
+    if seeded:
+        # Locations are advisory: the fixes that prompted the re-run move code, so
+        # a carried-in file:line is a hint about where to look, never a claim about
+        # what is there now.  Personas re-read the live surface every epoch and
+        # adjudicate against it.
+        memory += ("\n\nPRIOR RUN'S FINDINGS (carried in from an earlier review; "
+                   "fixes may have landed since, so the file:line of each is "
+                   "ADVISORY and may have moved — adjudicate against the current "
+                   "source. Say explicitly which are now resolved, which are still "
+                   "open, and then look for what that run missed):\n"
+                   f"{seeded}\n")
     if epoch > 1 and prior:
-        memory = ("\n\nPRIOR EPOCHS' FINDINGS (build on these; say if they are "
-                  f"resolved, and look for what they missed):\n{prior}\n")
+        memory += ("\n\nPRIOR EPOCHS' FINDINGS (this run — build on these; say if "
+                   f"they are resolved, and look for what they missed):\n{prior}\n")
     return (
         f"Adversarially review {subject}. Be critical: find where it is wrong, "
         f"incomplete, or dangerous — approve only what you cannot break.\n\n"
@@ -534,7 +598,14 @@ class PanelSession:
         default_factory=lambda: list(DEFAULT_DISALLOWED_TOOLS))
     permission_mode: str = "plan"
     tokens: int = 0
-    prior_summary: str = ""
+    prior_summary: str = ""      # cross-EPOCH memory; on_epoch REWRITES it each epoch
+    # Cross-RUN memory (issue #13): set once at startup from --prior-findings and
+    # never touched again. Deliberately NOT folded into prior_summary, which
+    # on_epoch overwrites from the current ledger — a seed stored there would be
+    # discarded after epoch 1, losing exactly the memory the run was asked to
+    # carry. Kept separate all the way to build_prompt, which labels the two so a
+    # persona can tell "found before the fixes" from "found this run".
+    seeded_summary: str = ""
 
     # --- gather: the review surface (re-read each epoch so fixes are visible) ---
     def gather(self, epoch: int) -> str:  # noqa: ARG002
@@ -573,7 +644,8 @@ class PanelSession:
         p = self.personas[persona]
         model = p.model or self.default_model
         surface_kind = "files" if self.paths else "diff"
-        prompt = build_prompt(self.spec, surface, epoch, self.prior_summary, surface_kind)
+        prompt = build_prompt(self.spec, surface, epoch, self.prior_summary,
+                              surface_kind, seeded=self.seeded_summary)
 
         if self.dry_run:
             preview = (prompt[:280] + "…") if len(prompt) > 280 else prompt
