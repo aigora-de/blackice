@@ -22,7 +22,8 @@ import json
 from pathlib import Path
 
 from loop import HaltingSet, PanelConfig, ReviewSpec, run
-from claude_code_backend import DEFAULT_DISALLOWED_TOOLS, PanelSession, load_personas
+from claude_code_backend import (DEFAULT_DISALLOWED_TOOLS, PanelSession,
+                                 load_personas, load_prior_findings)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
                          "signature dedup only, no extra call)")
     ap.add_argument("--cluster-model", default=None,
                     help="model for the --semantic-dedup clusterer (default: --model)")
+    ap.add_argument("--prior-findings", default=None, metavar="PATH",
+                    help="seed the panel with an earlier run's findings (issue #13): a "
+                         "saved findings.json, a run's JSON output, or a raw run.log "
+                         "containing the '--- JSON ---' block. Injected from epoch 1, "
+                         "with locations flagged advisory since fixes move code")
     ap.add_argument("--dry-run", action="store_true", help="print the wiring, spawn nothing")
     ap.add_argument("--no-parallel", action="store_true")
     args = ap.parse_args(argv)
@@ -81,13 +87,22 @@ def main(argv: list[str] | None = None) -> int:
           f"{', '.join(p.name for p in personas)}")
     print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
 
+    # Cross-run memory (issue #13). Loaded BEFORE the session so a bad path fails
+    # here, not three epochs into a paid run, and echoed so a seed that loaded
+    # nothing cannot be mistaken for one that worked.
+    seeded = ""
+    if args.prior_findings:
+        seeded = load_prior_findings(args.prior_findings)
+        print(f"[panel] prior findings: {len(seeded.splitlines())} carried in from "
+              f"{args.prior_findings} (locations advisory)")
+
     spec = ReviewSpec(why=args.why, what=what)
     session = PanelSession(
         repo_root=repo, spec=spec, base=args.base or "", head=args.head,
         paths=args.paths, max_surface_bytes=args.max_surface_bytes,
         personas={p.name: p for p in personas},
         default_model=args.model, cluster_model=args.cluster_model,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run, seeded_summary=seeded,
         disallowed_tools=(list(args.disallow_tools) if args.disallow_tools is not None
                           else list(DEFAULT_DISALLOWED_TOOLS)),
         permission_mode=args.permission_mode)

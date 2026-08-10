@@ -68,6 +68,13 @@ python blackice.py --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
 # pick a model); the default is a deterministic signature dedup.
 python blackice.py --repo <root> --base <base> --head <head> \
   --semantic-dedup --max-epochs 2
+
+# Cross-run memory: seed a re-run with the previous run's ledger, so the panel
+# reports which findings the fixes actually closed instead of re-deriving them
+# cold. Takes a saved findings.json, a run's JSON output, or a raw run.log with
+# the '--- JSON ---' block in it. Both modes.
+python blackice.py --repo <root> --paths src/pkg/ \
+  --prior-findings runs/2026-01-01/run.log
 ```
 Exactly one mode per run: `--base/--head` (diff) **or** `--paths` (whole-file).
 
