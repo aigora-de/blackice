@@ -1,6 +1,6 @@
 # The adversarial review loop — a pattern for mission-critical code
 
-*The reusable pattern behind `blackice`.*
+*The reusable pattern behind `kuang`, the tool built in the blackice project.*
 
 ---
 
@@ -116,7 +116,7 @@ tracked?* — are just the **Converged** gate made explicit.
 
 ## 6. The skill (implemented)
 
-This pattern is implemented in this repository as **`blackice`**: a deterministic
+This pattern is implemented in this repository as **`kuang`**: a deterministic
 engine (`kuang/engine/`, public API `kuang.engine.run()`) that owns the loop — halting, dedup,
 stall detection, token/time budget, and the **Ugly circuit-breaker** — bound to a
 coding agent via a backend (`kuang/backends/claude_code/`), which drives **one subagent

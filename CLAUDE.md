@@ -91,12 +91,13 @@ doubt, genericise.
 
 # ARCHITECTURE (orientation)
 
-**The project is blackice; the package, distribution and command are `kuang`.**
-Not a leftover to tidy: the import name `blackice` belongs to an unrelated PyPI
-project that ships a top-level `blackice` package *and* a `blackice` console
-script from the identical entry point, so sharing it silently merges the two
-installs. Prose says blackice; code, imports and the CLI say `kuang`, after the
-intrusion program that cuts through ICE. Do not "restore" it.
+**Everything installed, imported or run is `kuang`; `blackice` names the project
+and this repository, nothing else.** Not a leftover to tidy: the import name
+`blackice` belongs to an unrelated PyPI project that ships a top-level `blackice`
+package *and* a `blackice` console script from the identical entry point, so
+sharing it silently merges the two installs. Kuang is the intrusion program that
+cuts through ICE — which is what a panel tasked to break a change is for. Do not
+"restore" it.
 
 - `kuang/engine/` — the engine. Public API `kuang.engine.run(...)`, with the
   vocabulary in `findings`, the seams in `protocols`, the predicate in `halting`,

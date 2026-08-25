@@ -2,7 +2,7 @@
 
 **A human-in-the-loop adversarial review panel for mission-critical code.**
 
-`blackice` convenes a panel of adversarial reviewer *personas* — each tasked to
+`kuang` convenes a panel of adversarial reviewer *personas* — each tasked to
 **break** a change, not approve it — and runs them in a **bounded iteration
 loop** until a halting condition, with a ruin-class **circuit-breaker** that
 stops the moment a survivability-threatening ("UGLY") finding appears.
@@ -11,14 +11,14 @@ It's the tool form of a review pattern for code where a subtle bug is expensive,
 silent, or irreversible. The pattern and its prior art are in
 [`two-pass-adversarial-review-pattern.md`](two-pass-adversarial-review-pattern.md).
 
-> **The project is blackice; it installs as `kuang`.** `pip install kuang`,
-> `import kuang`, and the command is `kuang`. The import name `blackice` is
-> already taken on PyPI by an unrelated project that ships a top-level
-> `blackice` package *and* a `blackice` console script from the same entry point
-> — installing both merges the two into one directory, hands the command to
-> whichever landed last, and breaks the other's uninstall, all silently. So the
-> artefact carries a different name: **Kuang**, after the intrusion program that
-> cuts through ICE.
+> **What you install, import and run is `kuang`.** `pip install kuang`,
+> `import kuang`, `kuang --repo …`. `blackice` is the repository this is
+> developed in, and nothing else. The import name `blackice` is already taken on
+> PyPI by an unrelated project that ships a top-level `blackice` package *and* a
+> `blackice` console script from the same entry point — installing both merges
+> the two into one directory, hands the command to whichever landed last, and
+> breaks the other's uninstall, all silently. Hence **Kuang**, after the
+> intrusion program that cuts through ICE.
 
 ## When to use it
 Execution paths where being wrong is expensive, silent, or irreversible — money

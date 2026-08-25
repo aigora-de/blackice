@@ -49,7 +49,7 @@ def load_prior_findings(path: str | Path) -> str:
     findings = payload.get("findings") if isinstance(payload, dict) else payload
     if not isinstance(findings, list) or not findings:
         raise ValueError(
-            f"{path}: no findings to seed. Expected a blackice run's JSON output "
+            f"{path}: no findings to seed. Expected a kuang run's JSON output "
             "(the object under '--- JSON ---', or its 'findings' array), or a raw "
             "run log containing that block.")
     lines = []

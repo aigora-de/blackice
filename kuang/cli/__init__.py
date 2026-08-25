@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Copyright (c) 2026 Agilit Ltd
-"""blackice — entry point.
+"""kuang — entry point.
 
 Run this. It wires the two pieces together:
 
