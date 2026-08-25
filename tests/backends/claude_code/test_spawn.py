@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from blackice.backends.claude_code import PanelSession, Persona
-from blackice.backends.claude_code import session as backend_session
+from blackice.backends.claude_code import spawn as spawn_module
 from blackice.engine import ReviewSpec
 
 
@@ -47,7 +47,7 @@ def captured(monkeypatch):
                                "usage": {"output_tokens": 11}}),
             stderr="")
 
-    monkeypatch.setattr(backend_session.subprocess, "run", fake_run)
+    monkeypatch.setattr(spawn_module.subprocess, "run", fake_run)
     return calls
 
 
@@ -106,7 +106,7 @@ def test_the_result_and_token_count_are_returned(session, captured):
 
 
 def test_a_non_zero_exit_becomes_an_error_string(session, monkeypatch):
-    monkeypatch.setattr(backend_session.subprocess, "run",
+    monkeypatch.setattr(spawn_module.subprocess, "run",
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 7, stdout="", stderr="boom"))
 
@@ -117,7 +117,7 @@ def test_a_non_zero_exit_becomes_an_error_string(session, monkeypatch):
 
 
 def test_raw_non_json_stdout_is_tolerated(session, monkeypatch):
-    monkeypatch.setattr(backend_session.subprocess, "run",
+    monkeypatch.setattr(spawn_module.subprocess, "run",
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 0, stdout="just text", stderr=""))
 
@@ -135,12 +135,15 @@ def test_dry_run_spawns_nothing_and_votes_yes(session, captured, capsys):
     assert (report.persona, report.verdict, report.findings) == ("p", "YES", [])
 
 
-def test_the_dry_run_report_says_this_today(session, capsys):
-    """CHARACTERISATION: the pre-#19 report, rendered independently of the argv.
+def test_the_dry_run_reports_the_argv_it_would_spawn(session, capsys):
+    """The one deliberate behaviour change in #19, and its whole justification.
 
-    This is the wiring description that could disagree with what would actually
-    run — three of the argv's flags (``--output-format``, ``--add-dir``, the
-    binary itself) never appear here at all.
+    The report used to be a prose summary written separately from the argv, so
+    the two could disagree — and three of the argv's flags (``--output-format``,
+    ``--add-dir``, the binary itself) never appeared in it at all. It is now
+    rendered from the argv ``build_argv`` returns, which is the same object the
+    real call spawns. The prompt and system prompt are elided by length; every
+    flag that governs what the reviewer may do is shown.
     """
     session.dry_run = True
 
@@ -148,9 +151,27 @@ def test_the_dry_run_report_says_this_today(session, capsys):
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[1] == "[dry-run] persona=p model=default"
-    assert lines[2] == ("  tools=['Read', 'Grep', 'Glob'] "
-                        "disallow=['Edit', 'Write', 'NotebookEdit', 'Bash'] mode=plan")
+    assert lines[2].startswith("  argv= /fake/claude -p <prompt: ")
+    assert lines[2].endswith(
+        "--append-system-prompt <system-prompt: 7 chars> "
+        "--allowedTools Read Grep Glob "
+        "--disallowedTools Edit Write NotebookEdit Bash "
+        "--permission-mode plan --output-format json "
+        f"--add-dir {session.repo_root}")
     assert lines[3].startswith("  prompt≈ 'Adversarially review this change.")
+
+
+def test_the_dry_run_report_and_the_real_call_cannot_disagree(session, captured, capsys):
+    """The property the consolidation exists for, asserted directly."""
+    session.dry_run = True
+    session.spawn("p", "MANDATE", "SURFACE", 1)
+    reported = capsys.readouterr().out.splitlines()[2].removeprefix("  argv= ")
+
+    session.dry_run = False
+    session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    from blackice.report import render_argv
+    assert render_argv(captured[0].argv) == reported
 
 
 def test_the_dry_run_prompt_preview_is_capped_at_280_characters(session, capsys):

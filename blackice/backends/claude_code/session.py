@@ -33,7 +33,6 @@ Design choices realised across this package (see
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +41,7 @@ from typing import Sequence
 from blackice.engine import (Cluster, EpochResult, Finding, GateDecision,
                              PersonaReport, ReviewRun, ReviewSpec, Severity)
 from blackice.engine.reduce import _identity_reduce
+from blackice.report import render_argv
 
 from .cluster import (_CLUSTER_MANDATE, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)
@@ -50,7 +50,7 @@ from .contract import (FINDINGS_CONTRACT, _is_parse_failure, build_prompt,
 from .memory import epoch_summary
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
-from .spawn import _resolve_claude_bin
+from .spawn import _resolve_claude_bin, build_argv, run_claude
 from .surface import build_path_surface, gather_diff
 
 
@@ -98,28 +98,20 @@ class PanelSession:
             return build_path_surface(self.repo_root, self.paths, self.max_surface_bytes)
         return gather_diff(self.repo_root, self.base, self.head)
 
+    # --- the argv this session would spawn: the call and the dry run agree ---
+    def _argv(self, prompt: str, mandate: str, tools: list[str],
+              model: str | None) -> list[str]:
+        return build_argv(
+            claude_bin=self.claude_bin, prompt=prompt, mandate=mandate,
+            tools=tools, disallowed_tools=self.disallowed_tools,
+            permission_mode=self.permission_mode, repo_root=self.repo_root,
+            model=model)
+
     # --- one `claude -p` call: returns (result_text, output_tokens, error) ---
     def _run_claude(self, prompt: str, mandate: str, tools: list[str],
                     model: str | None) -> tuple[str, int, str | None]:
-        argv = [
-            self.claude_bin, "-p", prompt,
-            "--append-system-prompt", mandate,
-            "--allowedTools", *tools,
-            "--disallowedTools", *self.disallowed_tools,
-            "--permission-mode", self.permission_mode,
-            "--output-format", "json",
-            "--add-dir", str(self.repo_root),
-        ]
-        if model:
-            argv += ["--model", model]
-        proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(self.repo_root))
-        if proc.returncode != 0:
-            return "", 0, f"claude exited {proc.returncode}: {proc.stderr[:300]}"
-        try:
-            env = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            return proc.stdout, 0, None  # tolerate raw text
-        return env.get("result", ""), int((env.get("usage") or {}).get("output_tokens", 0)), None
+        return run_claude(self._argv(prompt, mandate, tools, model),
+                          cwd=self.repo_root)
 
     # --- spawn: one persona review, with retry-on-contract-miss ---
     def spawn(self, persona: str, mandate: str, surface: str, epoch: int) -> PersonaReport:
@@ -130,9 +122,12 @@ class PanelSession:
                               surface_kind, seeded=self.seeded_summary)
 
         if self.dry_run:
+            # Report the argv that would actually be spawned, not a separate
+            # description of it: pre-flight confirmation is the dry run's only
+            # job, so it must not be able to disagree with the call.
             preview = (prompt[:280] + "…") if len(prompt) > 280 else prompt
             print(f"\n[dry-run] persona={persona} model={model or 'default'}"
-                  f"\n  tools={p.tools} disallow={self.disallowed_tools} mode={self.permission_mode}"
+                  f"\n  argv= {render_argv(self._argv(prompt, mandate, p.tools, model))}"
                   f"\n  prompt≈ {preview!r}")
             return PersonaReport(persona=persona, verdict="YES")
 
