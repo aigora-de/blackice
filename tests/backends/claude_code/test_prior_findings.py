@@ -20,14 +20,14 @@ Two things here are easy to get wrong and are pinned deliberately:
 from __future__ import annotations
 
 import json
-import subprocess
 from types import SimpleNamespace
 
 import pytest
 
-from blackice import main
-from claude_code_backend import PanelSession, build_prompt, load_prior_findings
-from loop import Finding, ReviewSpec, Severity
+from blackice.backends.claude_code import PanelSession, load_prior_findings
+from blackice.backends.claude_code.contract import build_prompt
+from blackice.cli import main
+from blackice.engine import Finding, ReviewSpec, Severity
 
 
 _LEDGER = {
@@ -40,27 +40,6 @@ _LEDGER = {
          "file": "calc.py", "line": 7, "open": False},
     ],
 }
-
-
-def _git(repo, *args) -> None:
-    subprocess.run(["git", "-C", str(repo), *args],
-                   check=True, capture_output=True, text=True)
-
-
-@pytest.fixture
-def repo(tmp_path):
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "config", "user.email", "test@example.invalid")
-    _git(tmp_path, "config", "user.name", "test")
-    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "init")
-    # A second commit, so diff mode has something real to review: a review of an
-    # empty diff is now refused outright (see tests/test_gather.py).
-    (tmp_path / "a.py").write_text("def f():\n    return 2\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "change")
-    return tmp_path
 
 
 # --- loading ----------------------------------------------------------------
@@ -157,7 +136,7 @@ def test_locations_are_framed_as_advisory(tmp_path):
     assert "advisory" in prompt.lower() or "may have moved" in prompt.lower()
 
 
-def test_the_epoch_checkpoint_does_not_clobber_the_seed(repo):
+def test_the_epoch_checkpoint_does_not_clobber_the_seed(changed_repo):
     """``on_epoch`` rewrites ``prior_summary`` from the current ledger.
 
     Storing the seed in that field would look correct and then vanish after
@@ -165,7 +144,7 @@ def test_the_epoch_checkpoint_does_not_clobber_the_seed(repo):
     drives the real checkpoint rather than a helper written to be asserted on.
     """
     session = PanelSession(
-        repo_root=repo, spec=ReviewSpec(why="w", what="x"), base="", head="HEAD",
+        repo_root=changed_repo, spec=ReviewSpec(why="w", what="x"), base="", head="HEAD",
         paths=["a.py"], personas={}, seeded_summary="- [BLOCKER/open] carried in")
     run = SimpleNamespace(ledger={
         "k": Finding("P1", "found this run", Severity.NOTE, "meta",
@@ -177,7 +156,7 @@ def test_the_epoch_checkpoint_does_not_clobber_the_seed(repo):
     assert "found this run" in session.prior_summary
 
 
-def test_the_two_memories_stay_distinguishable(repo):
+def test_the_two_memories_stay_distinguishable(changed_repo):
     """A persona must be able to tell "found before the fixes" from "found now".
 
     Merging them into one block would lose the only thing that makes a seeded
@@ -195,12 +174,12 @@ def test_the_two_memories_stay_distinguishable(repo):
 
 # --- CLI wiring -------------------------------------------------------------
 
-def test_cli_seeds_the_session_and_says_so(repo, tmp_path, capsys):
+def test_cli_seeds_the_session_and_says_so(changed_repo, tmp_path, capsys):
     """Operator-visible: a seed that silently fails to load is worse than none."""
     p = tmp_path / "prior.json"
     p.write_text(json.dumps(_LEDGER))
 
-    main(["--repo", str(repo), "--paths", "a.py", "--dry-run",
+    main(["--repo", str(changed_repo), "--paths", "a.py", "--dry-run",
           "--prior-findings", str(p)])
 
     out = capsys.readouterr().out
@@ -208,11 +187,26 @@ def test_cli_seeds_the_session_and_says_so(repo, tmp_path, capsys):
     assert "2" in out
 
 
-def test_cli_works_in_diff_mode_too(repo, tmp_path, capsys):
+def test_cli_works_in_diff_mode_too(changed_repo, tmp_path, capsys):
     p = tmp_path / "prior.json"
     p.write_text(json.dumps(_LEDGER))
 
-    main(["--repo", str(repo), "--base", "HEAD~1", "--dry-run",
+    main(["--repo", str(changed_repo), "--base", "HEAD~1", "--dry-run",
           "--prior-findings", str(p)])
 
     assert "prior findings" in capsys.readouterr().out.lower()
+
+
+def test_a_finding_with_a_file_but_no_line_still_raises(tmp_path):
+    """CHARACTERISATION: preserved unchanged by #19's move, not endorsed.
+
+    A findings object carrying a "file" but no "line" raises rather than
+    rendering. Making it tolerant is a behaviour change and belongs with Epoch
+    2's "treat the contract payload as untrusted input" work (#25), not here.
+    """
+    p = tmp_path / "findings.json"
+    p.write_text(json.dumps([{"persona": "P", "severity": "NOTE",
+                              "title": "t", "file": "a.py"}]))
+
+    with pytest.raises(KeyError):
+        load_prior_findings(p)

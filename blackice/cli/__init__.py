@@ -4,15 +4,19 @@
 
 Run this. It wires the two pieces together:
 
-* ``loop.py``          — the generic engine: the bounded loop, halting
-                                predicates, dedup/stall, token budget, and the
-                                UGLY circuit-breaker. Knows nothing about Claude.
-* ``claude_code_backend.py``  — the Claude Code binding: sources personas, and
-                                spawns one ``claude -p`` per persona per epoch.
+* ``blackice.engine``   — the generic engine: the bounded loop, halting
+                          predicates, dedup/stall, token budget, and the UGLY
+                          circuit-breaker. Knows nothing about Claude.
+* ``blackice.backends.claude_code`` — the Claude Code binding: sources personas,
+                          and spawns one ``claude -p`` per persona per epoch.
 
 This module parses the CLI, loads the panel, wires the backend's seams into the
-engine's ``loop.run``, and prints the result. A different agent runtime
-would be a different ``*_backend.py`` swapped in here — the engine is unchanged.
+engine's ``run``, and prints the result. A different agent runtime would be a
+different backend swapped in here — the engine is unchanged. It is the only
+module that imports both.
+
+The verb interface (``review`` / ``panel`` / ``surface`` / ``inspect``) is issue
+#20; this is the flag interface, unchanged.
 """
 
 from __future__ import annotations
@@ -22,9 +26,10 @@ import json
 import sys
 from pathlib import Path
 
-from loop import HaltingSet, PanelConfig, ReviewSpec, run
-from claude_code_backend import (DEFAULT_DISALLOWED_TOOLS, PanelSession,
-                                 SurfaceError, load_personas, load_prior_findings)
+from blackice.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
+                                          PanelSession, SurfaceError,
+                                          load_personas, load_prior_findings)
+from blackice.engine import HaltingSet, PanelConfig, ReviewSpec, run
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,7 +167,3 @@ def main(argv: list[str] | None = None) -> int:
             for c in review_run.clusters],
     }, indent=2))
     return 3 if review_run.halt_reason.value == "escalate_ugly" else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_code_backend import PanelSession
-from loop import Finding, ReviewSpec, Severity
+from blackice.backends.claude_code import PanelSession
+from blackice.engine import Finding, ReviewSpec, Severity
 
 
 def _findings():
@@ -106,3 +106,20 @@ def test_small_input_does_not_call_claude(session):
     clusters = session.reduce(one)
     assert len(clusters) == 1
     assert called is False                                     # no spawn for <2 findings
+
+
+# --- the clusterer's own tolerance, kept at its own call site (#19) ----------
+
+def test_an_unfenced_reply_is_still_read(session):
+    """Unlike the findings contract, the clusterer falls back to the whole reply."""
+    session._run_claude = _canned('{"clusters": [[0, 1], [2]]}')
+
+    clusters = session.reduce(_findings())
+
+    assert len(clusters) == 2
+
+
+def test_an_empty_fenced_block_falls_back_to_identity(session):
+    session._run_claude = _canned("```json\n\n```")
+
+    assert len(session.reduce(_findings())) == 3
