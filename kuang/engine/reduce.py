@@ -4,7 +4,7 @@
 
 The engine owns this one because the engine's control logic depends on it; a
 semantic (LLM) reducer is a backend concern and degrades to exactly this when it
-is unavailable. See ``blackice.backends.claude_code.cluster``.
+is unavailable. See ``kuang.backends.claude_code.cluster``.
 """
 
 from __future__ import annotations

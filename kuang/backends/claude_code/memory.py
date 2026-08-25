@@ -14,8 +14,8 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from blackice.engine import Finding
-from blackice.report import ledger_line
+from kuang.engine import Finding
+from kuang.report import ledger_line
 
 
 def load_prior_findings(path: str | Path) -> str:

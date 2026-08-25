@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import re
 
-from blackice.engine import Finding, PersonaReport, ReviewSpec, Severity
+from kuang.engine import Finding, PersonaReport, ReviewSpec, Severity
 
 
 _SEV = "NOTE | NON_BLOCKING | BLOCKER | UGLY"

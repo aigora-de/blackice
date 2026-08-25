@@ -49,8 +49,8 @@ context.
 - For a small change in a large file, present targeted snippets with clear location
   context (function name, surrounding lines) rather than a full-file dump. Use
   judgement.
-- The three concerns stay separated: **engine** (`blackice/engine/`), **backend**
-  (`blackice/backends/<runtime>/`), **entry point** (`blackice/cli/`). Don't leak
+- The three concerns stay separated: **engine** (`kuang/engine/`), **backend**
+  (`kuang/backends/<runtime>/`), **entry point** (`kuang/cli/`). Don't leak
   backend specifics into the engine, or CLI wiring into the backend. The engine
   imports nothing from a backend, and `tests/engine/test_backend_agnostic.py`
   enforces it.
@@ -91,20 +91,27 @@ doubt, genericise.
 
 # ARCHITECTURE (orientation)
 
-- `blackice/engine/` — the engine. Public API `blackice.engine.run(...)`, with the
+**The project is blackice; the package, distribution and command are `kuang`.**
+Not a leftover to tidy: the import name `blackice` belongs to an unrelated PyPI
+project that ships a top-level `blackice` package *and* a `blackice` console
+script from the identical entry point, so sharing it silently merges the two
+installs. Prose says blackice; code, imports and the CLI say `kuang`, after the
+intrusion program that cuts through ICE. Do not "restore" it.
+
+- `kuang/engine/` — the engine. Public API `kuang.engine.run(...)`, with the
   vocabulary in `findings`, the seams in `protocols`, the predicate in `halting`,
   the default reduce in `reduce`, and the loop in `loop`. Owns halting (an OR of
   predicates, ruin checked first: `ESCALATE_UGLY` · `CONVERGED` · `BUDGET` ·
   `EPOCH` · `STALL`), semantic/coarse dedup, stall detection, token/time budget,
   and the circuit-breaker. Dependency-injected seams (`SpawnPersona`, `Adjudicate`,
   `GatherSurface`, `HumanGate`).
-- `blackice/backends/claude_code/` — a backend, one module per job it does:
+- `kuang/backends/claude_code/` — a backend, one module per job it does:
   `personas` (sourcing), `surface` (what gets reviewed), `spawn` (the subprocess
   boundary), `contract` (the findings contract), `memory` (cross-epoch/cross-run),
   `cluster` (the semantic reduce), `permissions` (deny-by-default policy), and
   `session` (the wiring). A different runtime is a different subpackage.
-- `blackice/cli/` — the entry point: wires a backend into the engine, exposes the
-  CLI, and is the only module that imports both. `blackice/report.py` holds the
+- `kuang/cli/` — the entry point: wires a backend into the engine, exposes the
+  CLI, and is the only module that imports both. `kuang/report.py` holds the
   rendering they share.
 - See `SKILL.md` (how a convening agent runs it) and
   `two-pass-adversarial-review-pattern.md` (the pattern + prior art). Open

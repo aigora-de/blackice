@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Sequence
 
-from blackice.engine import Cluster, Finding
+from kuang.engine import Cluster, Finding
 
 from .contract import extract_json_block
 

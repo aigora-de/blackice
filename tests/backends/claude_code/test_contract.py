@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from blackice.backends.claude_code.contract import parse_findings
-from blackice.engine import Severity
+from kuang.backends.claude_code.contract import parse_findings
+from kuang.engine import Severity
 
 
 def _reply(body: str) -> str:
@@ -137,19 +137,19 @@ def test_a_non_numeric_line_raises_out_of_the_parser():
 # --- one extractor for one contract (#19) -----------------------------------
 
 def test_the_extractor_returns_the_last_fenced_block():
-    from blackice.backends.claude_code.contract import extract_json_block
+    from kuang.backends.claude_code.contract import extract_json_block
 
     assert extract_json_block(_reply("A") + _reply("B")) == "B\n"
 
 
 def test_the_extractor_returns_none_when_there_is_no_fence():
-    from blackice.backends.claude_code.contract import extract_json_block
+    from kuang.backends.claude_code.contract import extract_json_block
 
     assert extract_json_block("no block here") is None
 
 
 def test_the_clusterer_uses_the_same_extractor():
     """Two parsers for one contract meant a fix to one silently left the other."""
-    from blackice.backends.claude_code import cluster, contract
+    from kuang.backends.claude_code import cluster, contract
 
     assert cluster.extract_json_block is contract.extract_json_block

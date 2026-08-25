@@ -11,6 +11,15 @@ It's the tool form of a review pattern for code where a subtle bug is expensive,
 silent, or irreversible. The pattern and its prior art are in
 [`two-pass-adversarial-review-pattern.md`](two-pass-adversarial-review-pattern.md).
 
+> **The project is blackice; it installs as `kuang`.** `pip install kuang`,
+> `import kuang`, and the command is `kuang`. The import name `blackice` is
+> already taken on PyPI by an unrelated project that ships a top-level
+> `blackice` package *and* a `blackice` console script from the same entry point
+> — installing both merges the two into one directory, hands the command to
+> whichever landed last, and breaks the other's uninstall, all silently. So the
+> artefact carries a different name: **Kuang**, after the intrusion program that
+> cuts through ICE.
+
 ## When to use it
 Execution paths where being wrong is expensive, silent, or irreversible — money
 movement, tax/regulatory records, data integrity, safety interlocks, migrations,
@@ -20,13 +29,13 @@ heavy and spends tokens.
 
 ## How it works
 Three subpackages, three concerns:
-- **`blackice/cli/`** — the **entry point you run** (`python -m blackice`). Wires a
+- **`kuang/cli/`** — the **entry point you run** (`kuang`). Wires a
   backend into the engine and exposes the CLI. This is what the examples below invoke.
-- **`blackice/engine/`** — the deterministic **engine**. Owns the control loop:
+- **`kuang/engine/`** — the deterministic **engine**. Owns the control loop:
   halting predicates, dedup/stall detection, token/time budget, and the UGLY
   circuit-breaker. Backend-agnostic (dependency-injected seams); not run directly.
   It imports nothing from a backend, and a test enforces that.
-- **`blackice/backends/claude_code/`** — a **backend**: binds the engine to the
+- **`kuang/backends/claude_code/`** — a **backend**: binds the engine to the
   **Claude Code CLI** (one `claude -p` subprocess per persona per epoch) and sources
   the panel. A different runtime would be its own subpackage, swapped in by the
   entry point — the engine is unchanged.
@@ -49,32 +58,32 @@ open) / **BAD** (bugs, weak logic, scope-creep — iterate or track) / **UGLY**
 ## Quickstart
 ```bash
 # Pre-flight (spawns nothing, costs nothing): confirm which personas were sourced
-python -m blackice --repo <root> --base <base> --head <head> --dry-run
+kuang --repo <root> --base <base> --head <head> --dry-run
 
 # Live, read-only (the safe default)
-python -m blackice --repo <root> --base <base> --head <head> \
+kuang --repo <root> --base <base> --head <head> \
   --why "why this matters" --what "what changed" --max-epochs 2
 
 # Permissioned: let reviewers verify against source / run the suite (scoped)
-python -m blackice --repo <root> --base <base> --head <head> \
+kuang --repo <root> --base <base> --head <head> \
   --allow-tools Read Grep Glob 'Bash(git:*)' 'Bash(pytest:*)' --permission-mode default
 
 # Path mode: review existing code (whole files/dirs), not a diff — proactive
 # bug-hunting, or a repo with no reviewable diff. Dirs expand via git ls-files.
-python -m blackice --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
+kuang --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
 
 # Semantic dedup: fold the same concept (raised by several personas, worded or
 # located differently) into one canonical issue — sharpens stall/convergence and
 # the summary. Opt-in: adds a cheap clustering call per epoch (--cluster-model to
 # pick a model); the default is a deterministic signature dedup.
-python -m blackice --repo <root> --base <base> --head <head> \
+kuang --repo <root> --base <base> --head <head> \
   --semantic-dedup --max-epochs 2
 
 # Cross-run memory: seed a re-run with the previous run's ledger, so the panel
 # reports which findings the fixes actually closed instead of re-deriving them
 # cold. Takes a saved findings.json, a run's JSON output, or a raw run.log with
 # the '--- JSON ---' block in it. Both modes.
-python -m blackice --repo <root> --paths src/pkg/ \
+kuang --repo <root> --paths src/pkg/ \
   --prior-findings runs/2026-01-01/run.log
 ```
 Exactly one mode per run: `--base/--head` (diff) **or** `--paths` (whole-file).
@@ -94,10 +103,10 @@ diff:*)`) is opt-in via `--allow-tools`. Never bare `Bash`.
 ## Layout
 | Path | Role |
 |------|------|
-| `blackice/cli/` | **entry point** — run this; wires a backend into the engine |
-| `blackice/engine/` | deterministic engine: `findings` · `protocols` · `halting` · `reduce` · `loop` |
-| `blackice/backends/claude_code/` | Claude Code CLI backend: `personas` · `surface` · `spawn` · `contract` · `memory` · `cluster` · `permissions` · `session` |
-| `blackice/report.py` | presentation shared by the above (ledger lines, argv rendering) |
+| `kuang/cli/` | **entry point** — run this; wires a backend into the engine |
+| `kuang/engine/` | deterministic engine: `findings` · `protocols` · `halting` · `reduce` · `loop` |
+| `kuang/backends/claude_code/` | Claude Code CLI backend: `personas` · `surface` · `spawn` · `contract` · `memory` · `cluster` · `permissions` · `session` |
+| `kuang/report.py` | presentation shared by the above (ledger lines, argv rendering) |
 | `SKILL.md` | the skill definition (how a convening agent runs it) |
 | `NOTES.md` | design notes, open decisions, backlog |
 | `two-pass-adversarial-review-pattern.md` | the pattern + origin case study |

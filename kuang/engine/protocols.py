@@ -4,7 +4,7 @@
 
 Every one of these is a ``Protocol``: the engine is backend-agnostic because it
 names the shape it needs and never the implementation. A backend supplies them
-(see ``blackice.backends.claude_code.session``); the defaults the loop falls back
+(see ``kuang.backends.claude_code.session``); the defaults the loop falls back
 to are deliberately inert — trust every claim, continue at every gate, reduce to
 identity.
 """

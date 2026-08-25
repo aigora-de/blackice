@@ -4,10 +4,10 @@
 
 Run this. It wires the two pieces together:
 
-* ``blackice.engine``   — the generic engine: the bounded loop, halting
+* ``kuang.engine``   — the generic engine: the bounded loop, halting
                           predicates, dedup/stall, token budget, and the UGLY
                           circuit-breaker. Knows nothing about Claude.
-* ``blackice.backends.claude_code`` — the Claude Code binding: sources personas,
+* ``kuang.backends.claude_code`` — the Claude Code binding: sources personas,
                           and spawns one ``claude -p`` per persona per epoch.
 
 This module parses the CLI, loads the panel, wires the backend's seams into the
@@ -26,10 +26,10 @@ import json
 import sys
 from pathlib import Path
 
-from blackice.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
+from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           PanelSession, SurfaceError,
                                           load_personas, load_prior_findings)
-from blackice.engine import HaltingSet, PanelConfig, ReviewSpec, run
+from kuang.engine import HaltingSet, PanelConfig, ReviewSpec, run
 
 
 def main(argv: list[str] | None = None) -> int:

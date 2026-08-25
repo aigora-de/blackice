@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import pytest
 
-from blackice.backends.claude_code import PanelSession, SurfaceError
-from blackice.cli import main
-from blackice.engine import ReviewSpec
+from kuang.backends.claude_code import PanelSession, SurfaceError
+from kuang.cli import main
+from kuang.engine import ReviewSpec
 
 
 def _session(changed_repo, **kw) -> PanelSession:

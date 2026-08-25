@@ -10,7 +10,7 @@ the engine; the engine may import neither.
 
 **What this does not prove.** It is a *static* check over ``import`` statements,
 including ones nested inside functions. A runtime
-``importlib.import_module("blackice.backends…")`` would evade it, as would any
+``importlib.import_module("kuang.backends…")`` would evade it, as would any
 other dynamically-constructed import. That is a deliberate limit: the check is
 cheap, deterministic and reads the same tree a human would, and the failure mode
 it guards is an ordinary import added without thinking, not a deliberate
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-PACKAGE = Path(__file__).parents[2] / "blackice"
+PACKAGE = Path(__file__).parents[2] / "kuang"
 
 
 def _imports(path: Path) -> set[str]:
@@ -62,44 +62,44 @@ def _offenders(files: list[Path], forbidden: tuple[str, ...]) -> dict[str, set[s
 def test_the_engine_imports_nothing_from_a_backend():
     """The seam CLAUDE.md mandates: the engine knows of no particular runtime."""
     assert _offenders(_modules("engine"),
-                      ("blackice.backends", "claude_code_backend")) == {}
+                      ("kuang.backends", "claude_code_backend")) == {}
 
 
 def test_the_engine_imports_nothing_from_the_entry_point():
-    assert _offenders(_modules("engine"), ("blackice.cli",)) == {}
+    assert _offenders(_modules("engine"), ("kuang.cli",)) == {}
 
 
 def test_no_backend_imports_the_entry_point():
     """CLI wiring flows into a backend, never out of one."""
-    assert _offenders(_modules("backends"), ("blackice.cli",)) == {}
+    assert _offenders(_modules("backends"), ("kuang.cli",)) == {}
 
 
 def test_the_engine_is_importable_without_any_backend(monkeypatch):
     """Not just unimported — unimportABLE would be a lie if it still loaded one."""
     import sys
 
-    for name in [m for m in sys.modules if m.startswith("blackice")]:
+    for name in [m for m in sys.modules if m.startswith("kuang")]:
         monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.setitem(sys.modules, "blackice.backends", None)
+    monkeypatch.setitem(sys.modules, "kuang.backends", None)
 
-    import blackice.engine  # noqa: F401  — must not touch blackice.backends
+    import kuang.engine  # noqa: F401  — must not touch kuang.backends
 
-    assert all(not m.startswith("blackice.backends.")
-               for m in sys.modules if m.startswith("blackice"))
+    assert all(not m.startswith("kuang.backends.")
+               for m in sys.modules if m.startswith("kuang"))
 
 
 def test_the_entry_point_is_the_only_module_that_knows_both():
     """The converse: the seam exists because the CLI spans it, not by accident."""
     cli = set().union(*(_imports(p) for p in _modules("cli")))
 
-    assert any(m.startswith("blackice.engine") for m in cli)
-    assert any(m.startswith("blackice.backends") for m in cli)
+    assert any(m.startswith("kuang.engine") for m in cli)
+    assert any(m.startswith("kuang.backends") for m in cli)
 
 
 @pytest.mark.parametrize("relative, expected", [
-    ("from .findings import Finding", "blackice.engine.findings"),
-    ("from ..report import ledger_line", "blackice.report"),
-    ("from . import findings", "blackice.engine"),
+    ("from .findings import Finding", "kuang.engine.findings"),
+    ("from ..report import ledger_line", "kuang.report"),
+    ("from . import findings", "kuang.engine"),
 ])
 def test_the_checker_resolves_relative_imports(tmp_path, relative, expected, monkeypatch):
     """The check is only worth its green if it can see a relative import."""

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Agilit Ltd
 """CLI mode-selection tests (issue #6): diff mode vs path mode.
 
-Exactly one review mode is active per run. These drive ``blackice.main`` with
+Exactly one review mode is active per run. These drive ``kuang.cli.main`` with
 ``--dry-run`` so nothing spawns; the positive cases also exercise the full wiring
 (persona sourcing → ``gather`` → prompt assembly) over a throwaway git repo.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from blackice.cli import main
+from kuang.cli import main
 
 
 # --- exactly-one-mode validation --------------------------------------------

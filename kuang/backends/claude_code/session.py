@@ -6,7 +6,7 @@
 seam to the module that owns that job — ``surface`` gathers, ``spawn`` calls out,
 ``contract`` assembles and parses, ``cluster`` reduces, ``memory`` remembers.
 
-Binds ``blackice.engine.SpawnPersona`` to the ``claude`` binary in headless print
+Binds ``kuang.engine.SpawnPersona`` to the ``claude`` binary in headless print
 mode: **one ``claude -p`` subprocess per persona per epoch**, driven from the
 terminal. No SDK dependency — it shells out to the same ``claude`` the user runs,
 so it "works in Claude Code" by *being* Claude Code.
@@ -37,10 +37,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-from blackice.engine import (Cluster, EpochResult, Finding, GateDecision,
+from kuang.engine import (Cluster, EpochResult, Finding, GateDecision,
                              PersonaReport, ReviewRun, ReviewSpec, Severity)
-from blackice.engine.reduce import _identity_reduce
-from blackice.report import render_argv
+from kuang.engine.reduce import _identity_reduce
+from kuang.report import render_argv
 
 from .cluster import (_CLUSTER_MANDATE, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)

@@ -17,11 +17,11 @@ description: >-
 ## What it is
 A generalisation of the two-pass adversarial panel (see
 `two-pass-adversarial-review-pattern.md`) into a **bounded, human-convened
-iteration loop**. A deterministic Python engine (`blackice/engine/`) owns the
+iteration loop**. A deterministic Python engine (`kuang/engine/`) owns the
 control logic — halting, dedup (a coarse signature always-on, plus an opt-in
 semantic **reduce** into canonical clusters), stall detection, token/time budget,
 and the **UGLY circuit-breaker** — and binds to Claude Code via
-`blackice/backends/claude_code/`, which spawns **one `claude -p` subprocess per persona
+`kuang/backends/claude_code/`, which spawns **one `claude -p` subprocess per persona
 per epoch** (read-only: no edit tools). You (the convening `main` session) supply
 the scope, run the loop, **synthesise** its output, and gate decisions with the
 human. You are the *synthesiser, not the judge* — the human decides.
@@ -40,12 +40,12 @@ human. You are the *synthesiser, not the judge* — the human decides.
    `claude` process — it only prints the planned wiring — so it costs nothing.
    Worth doing the first time on a repo; skip it thereafter.
    ```
-   python -m blackice \
+   kuang \
      --repo <root> --base <base> --head <head> --dry-run
    ```
 3. **Run live** (each persona is a real `claude -p` subprocess — costs tokens):
    ```
-   python -m blackice \
+   kuang \
      --repo <root> --base <base> --head <head> \
      --why "<why it matters>" --what "<what changed>" \
      --max-epochs 3 --token-budget 400000 [--model <alias>] [--semantic-dedup]

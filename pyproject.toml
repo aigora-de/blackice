@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "blackice"
+name = "kuang"
 dynamic = ["version"]        # single-sourced from blackice.__version__
 description = "HITL adversarial review panel: a bounded loop of adversarial reviewer agents with a ruin-class circuit-breaker."
 readme = "README.md"
@@ -20,18 +20,18 @@ yaml = ["pyyaml>=6.0"]
 test = ["pytest>=8.0"]
 
 [project.scripts]
-blackice = "blackice.cli:main"
+kuang = "kuang.cli:main"
 
 [tool.setuptools.dynamic]
 # One source of truth for the version: the package. Read statically, no import.
-version = { attr = "blackice.__version__" }
+version = { attr = "kuang.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["blackice*"]
+include = ["kuang*"]
 
 [tool.pytest.ini_options]
-# Tests live in tests/ and mirror the package; the ``blackice`` package sits at
-# the repo root, so put the root on sys.path for imports — rootdir insertion no
-# longer covers it once tests are nested.
+# Tests live in tests/ and mirror the package; the ``kuang`` package sits at the
+# repo root, so put the root on sys.path for imports — rootdir insertion no longer
+# covers it once tests are nested.
 testpaths = ["tests"]
 pythonpath = ["."]
