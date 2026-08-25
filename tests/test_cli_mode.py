@@ -29,6 +29,11 @@ def repo(tmp_path):
     (tmp_path / "a.py").write_text("def f():\n    return 1\n")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-q", "-m", "init")
+    # A second commit, so diff mode has something real to review: a review of an
+    # empty diff is now refused outright (see tests/test_gather.py).
+    (tmp_path / "a.py").write_text("def f():\n    return 2\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "change")
     return tmp_path
 
 
@@ -61,5 +66,5 @@ def test_path_mode_accepted(repo, capsys):
 
 
 def test_diff_mode_accepted(repo):
-    rc = main(["--repo", str(repo), "--base", "HEAD", "--dry-run"])
+    rc = main(["--repo", str(repo), "--base", "HEAD~1", "--dry-run"])
     assert rc == 0

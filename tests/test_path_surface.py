@@ -14,7 +14,8 @@ import subprocess
 
 import pytest
 
-from claude_code_backend import _expand_paths, _render_file, build_path_surface
+from claude_code_backend import (SurfaceError, _expand_paths, _render_file,
+                                 build_path_surface)
 
 
 def _git(repo, *args) -> None:
@@ -116,7 +117,9 @@ def test_missing_path_is_reported(repo):
     assert "does_not_exist.py" in surface
 
 
-def test_no_reviewable_files_placeholder(repo):
-    surface = build_path_surface(repo, ["nope.py"], max_bytes=10_000)
-    assert "(no reviewable files)" in surface
-    assert "PATHS WITH NO TRACKED FILES" in surface
+def test_no_reviewable_files_raises(repo):
+    # A surface with nothing in it is an operator error, not a review: returning
+    # a placeholder let the panel "approve" it and the loop halt CONVERGED.
+    with pytest.raises(SurfaceError) as excinfo:
+        build_path_surface(repo, ["nope.py"], max_bytes=10_000)
+    assert "nope.py" in str(excinfo.value)
