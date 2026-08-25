@@ -55,6 +55,28 @@ not decide.**
 open) / **BAD** (bugs, weak logic, scope-creep — iterate or track) / **UGLY**
 (non-linear, cascading, irreversible — circuit-break; never halt with one open).
 
+## Install
+```bash
+pipx install kuang          # recommended for a CLI: its own environment, command on PATH
+pip install kuang           # or into an environment you already have
+pip install 'kuang[yaml]'   # only if a target repo defines its panel in panel.yaml
+```
+Python 3.11+. No runtime dependencies — the core is stdlib-only.
+
+**The `claude` CLI is a prerequisite, and installing this does not install it.**
+Each persona is a real `claude -p` subprocess, so the Claude Code CLI has to be on
+the machine; it is not a Python package and cannot be declared as a dependency.
+It is looked for in this order:
+
+1. `$CLAUDE_BIN`, if set and the path exists
+2. `claude` on `PATH`
+3. `~/.local/bin/claude`
+
+If none resolve, a live run currently fails with a `FileNotFoundError` traceback
+at the first spawn rather than a diagnosis ([#51](https://github.com/aigora-de/blackice/issues/51)).
+`--dry-run` spawns nothing, so it works without `claude` installed and is the
+cheapest way to confirm the rest of the wiring.
+
 ## Quickstart
 ```bash
 # Pre-flight (spawns nothing, costs nothing): confirm which personas were sourced
@@ -109,6 +131,7 @@ diff:*)`) is opt-in via `--allow-tools`. Never bare `Bash`.
 | `kuang/report.py` | presentation shared by the above (ledger lines, argv rendering) |
 | `SKILL.md` | the skill definition (how a convening agent runs it) |
 | `NOTES.md` | design notes, open decisions, backlog |
+| `RELEASING.md` | how a release is cut and published (Trusted Publishing) |
 | `two-pass-adversarial-review-pattern.md` | the pattern + origin case study |
 
 ## Status

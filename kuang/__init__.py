@@ -24,4 +24,4 @@ which is what a panel tasked to break a change is for. ``blackice`` remains the 
 of the repository it is developed in.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
