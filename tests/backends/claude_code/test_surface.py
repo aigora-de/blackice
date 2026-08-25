@@ -10,31 +10,11 @@ honouring are tested against actual ``git ls-files`` behaviour, not a mock of it
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
-from claude_code_backend import (SurfaceError, _expand_paths, _render_file,
-                                 build_path_surface)
-
-
-def _git(repo, *args) -> None:
-    subprocess.run(["git", "-C", str(repo), *args],
-                   check=True, capture_output=True, text=True)
-
-
-@pytest.fixture
-def repo(tmp_path):
-    """A minimal, committed git repo under ``tmp_path`` with a local identity."""
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "config", "user.email", "test@example.invalid")
-    _git(tmp_path, "config", "user.name", "test")
-    return tmp_path
-
-
-def _commit_all(repo, msg: str = "c") -> None:
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", msg)
+from blackice.backends.claude_code.surface import (SurfaceError, _expand_paths,
+                                                   _render_file,
+                                                   build_path_surface)
 
 
 # --- rendering: full content with citable line numbers ----------------------
@@ -50,47 +30,47 @@ def test_single_file_rendered_with_line_numbers(tmp_path):
 
 # --- directory expansion via git ls-files -----------------------------------
 
-def test_directory_expanded_via_git_ls_files(repo):
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "a.py").write_text("A = 1\n")
-    (repo / "pkg" / "b.py").write_text("B = 2\n")
-    _commit_all(repo)
-    surface = build_path_surface(repo, ["pkg"], max_bytes=10_000)
+def test_directory_expanded_via_git_ls_files(git_repo, commit_all):
+    (git_repo / "pkg").mkdir()
+    (git_repo / "pkg" / "a.py").write_text("A = 1\n")
+    (git_repo / "pkg" / "b.py").write_text("B = 2\n")
+    commit_all(git_repo)
+    surface = build_path_surface(git_repo, ["pkg"], max_bytes=10_000)
     assert "--- FILE: pkg/a.py" in surface
     assert "--- FILE: pkg/b.py" in surface
     assert "A = 1" in surface and "B = 2" in surface
 
 
-def test_gitignored_file_excluded_from_directory(repo):
+def test_gitignored_file_excluded_from_directory(git_repo, commit_all):
     """`.gitignore` is honoured for free: an ignored (untracked) file is absent."""
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "keep.py").write_text("KEEP = 1\n")
-    (repo / "pkg" / "secret.env").write_text("TOKEN=xyz\n")
-    (repo / ".gitignore").write_text("*.env\n")
-    _commit_all(repo)
-    surface = build_path_surface(repo, ["pkg"], max_bytes=10_000)
+    (git_repo / "pkg").mkdir()
+    (git_repo / "pkg" / "keep.py").write_text("KEEP = 1\n")
+    (git_repo / "pkg" / "secret.env").write_text("TOKEN=xyz\n")
+    (git_repo / ".gitignore").write_text("*.env\n")
+    commit_all(git_repo)
+    surface = build_path_surface(git_repo, ["pkg"], max_bytes=10_000)
     assert "keep.py" in surface
     assert "secret.env" not in surface
     assert "TOKEN=xyz" not in surface
 
 
-def test_expand_paths_dedups_file_and_dir_overlap(repo):
-    (repo / "pkg").mkdir()
-    (repo / "pkg" / "a.py").write_text("A = 1\n")
-    _commit_all(repo)
-    files, missing = _expand_paths(repo, ["pkg", "pkg/a.py"])
+def test_expand_paths_dedups_file_and_dir_overlap(git_repo, commit_all):
+    (git_repo / "pkg").mkdir()
+    (git_repo / "pkg" / "a.py").write_text("A = 1\n")
+    commit_all(git_repo)
+    files, missing = _expand_paths(git_repo, ["pkg", "pkg/a.py"])
     assert len(files) == 1
     assert missing == []
 
 
 # --- the total-size cap: truncate, never silently drop ----------------------
 
-def test_surface_cap_omits_and_names_dropped_file(repo):
-    (repo / "a.py").write_text("A = 1\n")
-    (repo / "b.py").write_text("B = 2\n")
-    _commit_all(repo)
+def test_surface_cap_omits_and_names_dropped_file(git_repo, commit_all):
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "b.py").write_text("B = 2\n")
+    commit_all(git_repo)
     cap = len(_render_file("a.py", "A = 1")) + 5  # room for a.py, not b.py
-    surface = build_path_surface(repo, ["a.py", "b.py"], max_bytes=cap)
+    surface = build_path_surface(git_repo, ["a.py", "b.py"], max_bytes=cap)
     assert "A = 1" in surface
     assert "B = 2" not in surface
     assert "--- OMITTED" in surface
@@ -108,18 +88,18 @@ def test_single_file_over_cap_is_truncated_in_place(tmp_path):
 
 # --- missing / untracked paths are surfaced, not swallowed -------------------
 
-def test_missing_path_is_reported(repo):
-    (repo / "real.py").write_text("R = 1\n")
-    _commit_all(repo)
-    surface = build_path_surface(repo, ["real.py", "does_not_exist.py"], max_bytes=10_000)
+def test_missing_path_is_reported(git_repo, commit_all):
+    (git_repo / "real.py").write_text("R = 1\n")
+    commit_all(git_repo)
+    surface = build_path_surface(git_repo, ["real.py", "does_not_exist.py"], max_bytes=10_000)
     assert "R = 1" in surface
     assert "PATHS WITH NO TRACKED FILES" in surface
     assert "does_not_exist.py" in surface
 
 
-def test_no_reviewable_files_raises(repo):
+def test_no_reviewable_files_raises(git_repo, commit_all):
     # A surface with nothing in it is an operator error, not a review: returning
     # a placeholder let the panel "approve" it and the loop halt CONVERGED.
     with pytest.raises(SurfaceError) as excinfo:
-        build_path_surface(repo, ["nope.py"], max_bytes=10_000)
+        build_path_surface(git_repo, ["nope.py"], max_bytes=10_000)
     assert "nope.py" in str(excinfo.value)

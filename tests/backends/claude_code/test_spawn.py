@@ -21,9 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import claude_code_backend
-from claude_code_backend import Persona, PanelSession
-from loop import ReviewSpec
+from blackice.backends.claude_code import PanelSession, Persona
+from blackice.backends.claude_code import session as backend_session
+from blackice.engine import ReviewSpec
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def captured(monkeypatch):
                                "usage": {"output_tokens": 11}}),
             stderr="")
 
-    monkeypatch.setattr(claude_code_backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend_session.subprocess, "run", fake_run)
     return calls
 
 
@@ -106,7 +106,7 @@ def test_the_result_and_token_count_are_returned(session, captured):
 
 
 def test_a_non_zero_exit_becomes_an_error_string(session, monkeypatch):
-    monkeypatch.setattr(claude_code_backend.subprocess, "run",
+    monkeypatch.setattr(backend_session.subprocess, "run",
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 7, stdout="", stderr="boom"))
 
@@ -117,7 +117,7 @@ def test_a_non_zero_exit_becomes_an_error_string(session, monkeypatch):
 
 
 def test_raw_non_json_stdout_is_tolerated(session, monkeypatch):
-    monkeypatch.setattr(claude_code_backend.subprocess, "run",
+    monkeypatch.setattr(backend_session.subprocess, "run",
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 0, stdout="just text", stderr=""))
 

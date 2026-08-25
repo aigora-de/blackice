@@ -15,51 +15,30 @@ red if the return code is ignored again.
 
 from __future__ import annotations
 
-import subprocess
-
 import pytest
 
-from blackice import main
-from claude_code_backend import PanelSession, SurfaceError
-from loop import ReviewSpec
+from blackice.backends.claude_code import PanelSession, SurfaceError
+from blackice.cli import main
+from blackice.engine import ReviewSpec
 
 
-def _git(repo, *args) -> None:
-    subprocess.run(["git", "-C", str(repo), *args],
-                   check=True, capture_output=True, text=True)
-
-
-@pytest.fixture
-def repo(tmp_path):
-    _git(tmp_path, "init", "-q")
-    _git(tmp_path, "config", "user.email", "test@example.invalid")
-    _git(tmp_path, "config", "user.name", "test")
-    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "init")
-    (tmp_path / "a.py").write_text("def f():\n    return 2\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "change")
-    return tmp_path
-
-
-def _session(repo, **kw) -> PanelSession:
-    return PanelSession(repo_root=repo, spec=ReviewSpec(why="w", what="x"),
+def _session(changed_repo, **kw) -> PanelSession:
+    return PanelSession(repo_root=changed_repo, spec=ReviewSpec(why="w", what="x"),
                         personas={}, base="HEAD~1", head="HEAD", **kw)
 
 
 # --- the defect ---------------------------------------------------------------
 
-def test_a_bad_base_ref_raises_instead_of_yielding_an_empty_surface(repo):
-    session = _session(repo)
+def test_a_bad_base_ref_raises_instead_of_yielding_an_empty_surface(changed_repo):
+    session = _session(changed_repo)
     session.base = "no-such-ref"
 
     with pytest.raises(SurfaceError):
         session.gather(1)
 
 
-def test_the_failure_names_the_refs_and_carries_git_s_own_message(repo):
-    session = _session(repo)
+def test_the_failure_names_the_refs_and_carries_git_s_own_message(changed_repo):
+    session = _session(changed_repo)
     session.base = "no-such-ref"
 
     with pytest.raises(SurfaceError) as excinfo:
@@ -70,8 +49,8 @@ def test_the_failure_names_the_refs_and_carries_git_s_own_message(repo):
     assert "unknown revision" in message     # git's diagnosis, previously discarded
 
 
-def test_the_cli_reports_the_failure_and_does_not_report_a_verdict(repo, capsys):
-    rc = main(["--repo", str(repo), "--base", "no-such-ref", "--dry-run"])
+def test_the_cli_reports_the_failure_and_does_not_report_a_verdict(changed_repo, capsys):
+    rc = main(["--repo", str(changed_repo), "--base", "no-such-ref", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc != 0, "a run that never gathered a surface must not exit success"
@@ -81,24 +60,24 @@ def test_the_cli_reports_the_failure_and_does_not_report_a_verdict(repo, capsys)
 
 # --- the happy paths stay exactly as they were --------------------------------
 
-def test_a_real_diff_is_still_gathered(repo):
-    surface = _session(repo).gather(1)
+def test_a_real_diff_is_still_gathered(changed_repo):
+    surface = _session(changed_repo).gather(1)
 
     assert "return 2" in surface
 
 
-def test_an_empty_diff_raises_rather_than_being_reviewed(repo):
+def test_an_empty_diff_raises_rather_than_being_reviewed(changed_repo):
     # Same ruin by a different road: git succeeds, the diff is empty, and the
     # panel unanimously approves a change it cannot see.
-    session = _session(repo)
+    session = _session(changed_repo)
     session.base = "HEAD"
 
     with pytest.raises(SurfaceError):
         session.gather(1)
 
 
-def test_path_mode_with_no_reviewable_files_raises(repo):
-    session = _session(repo, paths=["does_not_exist.py"])
+def test_path_mode_with_no_reviewable_files_raises(changed_repo):
+    session = _session(changed_repo, paths=["does_not_exist.py"])
 
     with pytest.raises(SurfaceError) as excinfo:
         session.gather(1)
@@ -106,7 +85,7 @@ def test_path_mode_with_no_reviewable_files_raises(repo):
     assert "does_not_exist.py" in str(excinfo.value)
 
 
-def test_path_mode_does_not_touch_the_diff_path(repo):
-    session = _session(repo, paths=["a.py"])
+def test_path_mode_does_not_touch_the_diff_path(changed_repo):
+    session = _session(changed_repo, paths=["a.py"])
 
     assert "--- FILE: a.py" in session.gather(1)

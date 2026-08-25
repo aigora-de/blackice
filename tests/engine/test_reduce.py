@@ -20,10 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from loop import (
+from blackice.engine import (
     Cluster,
     Finding,
-    FakeEnsemble,
     HaltingSet,
     HaltReason,
     PanelConfig,
@@ -31,11 +30,12 @@ from loop import (
     ReviewRun,
     ReviewSpec,
     Severity,
-    _identity_reduce,
     run,
 )
+from blackice.engine.fakes import FakeEnsemble
+from blackice.engine.reduce import _identity_reduce
 
-FIXTURE = Path(__file__).parent / "fixtures" / "generic_ledger.json"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "generic_ledger.json"
 
 
 # --- reduce test-doubles ----------------------------------------------------
@@ -90,7 +90,7 @@ def test_identity_default_is_one_cluster_per_signature():
 
 def test_demo_still_converges_under_default_reduce():
     """The end-to-end demo (default reduce) is unchanged: converges in 2 epochs."""
-    from loop import _demo
+    from blackice.engine.fakes import _demo
     review = _demo()
     assert review.halt_reason is HaltReason.CONVERGED
     assert len(review.epochs) == 2

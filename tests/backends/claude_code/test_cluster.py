@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_code_backend import PanelSession
-from loop import Finding, ReviewSpec, Severity
+from blackice.backends.claude_code import PanelSession
+from blackice.engine import Finding, ReviewSpec, Severity
 
 
 def _findings():

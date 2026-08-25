@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from claude_code_backend import parse_findings
-from loop import Severity
+from blackice.backends.claude_code.contract import parse_findings
+from blackice.engine import Severity
 
 
 def _reply(body: str) -> str:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blackice"
-version = "0.1.0"
+dynamic = ["version"]        # single-sourced from blackice.__version__
 description = "HITL adversarial review panel: a bounded loop of adversarial reviewer agents with a ruin-class circuit-breaker."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,14 +20,18 @@ yaml = ["pyyaml>=6.0"]
 test = ["pytest>=8.0"]
 
 [project.scripts]
-blackice = "blackice:main"
+blackice = "blackice.cli:main"
 
-[tool.setuptools]
-py-modules = ["loop", "claude_code_backend", "blackice"]
+[tool.setuptools.dynamic]
+# One source of truth for the version: the package. Read statically, no import.
+version = { attr = "blackice.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["blackice*"]
 
 [tool.pytest.ini_options]
-# Tests live in tests/; the flat source modules (loop, claude_code_backend,
-# blackice) sit at the repo root, so put the root on sys.path for imports —
-# rootdir insertion no longer covers them once tests are nested.
+# Tests live in tests/ and mirror the package; the ``blackice`` package sits at
+# the repo root, so put the root on sys.path for imports — rootdir insertion no
+# longer covers it once tests are nested.
 testpaths = ["tests"]
 pythonpath = ["."]

@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from claude_code_backend import PanelSession, load_prior_findings
-from loop import Finding, ReviewSpec, Severity
+from blackice.backends.claude_code import PanelSession, load_prior_findings
+from blackice.engine import Finding, ReviewSpec, Severity
 
 
 def _cli_json(findings):
