@@ -10,7 +10,7 @@ and rough edges from the first cut.
 ## Backlog (tracked issues)
 
 - **#1** — **Semantic dedup / synthesis (reduce step).** ✅ **Done** (PR #14).
-  Shipped as a dependency-injected `Reduce` seam in `blackice/engine/` with a deterministic
+  Shipped as a dependency-injected `Reduce` seam in `kuang/engine/` with a deterministic
   identity default (one cluster per signature) and an opt-in LLM clusterer
   (`--semantic-dedup`) in `backends/claude_code/cluster.py`. Findings fold into canonical
   `Cluster`s (severity = max of members, UGLY-preserving) that feed **both**
@@ -105,7 +105,7 @@ convening `main` session does the semantic synthesis (the script's signature ded
 stays a coarse backstop). Leaning toward an engine-level clusterer so
 stall/convergence is semantically accurate, not just the presentation.
 
-**What shipped:** the engine-level route. A `Reduce` seam in `blackice/engine/` (deterministic
+**What shipped:** the engine-level route. A `Reduce` seam in `kuang/engine/` (deterministic
 identity default = one cluster per signature) with the LLM clusterer in
 `backends/claude_code/cluster.py`, opt-in via `--semantic-dedup`. Signature dedup stays the
 always-on Layer 1; the cluster is a reduce/*view* over the deduped ledger, so raw

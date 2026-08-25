@@ -3,7 +3,7 @@
 """Offline test doubles: a scripted ensemble and a reference end-to-end demo.
 
 No network, no subprocess, no wall-clock — the loop can be exercised whole from
-a dict. ``python -m blackice.engine.fakes`` runs the demo.
+a dict. ``python -m kuang.engine.fakes`` runs the demo.
 """
 
 from __future__ import annotations

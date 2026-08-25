@@ -52,7 +52,7 @@ Severity ladder maps onto the good/bad/ugly framing:
 This module is the loop itself. The vocabulary it works on lives in ``findings``,
 the halting predicate in ``halting``, the seams listed above in ``protocols``, the
 default reduce in ``reduce``, and the offline ensemble in ``fakes``. The package
-``blackice.engine`` re-exports all of it, so importers need not track which
+``kuang.engine`` re-exports all of it, so importers need not track which
 sibling holds what.
 """
 

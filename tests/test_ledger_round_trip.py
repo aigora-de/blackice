@@ -21,12 +21,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from blackice.backends.claude_code import PanelSession, load_prior_findings
-from blackice.engine import Finding, ReviewSpec, Severity
+from kuang.backends.claude_code import PanelSession, load_prior_findings
+from kuang.engine import Finding, ReviewSpec, Severity
 
 
 def _cli_json(findings):
-    """The findings array exactly as ``blackice.main`` writes it under '--- JSON ---'."""
+    """The findings array exactly as ``kuang.cli.main`` writes it under '--- JSON ---'."""
     return {"findings": [
         {"persona": f.persona, "severity": f.severity.name, "title": f.title,
          "file": f.file, "line": f.line, "open": f.counts_open}
@@ -90,7 +90,7 @@ def test_a_resolved_finding_reads_as_resolved_on_both_sides(tmp_path):
 
 def test_there_is_exactly_one_renderer():
     """The property the round-trip depends on, stated directly."""
-    from blackice import report
-    from blackice.backends.claude_code import memory
+    from kuang import report
+    from kuang.backends.claude_code import memory
 
     assert memory.ledger_line is report.ledger_line

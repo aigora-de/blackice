@@ -24,10 +24,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from blackice.backends.claude_code import PanelSession, load_prior_findings
-from blackice.backends.claude_code.contract import build_prompt
-from blackice.cli import main
-from blackice.engine import Finding, ReviewSpec, Severity
+from kuang.backends.claude_code import PanelSession, load_prior_findings
+from kuang.backends.claude_code.contract import build_prompt
+from kuang.cli import main
+from kuang.engine import Finding, ReviewSpec, Severity
 
 
 _LEDGER = {

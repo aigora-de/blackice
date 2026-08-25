@@ -3,7 +3,7 @@
 """The deterministic engine: the bounded, human-convened adversarial review loop.
 
 The public surface of the engine, re-exported so importers depend on
-``blackice.engine`` rather than on which sibling module currently holds a name.
+``kuang.engine`` rather than on which sibling module currently holds a name.
 
 The engine knows nothing about any agent runtime: everything it needs arrives
 through the ``Protocol`` seams in ``protocols``. That is asserted, not merely

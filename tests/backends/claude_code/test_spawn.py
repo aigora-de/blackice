@@ -21,9 +21,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from blackice.backends.claude_code import PanelSession, Persona
-from blackice.backends.claude_code import spawn as spawn_module
-from blackice.engine import ReviewSpec
+from kuang.backends.claude_code import PanelSession, Persona
+from kuang.backends.claude_code import spawn as spawn_module
+from kuang.engine import ReviewSpec
 
 
 @pytest.fixture
@@ -170,7 +170,7 @@ def test_the_dry_run_report_and_the_real_call_cannot_disagree(session, captured,
     session.dry_run = False
     session.spawn("p", "MANDATE", "SURFACE", 1)
 
-    from blackice.report import render_argv
+    from kuang.report import render_argv
     assert render_argv(captured[0].argv) == reported
 
 

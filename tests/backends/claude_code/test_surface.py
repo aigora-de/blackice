@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from blackice.backends.claude_code.surface import (SurfaceError, _expand_paths,
+from kuang.backends.claude_code.surface import (SurfaceError, _expand_paths,
                                                    _render_file,
                                                    build_path_surface)
 
