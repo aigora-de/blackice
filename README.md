@@ -19,15 +19,16 @@ auth. A change that "looks obviously right" in a place you can't afford a bug.
 heavy and spends tokens.
 
 ## How it works
-Three files, three concerns:
-- **`blackice.py`** — the **entry point you run**. Wires a backend into the engine
-  and exposes the CLI. This is what the examples below invoke.
-- **`loop.py`** — the deterministic **engine**. Owns the control loop:
+Three subpackages, three concerns:
+- **`blackice/cli/`** — the **entry point you run** (`python -m blackice`). Wires a
+  backend into the engine and exposes the CLI. This is what the examples below invoke.
+- **`blackice/engine/`** — the deterministic **engine**. Owns the control loop:
   halting predicates, dedup/stall detection, token/time budget, and the UGLY
   circuit-breaker. Backend-agnostic (dependency-injected seams); not run directly.
-- **`claude_code_backend.py`** — a **backend**: binds the engine to the **Claude
-  Code CLI** (one `claude -p` subprocess per persona per epoch) and sources the
-  panel. A different runtime would be its own `*_backend.py`, swapped in by the
+  It imports nothing from a backend, and a test enforces that.
+- **`blackice/backends/claude_code/`** — a **backend**: binds the engine to the
+  **Claude Code CLI** (one `claude -p` subprocess per persona per epoch) and sources
+  the panel. A different runtime would be its own subpackage, swapped in by the
   entry point — the engine is unchanged.
 
 Each **epoch** fans out the panel (independent within the epoch), adjudicates
@@ -48,32 +49,32 @@ open) / **BAD** (bugs, weak logic, scope-creep — iterate or track) / **UGLY**
 ## Quickstart
 ```bash
 # Pre-flight (spawns nothing, costs nothing): confirm which personas were sourced
-python blackice.py --repo <root> --base <base> --head <head> --dry-run
+python -m blackice --repo <root> --base <base> --head <head> --dry-run
 
 # Live, read-only (the safe default)
-python blackice.py --repo <root> --base <base> --head <head> \
+python -m blackice --repo <root> --base <base> --head <head> \
   --why "why this matters" --what "what changed" --max-epochs 2
 
 # Permissioned: let reviewers verify against source / run the suite (scoped)
-python blackice.py --repo <root> --base <base> --head <head> \
+python -m blackice --repo <root> --base <base> --head <head> \
   --allow-tools Read Grep Glob 'Bash(git:*)' 'Bash(pytest:*)' --permission-mode default
 
 # Path mode: review existing code (whole files/dirs), not a diff — proactive
 # bug-hunting, or a repo with no reviewable diff. Dirs expand via git ls-files.
-python blackice.py --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
+python -m blackice --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
 
 # Semantic dedup: fold the same concept (raised by several personas, worded or
 # located differently) into one canonical issue — sharpens stall/convergence and
 # the summary. Opt-in: adds a cheap clustering call per epoch (--cluster-model to
 # pick a model); the default is a deterministic signature dedup.
-python blackice.py --repo <root> --base <base> --head <head> \
+python -m blackice --repo <root> --base <base> --head <head> \
   --semantic-dedup --max-epochs 2
 
 # Cross-run memory: seed a re-run with the previous run's ledger, so the panel
 # reports which findings the fixes actually closed instead of re-deriving them
 # cold. Takes a saved findings.json, a run's JSON output, or a raw run.log with
 # the '--- JSON ---' block in it. Both modes.
-python blackice.py --repo <root> --paths src/pkg/ \
+python -m blackice --repo <root> --paths src/pkg/ \
   --prior-findings runs/2026-01-01/run.log
 ```
 Exactly one mode per run: `--base/--head` (diff) **or** `--paths` (whole-file).
@@ -91,11 +92,12 @@ is per-epoch, not per-command. Scoped verification (`Bash(pytest:*)`, `Bash(git
 diff:*)`) is opt-in via `--allow-tools`. Never bare `Bash`.
 
 ## Layout
-| File | Role |
+| Path | Role |
 |------|------|
-| `blackice.py` | **entry point** — run this; wires a backend into the engine |
-| `loop.py` | deterministic engine (halting, dedup, budget, circuit-breaker) |
-| `claude_code_backend.py` | Claude Code CLI backend (persona sourcing, spawn/gather/gate) |
+| `blackice/cli/` | **entry point** — run this; wires a backend into the engine |
+| `blackice/engine/` | deterministic engine: `findings` · `protocols` · `halting` · `reduce` · `loop` |
+| `blackice/backends/claude_code/` | Claude Code CLI backend: `personas` · `surface` · `spawn` · `contract` · `memory` · `cluster` · `permissions` · `session` |
+| `blackice/report.py` | presentation shared by the above (ledger lines, argv rendering) |
 | `SKILL.md` | the skill definition (how a convening agent runs it) |
 | `NOTES.md` | design notes, open decisions, backlog |
 | `two-pass-adversarial-review-pattern.md` | the pattern + origin case study |

@@ -117,9 +117,9 @@ tracked?* — are just the **Converged** gate made explicit.
 ## 6. The skill (implemented)
 
 This pattern is implemented in this repository as **`blackice`**: a deterministic
-engine (`loop.py`, public API `loop.run()`) that owns the loop — halting, dedup,
+engine (`blackice/engine/`, public API `blackice.engine.run()`) that owns the loop — halting, dedup,
 stall detection, token/time budget, and the **Ugly circuit-breaker** — bound to a
-coding agent via a backend (`claude_code_backend.py`), which drives **one subagent
+coding agent via a backend (`blackice/backends/claude_code/`), which drives **one subagent
 per persona per epoch** (read-only by default). The human is the convener and the
 gate; the agent runtime supplies the fan-out; the script supplies the missing
 control loop.

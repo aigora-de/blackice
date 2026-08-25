@@ -49,9 +49,11 @@ context.
 - For a small change in a large file, present targeted snippets with clear location
   context (function name, surrounding lines) rather than a full-file dump. Use
   judgement.
-- The three concerns stay separated: **engine** (`loop.py`), **backend**
-  (`*_backend.py`), **entry point** (`blackice.py`). Don't leak backend specifics
-  into the engine, or CLI wiring into the backend.
+- The three concerns stay separated: **engine** (`blackice/engine/`), **backend**
+  (`blackice/backends/<runtime>/`), **entry point** (`blackice/cli/`). Don't leak
+  backend specifics into the engine, or CLI wiring into the backend. The engine
+  imports nothing from a backend, and `tests/engine/test_backend_agnostic.py`
+  enforces it.
 
 # NO AI ATTRIBUTION
 
@@ -59,7 +61,7 @@ Never add Claude/Anthropic/AI attribution to anything that lands in this repo �
 `Co-Authored-By` trailers, no "Generated with…" footers, in commits, PR/issue
 bodies, code, or docs. Copyright is **Agilit Ltd**; SPDX headers are
 `MIT OR Apache-2.0`. Substantive references to an agent runtime as a *tool* (this
-file, `SKILL.md`, backend names like `claude_code_backend.py`) are content and stay
+file, `SKILL.md`, backend names like `backends/claude_code/`) are content and stay
 — the ban is on attributing the *authorship* of the artefact to an AI.
 
 # PUBLIC REPO — NO SENSITIVE OR PROPRIETARY REFERENCES
@@ -89,14 +91,21 @@ doubt, genericise.
 
 # ARCHITECTURE (orientation)
 
-- `loop.py` — the engine. Public API `loop.run(...)`. Owns halting (an OR of
+- `blackice/engine/` — the engine. Public API `blackice.engine.run(...)`, with the
+  vocabulary in `findings`, the seams in `protocols`, the predicate in `halting`,
+  the default reduce in `reduce`, and the loop in `loop`. Owns halting (an OR of
   predicates, ruin checked first: `ESCALATE_UGLY` · `CONVERGED` · `BUDGET` ·
   `EPOCH` · `STALL`), semantic/coarse dedup, stall detection, token/time budget,
   and the circuit-breaker. Dependency-injected seams (`SpawnPersona`, `Adjudicate`,
   `GatherSurface`, `HumanGate`).
-- `claude_code_backend.py` — a backend: sources personas, and spawns one subagent
-  per persona per epoch. A different runtime is a different `*_backend.py`.
-- `blackice.py` — the entry point: wires a backend into the engine, exposes the CLI.
+- `blackice/backends/claude_code/` — a backend, one module per job it does:
+  `personas` (sourcing), `surface` (what gets reviewed), `spawn` (the subprocess
+  boundary), `contract` (the findings contract), `memory` (cross-epoch/cross-run),
+  `cluster` (the semantic reduce), `permissions` (deny-by-default policy), and
+  `session` (the wiring). A different runtime is a different subpackage.
+- `blackice/cli/` — the entry point: wires a backend into the engine, exposes the
+  CLI, and is the only module that imports both. `blackice/report.py` holds the
+  rendering they share.
 - See `SKILL.md` (how a convening agent runs it) and
   `two-pass-adversarial-review-pattern.md` (the pattern + prior art). Open
   decisions and backlog live in `NOTES.md`.

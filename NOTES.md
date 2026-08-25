@@ -10,9 +10,9 @@ and rough edges from the first cut.
 ## Backlog (tracked issues)
 
 - **#1** — **Semantic dedup / synthesis (reduce step).** ✅ **Done** (PR #14).
-  Shipped as a dependency-injected `Reduce` seam in `loop.py` with a deterministic
+  Shipped as a dependency-injected `Reduce` seam in `blackice/engine/` with a deterministic
   identity default (one cluster per signature) and an opt-in LLM clusterer
-  (`--semantic-dedup`) in `claude_code_backend.py`. Findings fold into canonical
+  (`--semantic-dedup`) in `backends/claude_code/cluster.py`. Findings fold into canonical
   `Cluster`s (severity = max of members, UGLY-preserving) that feed **both**
   stall/convergence and the human output; raw findings stay visible, grouped. See
   "Semantic dedup — where it should live" below for what was decided vs shipped.
@@ -28,7 +28,7 @@ and rough edges from the first cut.
 ## Make the completeness-critic and survivability personas explicit (priority)
 
 Right now these two are **auto-injected** by `_ensure_specialists()` in
-`claude_code_backend.py` from hardcoded `COMPLETENESS_CRITIC` / `SURVIVABILITY`
+`backends/claude_code/personas.py` from hardcoded `COMPLETENESS_CRITIC` / `SURVIVABILITY`
 constants, and the survivability lens is *suppressed* by a keyword match when the
 sourced set already looks like it has a ruin/survivability persona.
 
@@ -105,9 +105,9 @@ convening `main` session does the semantic synthesis (the script's signature ded
 stays a coarse backstop). Leaning toward an engine-level clusterer so
 stall/convergence is semantically accurate, not just the presentation.
 
-**What shipped:** the engine-level route. A `Reduce` seam in `loop.py` (deterministic
+**What shipped:** the engine-level route. A `Reduce` seam in `blackice/engine/` (deterministic
 identity default = one cluster per signature) with the LLM clusterer in
-`claude_code_backend.py`, opt-in via `--semantic-dedup`. Signature dedup stays the
+`backends/claude_code/cluster.py`, opt-in via `--semantic-dedup`. Signature dedup stays the
 always-on Layer 1; the cluster is a reduce/*view* over the deduped ledger, so raw
 findings stay visible. New-material and the breaker/convergence counts moved to the
 cluster level (severity = max of members → UGLY-preserving; the breaker reads
