@@ -83,19 +83,36 @@ def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
     )
 
 
+def extract_json_block(text: str) -> str | None:
+    """Return the LAST fenced ``json`` block in a reply, or ``None`` if there is none.
+
+    One implementation of the contract's extraction, shared by the findings
+    parser and the clusterer (``cluster``) — which previously wrote the same
+    regex twice, so a fix to one silently left the other.
+
+    Extraction only: what to *do* about a missing or unparseable block differs
+    legitimately between the two callers (a persona that emitted no block gets a
+    sentinel finding and a reformat retry; the clusterer falls back to the whole
+    reply and then to the identity reduce), so that tolerance stays at the call
+    site rather than being averaged into one policy here.
+    """
+    blocks = re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
+    return blocks[-1] if blocks else None
+
+
 def parse_findings(persona: str, result_text: str) -> PersonaReport:
     """Extract the fenced JSON contract from a persona's reply (defensively)."""
-    blocks = re.findall(r"```json\s*(.*?)```", result_text, re.DOTALL)
-    if not blocks:
+    block = extract_json_block(result_text)
+    if block is None:
         return PersonaReport(persona=persona, verdict=None, findings=[
             Finding(persona, "no structured output (parse failure)",
                     Severity.NOTE, "meta", evidence=result_text[:400])])
     try:
-        data = json.loads(blocks[-1])
+        data = json.loads(block)
     except json.JSONDecodeError as exc:
         return PersonaReport(persona=persona, verdict=None, findings=[
             Finding(persona, f"unparseable JSON findings: {exc}",
-                    Severity.NOTE, "meta", evidence=blocks[-1][:400])])
+                    Severity.NOTE, "meta", evidence=block[:400])])
     findings = []
     for f in data.get("findings", []):
         try:

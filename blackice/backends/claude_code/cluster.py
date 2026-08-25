@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Sequence
 
 from blackice.engine import Cluster, Finding
+
+from .contract import extract_json_block
 
 
 #
@@ -62,9 +63,13 @@ def _extract_cluster_groups(text: str) -> list[list[int]] | None:
     ``clusters``/``groups`` key or a bare list, and normalises a stray bare int to
     a singleton group. Returns None only when nothing list-shaped can be found —
     the caller then falls back to the identity reduce.
+
+    The block itself is found by ``contract.extract_json_block``: one contract,
+    one parser. Falling back to the whole reply when there is no fence is this
+    caller's own tolerance, not the extractor's.
     """
-    blocks = re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
-    raw = blocks[-1] if blocks else text
+    block = extract_json_block(text)
+    raw = text if block is None else block
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):

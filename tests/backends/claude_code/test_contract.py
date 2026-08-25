@@ -132,3 +132,24 @@ def test_a_non_numeric_line_raises_out_of_the_parser():
     """CHARACTERISATION of #25: this exception kills the whole run."""
     with pytest.raises(ValueError):
         parse_findings("p", _reply('{"findings": [{"title": "t", "line": "~120"}]}'))
+
+
+# --- one extractor for one contract (#19) -----------------------------------
+
+def test_the_extractor_returns_the_last_fenced_block():
+    from blackice.backends.claude_code.contract import extract_json_block
+
+    assert extract_json_block(_reply("A") + _reply("B")) == "B\n"
+
+
+def test_the_extractor_returns_none_when_there_is_no_fence():
+    from blackice.backends.claude_code.contract import extract_json_block
+
+    assert extract_json_block("no block here") is None
+
+
+def test_the_clusterer_uses_the_same_extractor():
+    """Two parsers for one contract meant a fix to one silently left the other."""
+    from blackice.backends.claude_code import cluster, contract
+
+    assert cluster.extract_json_block is contract.extract_json_block
