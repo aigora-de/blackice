@@ -477,6 +477,16 @@ def _groups_to_clusters(findings: Sequence[Finding],
 # Path / whole-file review surface (the non-diff gather mode)
 # =============================================================================
 
+class SurfaceError(RuntimeError):
+    """The review surface could not be assembled, so the run must not proceed.
+
+    Raised rather than returned as a placeholder: a panel handed an empty surface
+    finds nothing, votes YES, and the loop halts ``CONVERGED`` — the tool would
+    report GOOD on a review it never performed. A surface that cannot be built is
+    an operator error to be corrected, never a review with no findings.
+    """
+
+
 def _expand_paths(repo_root: Path, paths: list[str]) -> tuple[list[Path], list[str]]:
     """Expand file/dir arguments into an ordered, de-duplicated file list.
 
@@ -537,6 +547,9 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
     in an explicit OMITTED notice — never a silent truncation. A lone file that by
     itself exceeds the cap is truncated in place with a marker, so there is always
     something to review while the cap still bounds the surface.
+
+    Raises:
+        SurfaceError: None of the requested paths yielded reviewable content.
     """
     repo_root = repo_root.resolve()
     files, missing = _expand_paths(repo_root, paths)
@@ -565,7 +578,12 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
         chunks.append(rendered)
         used += len(rendered)
 
-    surface = "".join(chunks) if chunks else "(no reviewable files)"
+    if not chunks:
+        detail = f": {', '.join(missing)}" if missing else ""
+        raise SurfaceError(
+            f"no reviewable files in the requested paths{detail}. Check they exist, "
+            "are tracked by git, and are not gitignored.")
+    surface = "".join(chunks)
     if missing:
         surface += ("\n--- PATHS WITH NO TRACKED FILES (missing/untracked) ---\n"
                     + "\n".join(f"- {m}" for m in missing) + "\n")
@@ -609,12 +627,30 @@ class PanelSession:
 
     # --- gather: the review surface (re-read each epoch so fixes are visible) ---
     def gather(self, epoch: int) -> str:  # noqa: ARG002
+        """Assemble the epoch's review surface, or refuse to run.
+
+        A surface that could not be built is an operator error, never a review
+        with nothing in it: git's return code and stderr are both checked, so a
+        mistyped ref stops the run instead of handing the panel an empty string
+        to unanimously approve.
+
+        Raises:
+            SurfaceError: git failed, or the requested surface is empty.
+        """
         if self.paths:  # path mode: full content of the named files/dirs (issue #6)
             return build_path_surface(self.repo_root, self.paths, self.max_surface_bytes)
         out = subprocess.run(
             ["git", "-C", str(self.repo_root), "diff", f"{self.base}...{self.head}"],
             capture_output=True, text=True)
-        return out.stdout or "(empty diff)"
+        if out.returncode != 0:
+            raise SurfaceError(
+                f"git diff {self.base}...{self.head} failed ({out.returncode}): "
+                f"{out.stderr.strip() or 'no stderr'}")
+        if not out.stdout.strip():
+            raise SurfaceError(
+                f"git diff {self.base}...{self.head} is empty — there is nothing to "
+                "review. Check the base and head refs.")
+        return out.stdout
 
     # --- one `claude -p` call: returns (result_text, output_tokens, error) ---
     def _run_claude(self, prompt: str, mandate: str, tools: list[str],

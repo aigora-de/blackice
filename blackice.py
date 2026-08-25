@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from loop import HaltingSet, PanelConfig, ReviewSpec, run
 from claude_code_backend import (DEFAULT_DISALLOWED_TOOLS, PanelSession,
-                                 load_personas, load_prior_findings)
+                                 SurfaceError, load_personas, load_prior_findings)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -112,12 +113,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Opt-in semantic reduce; otherwise the engine's deterministic identity default.
     reduce_kwargs = {"reduce": session.reduce} if args.semantic_dedup else {}
-    review_run = run(
-        spec, halting, panel,
-        spawn=session.spawn, gather=session.gather,
-        human_gate=session.interactive_gate, checkpoint=session.on_epoch,
-        budget_spent=session.budget_spent, parallel=not args.no_parallel,
-        **reduce_kwargs)
+    try:
+        review_run = run(
+            spec, halting, panel,
+            spawn=session.spawn, gather=session.gather,
+            human_gate=session.interactive_gate, checkpoint=session.on_epoch,
+            budget_spent=session.budget_spent, parallel=not args.no_parallel,
+            **reduce_kwargs)
+    except SurfaceError as exc:
+        # No surface means no review: report the operator error and print no
+        # verdict, rather than a halt line for a panel that reviewed nothing.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     print(f"\n=== HALT: {review_run.halt_reason.value} after {len(review_run.epochs)} epoch(s) ===")
     print(f"open uglies: {len(review_run.open_uglies)} | open blockers: {len(review_run.open_blockers)}"
