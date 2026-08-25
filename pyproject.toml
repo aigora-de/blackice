@@ -1,23 +1,49 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]     # >=77 for the PEP 639 SPDX license expression
 build-backend = "setuptools.build_meta"
 
 [project]
+# kuang is the distribution, the package and the command; blackice is the repo it
+# is developed in. The import name `blackice` belongs to an unrelated PyPI project
+# that also ships a `blackice` console script from the same entry point, so
+# sharing it would merge two installs into one directory. See README.md.
 name = "kuang"
-dynamic = ["version"]        # single-sourced from blackice.__version__
-description = "HITL adversarial review panel: a bounded loop of adversarial reviewer agents with a ruin-class circuit-breaker."
+dynamic = ["version"]        # single-sourced from kuang.__version__
+description = "A human-in-the-loop adversarial review panel: a bounded loop of adversarial reviewer agents with a ruin-class circuit-breaker."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT OR Apache-2.0" }
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Agilit Ltd" }]
 keywords = ["code-review", "adversarial", "agents", "claude-code", "llm"]
+# No "License ::" classifiers: PEP 639 forbids pairing them with a license
+# expression, and setuptools>=77 rejects the combination outright.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = []  # stdlib only
+
+[project.urls]
+Homepage = "https://github.com/aigora-de/blackice"
+Repository = "https://github.com/aigora-de/blackice"
+Issues = "https://github.com/aigora-de/blackice/issues"
 
 [project.optional-dependencies]
 # Only needed if a target repo defines its panel in panel.yaml (panel.md needs nothing).
 yaml = ["pyyaml>=6.0"]
 # Test suite (stdlib-only core stays dependency-free; tests are opt-in).
 test = ["pytest>=8.0"]
+# Building and checking a distribution locally, the same way the release job does.
+release = ["build>=1.2", "twine>=5.0"]
 
 [project.scripts]
 kuang = "kuang.cli:main"
