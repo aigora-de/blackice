@@ -42,7 +42,7 @@ an archive of 18 real runs:
 | # | Epoch | Tag | What it settles |
 |---|---|---|---|
 | 1 | **Foundation** | `v0.2.0` | Package structure, one implementation per concern, installable |
-| 2 | **Instrument integrity** | `v0.3.0` | The run must not lie, degrade silently, or die — **first PyPI publish** |
+| 2 | **Instrument integrity** | `v0.3.0` | The run must not lie, degrade silently, or die — **first release fit to hand someone** |
 | 3 | **Evidence** | `v0.4.0` | Eight dogfood runs, one per core code path |
 | 4 | **Teeth** | `v0.5.0` | Adjudication, tracked residuals, mutation-verification — **the 1.0 gate** |
 | 5 | **Panel** | `v0.6.0` | Distinct lenses, declared identity, selected for the ask |
@@ -82,10 +82,22 @@ somewhere in epochs 4 and 5.
   dogfooded, plus the surface-assembly fix. It is a baseline, not a recommendation.
 - **Each epoch bumps a minor** on completion. Tags mark epoch boundaries; milestones track
   the work. There is no milestone-per-release — they would say the same thing twice.
-- **The first PyPI publish is `v0.3.0`**, at the close of epoch 2. Packaging lands in
-  epoch 1, so the capability arrives earlier than the act: being installable is not the
-  same as being fit to hand someone. Publishing before epoch 2 would distribute failure
-  modes that are invisible to anyone who did not build them.
+- **`v0.2.0` published to PyPI, ahead of this plan.** The intent recorded here was that
+  epoch 1 would end at TestPyPI and the first PyPI publish would be `v0.3.0`, because
+  being installable is not the same as being fit to hand someone. What happened instead:
+  the `v0.2.0` tag published to TestPyPI automatically, and then the required-reviewer
+  gate on the `pypi` environment was approved by hand, so `kuang 0.2.0` is on PyPI. The
+  gate worked; the approval was a deliberate act taken before its consequences were fully
+  in view. Amended here rather than quietly, per **Scope control** below.
+- **The reasoning still stands, and now attaches to `v0.3.0` differently.** Epoch 2's
+  closing act is no longer *the first publish* but **the first release we would recommend
+  installing** — the first one whose failure modes are visible to someone who did not
+  build it. Until then `kuang` on PyPI is a `0.2.x` pre-release in the strongest sense:
+  it is the instrument epoch 2 exists to make trustworthy, published early by accident of
+  process rather than by judgement that it was ready.
+- **One thing the early publish settled for good:** the distribution name is now genuinely
+  reserved. Registering a trusted publisher does not reserve a name — only publishing
+  does — so the window in which `kuang` could have been taken by someone else is closed.
 - Every release before 1.0 is a pre-release in intent: the interface will move.
 
 ### What would make this 1.0

@@ -63,6 +63,10 @@ pip install 'kuang[yaml]'   # only if a target repo defines its panel in panel.y
 ```
 Python 3.11+. No runtime dependencies — the core is stdlib-only.
 
+`0.2.0` is on PyPI, and it is early: it predates the epoch-2 work on whether a run
+can be trusted to report what it actually did. See [`ROADMAP.md`](ROADMAP.md) —
+`v0.3.0` is the first release we would recommend installing rather than reading.
+
 **The `claude` CLI is a prerequisite, and installing this does not install it.**
 Each persona is a real `claude -p` subprocess, so the Claude Code CLI has to be on
 the machine; it is not a Python package and cannot be declared as a dependency.

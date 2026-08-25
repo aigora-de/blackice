@@ -5,10 +5,17 @@ tagging, and published by `.github/workflows/release.yml` using **PyPI Trusted
 Publishing** — there is no API token in this repository, and no secret to leak or
 rotate.
 
-Per [`ROADMAP.md`](ROADMAP.md): each epoch bumps a minor on completion, and **the
-first real PyPI publish is `v0.3.0`, at the close of Epoch 2**. Being installable
-is not the same as being fit to hand someone. Until then, releases go to TestPyPI
-only — which the workflow enforces by leaving the PyPI job un-approved.
+Per [`ROADMAP.md`](ROADMAP.md), each epoch bumps a minor on completion. The plan
+was that Epoch 1 would end at TestPyPI and `v0.3.0` would be the first PyPI
+publish; in the event, `v0.2.0` went to PyPI because the `pypi` environment was
+approved by hand. `v0.3.0` remains the first release we would recommend
+installing.
+
+**Nothing reaches PyPI without a human approving the `pypi` environment on the
+run.** That approval is the whole gate — the workflow has no other brake, and it
+is irreversible once given: a version can be yanked, never re-uploaded and never
+replaced. Approve it when you mean "this is fit to hand someone", not when you
+mean "the run looks green".
 
 ---
 
