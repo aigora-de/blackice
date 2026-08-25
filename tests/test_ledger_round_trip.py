@@ -86,3 +86,11 @@ def test_a_resolved_finding_reads_as_resolved_on_both_sides(tmp_path):
 
     assert epoch_memory == "- [BLOCKER/resolved] (P2) fixed since @ a.py:3"
     assert seeded_memory == epoch_memory
+
+
+def test_there_is_exactly_one_renderer():
+    """The property the round-trip depends on, stated directly."""
+    from blackice import report
+    from blackice.backends.claude_code import memory
+
+    assert memory.ledger_line is report.ledger_line

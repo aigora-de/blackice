@@ -47,6 +47,7 @@ from .cluster import (_CLUSTER_MANDATE, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)
 from .contract import (FINDINGS_CONTRACT, _is_parse_failure, build_prompt,
                        parse_findings)
+from .memory import epoch_summary
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
 from .spawn import _resolve_claude_bin
@@ -186,12 +187,7 @@ class PanelSession:
 
     # --- checkpoint: refresh cross-epoch memory from the ledger ---
     def on_epoch(self, run: ReviewRun) -> None:
-        lines = []
-        for f in run.ledger.values():
-            state = "resolved" if not f.counts_open else "open"
-            loc = f"{f.file}:{f.line}" if f.file else "-"
-            lines.append(f"- [{f.severity.name}/{state}] ({f.persona}) {f.title} @ {loc}")
-        self.prior_summary = "\n".join(lines)
+        self.prior_summary = epoch_summary(run.ledger.values())
 
     def budget_spent(self) -> int:
         return self.tokens

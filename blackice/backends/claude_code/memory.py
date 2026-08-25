@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Iterable
+
+from blackice.engine import Finding
+from blackice.report import ledger_line
 
 
 def load_prior_findings(path: str | Path) -> str:
@@ -52,10 +56,26 @@ def load_prior_findings(path: str | Path) -> str:
     for f in findings:
         if not isinstance(f, dict):
             continue
-        state = "open" if f.get("open", True) else "resolved"
-        loc = f"{f['file']}:{f['line']}" if f.get("file") else "-"
-        lines.append(f"- [{f.get('severity', 'NOTE')}/{state}] ({f.get('persona', '?')}) "
-                     f"{f.get('title', '(untitled)')} @ {loc}")
+        # ``f["line"]`` is deliberately unguarded: a findings object carrying a
+        # "file" but no "line" raises KeyError here today, and making it tolerant
+        # would be a behaviour change, not a move. Filed for Epoch 2 with the rest
+        # of the "treat the contract payload as untrusted input" work (#25).
+        lines.append(ledger_line(
+            severity=f.get("severity", "NOTE"), is_open=f.get("open", True),
+            persona=f.get("persona", "?"), title=f.get("title", "(untitled)"),
+            file=f.get("file"), line=f["line"] if f.get("file") else None))
     if not lines:
         raise ValueError(f"{path}: findings present but none were readable.")
     return "\n".join(lines)
+
+
+def epoch_summary(findings: Iterable[Finding]) -> str:
+    """Render this run's ledger as cross-*epoch* memory for the next epoch.
+
+    The counterpart of ``load_prior_findings``: same line, same renderer, so what
+    a later run is seeded with reads exactly as what this run remembered.
+    """
+    return "\n".join(
+        ledger_line(severity=f.severity.name, is_open=f.counts_open,
+                    persona=f.persona, title=f.title, file=f.file, line=f.line)
+        for f in findings)

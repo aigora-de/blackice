@@ -195,3 +195,18 @@ def test_cli_works_in_diff_mode_too(changed_repo, tmp_path, capsys):
           "--prior-findings", str(p)])
 
     assert "prior findings" in capsys.readouterr().out.lower()
+
+
+def test_a_finding_with_a_file_but_no_line_still_raises(tmp_path):
+    """CHARACTERISATION: preserved unchanged by #19's move, not endorsed.
+
+    A findings object carrying a "file" but no "line" raises rather than
+    rendering. Making it tolerant is a behaviour change and belongs with Epoch
+    2's "treat the contract payload as untrusted input" work (#25), not here.
+    """
+    p = tmp_path / "findings.json"
+    p.write_text(json.dumps([{"persona": "P", "severity": "NOTE",
+                              "title": "t", "file": "a.py"}]))
+
+    with pytest.raises(KeyError):
+        load_prior_findings(p)
