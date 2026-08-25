@@ -23,3 +23,8 @@ env/
 dogfood*.txt
 panel-run-*.txt
 *.out
+
+# Per-issue opening prompts: local scratch, deleted when the issue closes. They
+# quote local paths and, on private work, project internals — so the guard has to
+# live here, in every clone, not in one developer's .git/info/exclude.
+ISSUE-*-PROMPT.md
