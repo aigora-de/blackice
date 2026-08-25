@@ -274,3 +274,17 @@ def test_fixture_collapses_to_canonical_issues():
     for f in findings:
         if f.severity.is_ugly:
             assert clusters[f.claim_class].severity.is_ugly
+
+
+# --- the run record's own accessors ------------------------------------------
+
+def test_converged_reports_the_halt_reason():
+    """``ReviewRun.converged`` evaluates HaltReason in its body, not in a hint.
+
+    Regression: during #19's split this property was the one thing the move got
+    wrong — ``HaltReason`` was imported for typing only, so reading ``converged``
+    raised NameError. Nothing in the suite touched it; the end-to-end demo did.
+    """
+    assert ReviewRun(halt_reason=HaltReason.CONVERGED).converged is True
+    assert ReviewRun(halt_reason=HaltReason.ESCALATE_UGLY).converged is False
+    assert ReviewRun().converged is False

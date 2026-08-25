@@ -14,10 +14,11 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:                    # annotation only; halting imports nothing here
-    from .halting import HaltReason
+# Imported at run time, not only for typing: ``ReviewRun.converged`` compares
+# against ``HaltReason.CONVERGED`` in its body. The dependency stays one-way —
+# ``halting`` imports from here for annotations only.
+from .halting import HaltReason
 
 
 class Severity(IntEnum):
