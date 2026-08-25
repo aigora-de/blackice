@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 Agilit Ltd
+#
+# The definition of "passing", in one place.
+#
+# Runs on every pull request and on pushes to main, and is *called* by
+# release.yml — so a release cannot be verified by a weaker standard than a pull
+# request. Two definitions of passing would drift, and the release one is the
+# definition consulted least often and the most expensive to have wrong.
+#
+# Actions are pinned to commit SHAs; the comment records the release, since a SHA
+# alone says nothing about how stale it is.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A pull request pushed twice in a minute does not need both runs.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one version failing should not hide the others
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package and its test extra
+        run: python -m pip install --upgrade pip && python -m pip install '.[test]'
+
+      - name: Run the suite
+        # pytest's `pythonpath = ["."]` is deliberate: the suite tests the working
+        # tree, which is what a pull request changes.
+        run: python -m pytest -q
+
+      - name: Confirm the INSTALLED distribution works, from outside the tree
+        # Deliberately run from elsewhere. In the repo root, `python -m kuang`
+        # imports the working tree via `pythonpath = ["."]` and proves nothing
+        # about what pip installed — the check would pass with the package
+        # uninstalled entirely.
+        run: |
+          cd "$(mktemp -d)"
+          kuang --help > /dev/null
+          python -m kuang --help > /dev/null
+          python -m kuang.engine.fakes
+          python - <<'PY'
+          import kuang, pathlib, sys
+          p = pathlib.Path(kuang.__file__).resolve()
+          print("imported", kuang.__version__, "from", p)
+          if "site-packages" not in p.parts:
+              sys.exit("resolved to the working tree, not the installed package")
+          PY
