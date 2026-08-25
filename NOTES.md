@@ -3,6 +3,10 @@
 Working notes kept *outside* `SKILL.md` (which stays user-facing): open decisions
 and rough edges from the first cut.
 
+> **The backlog below is superseded by [`ROADMAP.md`](ROADMAP.md)**, which organises all
+> open work into eight sequenced epochs (tracked issues #39–#46, one milestone each). The
+> notes here are kept for the design reasoning behind each item, not for its status.
+
 ## Backlog (tracked issues)
 
 - **#1** — **Semantic dedup / synthesis (reduce step).** ✅ **Done** (PR #14).

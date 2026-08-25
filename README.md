@@ -102,8 +102,10 @@ diff:*)`) is opt-in via `--allow-tools`. Never bare `Bash`.
 
 ## Status
 Experimental; dogfooded end-to-end. Semantic dedup is implemented as an opt-in
-reduce step (`--semantic-dedup`, UGLY-preserving). Open work (richer default
-personas, sandboxing) is tracked in [`NOTES.md`](NOTES.md).
+reduce step (`--semantic-dedup`, UGLY-preserving). Open work is organised into
+eight sequenced epochs in [`ROADMAP.md`](ROADMAP.md), which also states what
+would make this 1.0; the design reasoning behind individual items is in
+[`NOTES.md`](NOTES.md).
 
 ---
 Licensed under either of **MIT** ([`LICENSE-MIT`](LICENSE-MIT)) or **Apache-2.0** ([`LICENSE-APACHE`](LICENSE-APACHE)) at your option.
