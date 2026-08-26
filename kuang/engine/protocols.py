@@ -23,7 +23,13 @@ ReviewSurface = object
 
 
 class SpawnPersona(Protocol):
-    """Run one reviewer persona over the surface and return its report."""
+    """Run one reviewer persona over the surface and return its report.
+
+    An implementation may raise: the loop contains an exception from this seam as
+    a ``meta`` finding on that persona's report, so one reviewer cannot end a run
+    the panel has already been paid for (#25). It is contained, not hidden — the
+    exception reaches the run artefact as a finding.
+    """
 
     def __call__(
         self, persona: str, mandate: str, surface: ReviewSurface, epoch: int
