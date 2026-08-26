@@ -29,9 +29,19 @@ _TEMPLATE_BLOCK = f"""{{"verdict": "YES | NO",
       "file": "path/or/null", "line": 0, "evidence": "what you checked and found"}}
   ]}}"""
 
-# Compared whitespace-normalised, so a persona that re-indents the template when
-# restating it is still restating it.
-_ECHO_SIGNATURE = " ".join(_TEMPLATE_BLOCK.split())
+
+def _collapse_whitespace(text: str) -> str:
+    """Normalise a block for verbatim comparison: runs of whitespace become one.
+
+    So a persona that re-indents a template when restating it is still restating
+    it. Shared with the clusterer's own echo detector for the same reason the
+    extractor is (#19, #61): two notions of "verbatim" for two contracts is how a
+    fix to one silently leaves the other.
+    """
+    return " ".join(text.split())
+
+
+_ECHO_SIGNATURE = _collapse_whitespace(_TEMPLATE_BLOCK)
 
 # Note the deliberate absence of a fenced ``json`` marker in the prose below: the
 # contract used to name one inline, so a persona restating the contract handed the
@@ -278,28 +288,18 @@ def extract_json_blocks(text: str) -> list[str]:
     parser and the clusterer (``cluster``) — which previously wrote the same
     regex twice, so a fix to one silently left the other.
 
-    Extraction only, and the plural exists to keep it that way: choosing *which*
-    block a reply meant is a policy that differs between the callers (#26 makes
-    the findings parser skip a block that is verbatim our own template), so it
-    belongs at the call site rather than being averaged into one rule here.
+    Extraction only, and the plural is what keeps it that way: choosing *which*
+    block a reply meant is a policy that differs between the callers, and both now
+    have one. ``parse_findings`` skips a block that is verbatim the findings
+    template (#26); ``cluster._extract_cluster_groups`` skips the cluster example
+    and falls back to the whole reply when there is no fence at all (#61). Neither
+    rule is averaged into this function.
+
+    The singular ``extract_json_block`` that #19 introduced lived here until #61
+    took its last caller. It is not missed: "the last block" turned out to be the
+    thing neither caller actually wanted.
     """
     return re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
-
-
-def extract_json_block(text: str) -> str | None:
-    """Return the LAST fenced ``json`` block in a reply, or ``None`` if there is none.
-
-    The contract says the JSON block ends the reply, so the last one is what a
-    caller with no further policy should read. This is the clusterer's entry
-    point; ``parse_findings`` takes the list and applies its own selection.
-
-    Tolerance stays at the call site: what to *do* about a missing or unparseable
-    block differs legitimately between the two callers (a persona that emitted no
-    block gets a sentinel finding and a reformat retry; the clusterer falls back
-    to the whole reply and then to the identity reduce).
-    """
-    blocks = extract_json_blocks(text)
-    return blocks[-1] if blocks else None
 
 
 def _is_contract_echo(block: str) -> bool:
@@ -317,7 +317,7 @@ def _is_contract_echo(block: str) -> bool:
     its severity does not resolve, so it blocks convergence loudly rather than
     being guessed at.
     """
-    return " ".join(block.split()) == _ECHO_SIGNATURE
+    return _collapse_whitespace(block) == _ECHO_SIGNATURE
 
 
 def parse_findings(persona: str, result_text: str) -> PersonaReport:
