@@ -149,6 +149,18 @@ def main(argv: list[str] | None = None) -> int:
               f"{UNRESOLVED_SEVERITY.name}, never downgraded")
         for u in unresolved:
             print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
+    # Verdicts that were not a vote (#26). The same doctrine one field along: a
+    # value that decides whether the run may report a good verdict is reported,
+    # never absorbed, so quorum falling short is legible rather than mysterious.
+    unread_verdicts = [
+        {"epoch": e.index, "persona": r.persona, "raw": r.unresolved_verdict}
+        for e in review_run.epochs for r in e.reports
+        if r.unresolved_verdict is not None]
+    if unread_verdicts:
+        print(f"\nunresolved verdicts: {len(unread_verdicts)} — not counted "
+              f"toward quorum")
+        for u in unread_verdicts:
+            print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
     # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
     # finding stays visible above; this groups them (panel is raw material).
     if args.semantic_dedup and review_run.clusters:
@@ -165,8 +177,10 @@ def main(argv: list[str] | None = None) -> int:
         "open_blockers": len(review_run.open_blockers),
         "tokens": session.tokens,
         # Named per persona and verbatim, so a run's own artefact says which
-        # severities it escalated rather than read (#24).
+        # severities it escalated rather than read (#24), and which verdicts it
+        # declined to count as votes (#26).
         "unresolved_severities": unresolved,
+        "unresolved_verdicts": unread_verdicts,
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open}

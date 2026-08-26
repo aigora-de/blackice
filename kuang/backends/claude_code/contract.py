@@ -13,23 +13,39 @@ from __future__ import annotations
 import json
 import re
 
-from kuang.engine import Finding, PersonaReport, ReviewSpec, Severity
+from kuang.engine import (AFFIRMATIVE_VERDICT, Finding, PersonaReport,
+                          ReviewSpec, Severity)
 
 
 _SEV = "NOTE | NON_BLOCKING | BLOCKER | UGLY"
 
+# The block the contract asks for, hoisted out of the prompt so that the text we
+# ship and the text ``_is_contract_echo`` recognises are one string and cannot
+# drift apart (#26). A persona that restates the contract instead of filling it in
+# emits exactly this, and it must not be mistaken for a review.
+_TEMPLATE_BLOCK = f"""{{"verdict": "YES | NO",
+  "findings": [
+    {{"title": "...", "severity": "{_SEV}", "claim_class": "short-category",
+      "file": "path/or/null", "line": 0, "evidence": "what you checked and found"}}
+  ]}}"""
+
+# Compared whitespace-normalised, so a persona that re-indents the template when
+# restating it is still restating it.
+_ECHO_SIGNATURE = " ".join(_TEMPLATE_BLOCK.split())
+
+# Note the deliberate absence of a fenced ``json`` marker in the prose below: the
+# contract used to name one inline, so a persona restating the contract handed the
+# extraction regex an opening fence in the middle of a sentence and it captured a
+# fragment of prose instead of a payload (#26). We wrote that trip hazard; the
+# only literal fence in this string is the template's own.
 FINDINGS_CONTRACT = f"""
 ---
 OUTPUT CONTRACT (mandatory). Verify every claim against the source before making
 it — read the files, run the tests. Do NOT speculate. End your reply with EXACTLY
-one fenced ```json block and nothing after it:
+one fenced `json` block and nothing after it:
 
 ```json
-{{"verdict": "YES | NO",
-  "findings": [
-    {{"title": "...", "severity": "{_SEV}", "claim_class": "short-category",
-      "file": "path/or/null", "line": 0, "evidence": "what you checked and found"}}
-  ]}}
+{_TEMPLATE_BLOCK}
 ```
 
 Severity — write exactly one of these four, uppercase, alone in the field:
@@ -45,7 +61,12 @@ your reasons in "evidence". Anything that does not resolve to one of the four
 levels — declared ties included — is recorded verbatim and escalated to a human as
 BLOCKER; we never pick a level on your behalf.
 
-Set verdict "YES" only if you found nothing you cannot approve.
+Verdict — write exactly one word, uppercase, alone in the field: YES or NO.
+Write YES only if nothing you found gates approval — that is, if you raised
+no BLOCKER and no UGLY. Otherwise write NO. Put no qualifier, condition or
+reasoning in that field: conditions and reservations belong in the findings,
+where their severity already says whether they gate. A field holding anything
+but one of those two words is not a vote, and reaches a human verbatim.
 """
 
 # The level an unresolvable severity takes. Deliberately not NOTE (#24: a silent
@@ -61,7 +82,58 @@ UNRESOLVED_SEVERITY = Severity.BLOCKER
 _NEGATORS = frozenset({"NOT", "NO", "NEVER"})
 
 # A model-controlled string reaches the run artefact; bound what we keep of it.
-_RAW_SEVERITY_CAP = 120
+# One cap for both values we record verbatim — a severity we could not resolve
+# (#24) and a verdict that was not a vote (#26).
+_RAW_VALUE_CAP = 120
+
+# The two words that are a verdict. Anything else is not one: no prefix match, no
+# leading-label rule, no synonyms (#26). Unlike a severity, a verdict is a vote,
+# and it is not a value a decorated string can express more precisely — so nothing
+# decorated is read. The affirmative comes from the engine, which is what counts
+# the votes, so the two cannot disagree about what a YES is.
+_VERDICTS = (AFFIRMATIVE_VERDICT, "NO")
+
+
+def _tokens(raw: str) -> list[str]:
+    """The vocabulary words in a field, case- and punctuation-insensitive.
+
+    Shared by the two normalisers so that ``"  blocker "`` and ``"YES."`` are read
+    the same way; what each does with the resulting list is where they differ.
+    """
+    return [t for t in re.split(r"[^A-Z]+", raw.upper()) if t]
+
+
+def normalise_verdict(raw: str) -> str | None:
+    """Resolve a persona's verdict to a vote, or ``None`` if it is not one.
+
+    The rule is categorical: **the field holds exactly one word, and that word is
+    YES or NO**. No prose is read. ``"YES"``, ``"yes"`` and ``"YES."`` are votes;
+    ``"YES | NO"`` (the contract's own placeholder, echoed back), ``"YES, no
+    issues found"``, ``"SOUND-WITH-CONCERNS"`` and ``"MAYBE"`` are not.
+
+    Deliberately *not* ``normalise_severity``'s leading-label rule, and the
+    difference is the point. That rule exists to read a decorated value, because a
+    severity legitimately carries prose about itself and #24 sanctions a persona
+    declaring a tie. A verdict is a vote: quorum is a conjunct of CONVERGED, so
+    the strings that resolve here are exactly the strings that can make a run
+    report a good verdict, and a vote must not be decorated at all. Two literals
+    is the smallest that surface can be — there is no phrase left for a reply to
+    invent its way into.
+
+    The asymmetry is deliberate too: a verdict wrongly counted manufactures
+    CONVERGED and the run lies, while one wrongly *un*counted costs an epoch and
+    halts on EPOCH/BUDGET with every finding visible and a human deciding. So the
+    caller records what did not resolve rather than guessing at it — an
+    unrecognised verdict must not silently count, and must not silently
+    not-count either.
+
+    Returns:
+        ``AFFIRMATIVE_VERDICT``, ``"NO"``, or ``None`` if the field is not a vote.
+    """
+    tokens = _tokens(raw)
+    if len(tokens) == 1 and tokens[0] in _VERDICTS:
+        return tokens[0]
+    return None
 
 
 def normalise_severity(raw: str) -> Severity | None:
@@ -89,7 +161,7 @@ def normalise_severity(raw: str) -> Severity | None:
         The resolved ``Severity``, or ``None`` if the value names no level, or
         names more than one.
     """
-    tokens = [t for t in re.split(r"[^A-Z]+", raw.upper()) if t]
+    tokens = _tokens(raw)
     pair = "_".join(tokens[:2])
     if pair in Severity.__members__:
         label, rest = Severity[pair], tokens[2:]
@@ -199,21 +271,53 @@ def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
     )
 
 
-def extract_json_block(text: str) -> str | None:
-    """Return the LAST fenced ``json`` block in a reply, or ``None`` if there is none.
+def extract_json_blocks(text: str) -> list[str]:
+    """Return every fenced ``json`` block in a reply, in the order they appear.
 
     One implementation of the contract's extraction, shared by the findings
     parser and the clusterer (``cluster``) — which previously wrote the same
     regex twice, so a fix to one silently left the other.
 
-    Extraction only: what to *do* about a missing or unparseable block differs
-    legitimately between the two callers (a persona that emitted no block gets a
-    sentinel finding and a reformat retry; the clusterer falls back to the whole
-    reply and then to the identity reduce), so that tolerance stays at the call
-    site rather than being averaged into one policy here.
+    Extraction only, and the plural exists to keep it that way: choosing *which*
+    block a reply meant is a policy that differs between the callers (#26 makes
+    the findings parser skip a block that is verbatim our own template), so it
+    belongs at the call site rather than being averaged into one rule here.
     """
-    blocks = re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
+    return re.findall(r"```json\s*(.*?)```", text, re.DOTALL)
+
+
+def extract_json_block(text: str) -> str | None:
+    """Return the LAST fenced ``json`` block in a reply, or ``None`` if there is none.
+
+    The contract says the JSON block ends the reply, so the last one is what a
+    caller with no further policy should read. This is the clusterer's entry
+    point; ``parse_findings`` takes the list and applies its own selection.
+
+    Tolerance stays at the call site: what to *do* about a missing or unparseable
+    block differs legitimately between the two callers (a persona that emitted no
+    block gets a sentinel finding and a reformat retry; the clusterer falls back
+    to the whole reply and then to the identity reduce).
+    """
+    blocks = extract_json_blocks(text)
     return blocks[-1] if blocks else None
+
+
+def _is_contract_echo(block: str) -> bool:
+    """True if a block is the shipped template restated rather than filled in.
+
+    Exact on purpose — whitespace-normalised equality with ``_TEMPLATE_BLOCK`` and
+    nothing else. This predicate causes a block to be **skipped**, and a block
+    skipped in error is a review silently discarded, which is the defect (#26),
+    not the fix. So the only text it can ever match is text we shipped: a persona
+    cannot use it to promote a block of its choosing, because it would have to
+    make its own final block byte-equal to our template to displace it.
+
+    A paraphrased template is therefore *not* detected, deliberately. It wins its
+    block and is caught by the other guard instead: its verdict is not a vote and
+    its severity does not resolve, so it blocks convergence loudly rather than
+    being guessed at.
+    """
+    return " ".join(block.split()) == _ECHO_SIGNATURE
 
 
 def parse_findings(persona: str, result_text: str) -> PersonaReport:
@@ -223,12 +327,36 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
     every value is coerced or reported, and no shape a persona can emit reaches an
     exception. One reviewer citing ``"line": "~120"`` used to end a run that had
     already paid for every other reviewer.
+
+    Block selection is positional with exactly one exception (#26): the last
+    fenced block wins, unless it is verbatim our own template, in which case it is
+    skipped and recorded. A persona that helpfully restated the contract after its
+    review used to lose the review *and* have the literal placeholder
+    ``"YES | NO"`` counted as a YES — the whole reply discarded and a vote for
+    convergence cast in its place.
     """
-    block = extract_json_block(result_text)
-    if block is None:
+    blocks = extract_json_blocks(result_text)
+    if not blocks:
         return PersonaReport(persona=persona, verdict=None, findings=[
             Finding(persona, "no structured output (parse failure)",
                     Severity.NOTE, "meta", evidence=result_text[:400])])
+    # Scan back from the end, past our own template. Only echoes actually skipped
+    # are counted, so a reply whose last block is real reports nothing.
+    echoes = 0
+    block = None
+    for candidate in reversed(blocks):
+        if _is_contract_echo(candidate):
+            echoes += 1
+            continue
+        block = candidate
+        break
+    if block is None:
+        # Every block was the contract restated: there is no review to recover, so
+        # this takes the contract-miss path and its reformat retry rather than
+        # being read as a finding titled "..." that votes YES.
+        return _contract_violation(
+            persona, "the reply echoed the output contract without filling it in",
+            blocks[-1])
     try:
         data = json.loads(block)
     except json.JSONDecodeError as exc:
@@ -265,14 +393,14 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
             if sev is None:
                 # Never a silent downgrade (#24): escalate it AND say we did, so
                 # the operator can see the value we refused to interpret.
-                unresolved.append(str(raw)[:_RAW_SEVERITY_CAP])
+                unresolved.append(str(raw)[:_RAW_VALUE_CAP])
                 sev = UNRESOLVED_SEVERITY
         else:
             # A container is a payload shape, not a level. Reading ``["UGLY"]``
             # through ``str()`` resolved it by accident of punctuation, while
             # ``["UGLY", "BLOCKER"]`` did not — inconsistent for no reason a
             # caller could predict, so neither is read.
-            unresolved.append(repr(raw)[:_RAW_SEVERITY_CAP])
+            unresolved.append(repr(raw)[:_RAW_VALUE_CAP])
             sev = UNRESOLVED_SEVERITY
         raw_file = f.get("file")
         findings.append(Finding(
@@ -285,10 +413,32 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         findings.append(Finding(
             persona, f"{dropped} malformed finding {entries} discarded (not objects)",
             Severity.NOTE, "meta", evidence=str(raw_findings)[:400]))
-    verdict = data.get("verdict")
-    return PersonaReport(persona=persona,
-                         verdict=None if verdict is None else str(verdict),
-                         findings=findings, unresolved_severities=unresolved)
+    if echoes:
+        # Recorded, not retried: the review itself was recovered, so a second paid
+        # call would buy nothing. NOTE because it is a fact about the reply, not a
+        # claim about the code — at BLOCKER it would gate convergence, and even at
+        # NON_BLOCKING it could reset the stall counter as if it were material.
+        blocks_word = "block" if echoes == 1 else "blocks"
+        findings.append(Finding(
+            persona, f"output contract echoed: {echoes} template {blocks_word} ignored",
+            Severity.NOTE, "meta", evidence=_TEMPLATE_BLOCK[:400]))
+    # Absent or null is the default below and records nothing: a persona that
+    # claimed no verdict is not one whose verdict we misread (#26), exactly as an
+    # absent severity is not a level we got wrong.
+    raw_verdict = data.get("verdict")
+    verdict = unresolved_verdict = None
+    if isinstance(raw_verdict, (str, int, float)) and not isinstance(raw_verdict, bool):
+        verdict = normalise_verdict(str(raw_verdict))
+        if verdict is None:
+            unresolved_verdict = str(raw_verdict)[:_RAW_VALUE_CAP]
+    elif raw_verdict is not None:
+        # A container is a payload shape, not a vote, and is never normalised:
+        # ``["YES"]`` would resolve through ``str()`` by accident of punctuation,
+        # exactly as ``["UGLY"]`` did for severity (#25).
+        unresolved_verdict = repr(raw_verdict)[:_RAW_VALUE_CAP]
+    return PersonaReport(persona=persona, verdict=verdict, findings=findings,
+                         unresolved_severities=unresolved,
+                         unresolved_verdict=unresolved_verdict)
 
 
 def _is_parse_failure(report: PersonaReport) -> bool:

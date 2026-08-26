@@ -62,7 +62,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from .findings import EpochResult, Finding, PersonaReport, ReviewRun, Severity
+from .findings import (AFFIRMATIVE_VERDICT, EpochResult, Finding, PersonaReport,
+                       ReviewRun, Severity)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -226,12 +227,18 @@ def run(
         material_new = [c for c in new_clusters if c.severity >= Severity.BLOCKER]
         stall_epochs = 0 if material_new else stall_epochs + 1
 
-        # str(): a backend may hand back a non-string verdict, and the quorum count
-        # is outside the spawn seam's guard — a crash here would end the run (#25).
-        # A report with no verdict is not a YES, which is what keeps a crashed or
-        # unreadable persona from helping produce a CONVERGED verdict.
+        # A vote is the word, or it is not a vote (#26). The count used to be a
+        # prefix match, so the contract's own placeholder "YES | NO" voted for
+        # convergence — and so would any hedge a persona chose to open with. This
+        # is the last line, not the only one: a backend normalises its own replies,
+        # but the engine takes any SpawnPersona and must not be talked into a good
+        # verdict by one. str() because a backend may hand back a non-string
+        # verdict and the quorum count sits outside the spawn seam's guard — a
+        # crash here would end the run (#25). A report with no verdict is not a
+        # YES, which is what keeps a crashed or unreadable persona from helping
+        # produce a CONVERGED verdict.
         yes_votes = sum(1 for r in reports
-                        if str(r.verdict or "").upper().startswith("YES"))
+                        if str(r.verdict or "").strip().upper() == AFFIRMATIVE_VERDICT)
         quorum_met = yes_votes >= quorum
 
         result.halt = _evaluate_halt(

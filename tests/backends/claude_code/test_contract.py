@@ -8,8 +8,8 @@ which gives the fenced-JSON extraction exactly one implementation shared with th
 clusterer — could not change it unnoticed. The parser had no direct coverage at
 all before it, so three of #19's four consolidations had no oracle.
 
-Both defects it pinned are now fixed, and both characterisation tests were
-rewritten rather than updated:
+Both defects it pinned are now fixed — their characterisation tests were
+rewritten rather than updated — and a third has since been fixed here:
 
 * an unresolvable severity no longer silently becomes ``NOTE`` (#24). A decorated
   ``UGLY`` keeps the circuit-breaker; a value the vocabulary cannot resolve is
@@ -17,6 +17,10 @@ rewritten rather than updated:
 * a model-shaped ``line`` no longer raises out of the parser (#25). Nothing in a
   contract payload can raise now: the whole thing is untrusted input, coerced or
   reported, because one persona's reply used to be able to kill a paid run.
+* an echoed output contract no longer discards the review it followed, nor votes
+  (#26). Block selection skips a block that is verbatim our own template, and the
+  verdict is categorical: one word, ``YES`` or ``NO``, or it is not a vote. This
+  one had no characterisation test — it was found by reading, not by the suite.
 
 So nothing here characterises a defect any more; each test goes red without its
 fix. The contract payload is model-produced, which is why so many of these read
@@ -31,6 +35,7 @@ import pytest
 
 from kuang.backends.claude_code.contract import (FINDINGS_CONTRACT,
                                                  UNRESOLVED_SEVERITY,
+                                                 _TEMPLATE_BLOCK,
                                                  _is_parse_failure,
                                                  parse_findings)
 from kuang.engine import Severity
@@ -349,18 +354,6 @@ def test_a_non_scalar_severity_is_unresolved_not_stringified(raw):
     assert report.unresolved_severities == [repr(raw)[:120]]
 
 
-@pytest.mark.parametrize("raw, expected", [
-    ('{"x": 1}', "{'x': 1}"),
-    ('3', "3"),
-    ('["YES"]', "['YES']"),
-])
-def test_a_non_string_verdict_is_coerced_not_left_to_the_loop(raw, expected):
-    """It raised in the loop's quorum count, where no seam guard can see it."""
-    report = parse_findings("p", _reply('{"verdict": %s, "findings": []}' % raw))
-
-    assert report.verdict == expected
-
-
 def test_a_non_string_file_is_coerced():
     report = parse_findings("p", _one_finding(file={"path": "a.py"}, line=3))
 
@@ -386,3 +379,218 @@ def test_the_clusterer_uses_the_same_extractor():
     from kuang.backends.claude_code import cluster, contract
 
     assert cluster.extract_json_block is contract.extract_json_block
+
+
+# --- an echoed output contract (#26) -----------------------------------------
+
+def test_an_echoed_template_does_not_discard_the_real_review():
+    """REGRESSION for #26: the template parsed, so ``blocks[-1]`` took it.
+
+    Both halves of the defect are here: the persona's findings came back empty
+    and the literal placeholder ``'YES | NO'`` was counted as a YES.
+    """
+    real = _reply('{"verdict": "NO", "findings": [{"title": "unbounded retry", '
+                  '"severity": "UGLY", "claim_class": "ruin", "file": "r.py", '
+                  '"line": 12, "evidence": "read it"}]}')
+
+    report = parse_findings("adversary", real + "\nFor reference, the contract was:\n"
+                            + _reply(_TEMPLATE_BLOCK))
+
+    assert [f.title for f in report.findings if f.claim_class != "meta"] == [
+        "unbounded retry"]
+    assert report.verdict == "NO"
+    assert report.unresolved_severities == []
+
+
+def test_the_whole_contract_pasted_back_does_not_discard_the_review():
+    """The other echo shape: the contract restated in full, prose included.
+
+    It used to behave differently only by accident — the contract's own prose
+    named a fenced ``json`` block *inline*, so the extraction regex opened on
+    that mention and closed on the template's fence, capturing a fragment of
+    prose. We wrote that trip hazard ourselves; the contract no longer contains
+    it, so this collapses into the case above.
+    """
+    real = _reply('{"verdict": "NO", "findings": [{"title": "real", '
+                  '"severity": "BLOCKER", "claim_class": "logic"}]}')
+
+    report = parse_findings("adversary", real + "\n" + FINDINGS_CONTRACT)
+
+    assert [f.title for f in report.findings if f.claim_class != "meta"] == ["real"]
+    assert report.verdict == "NO"
+
+
+def test_a_reply_that_is_only_an_echo_is_a_contract_violation():
+    """No review to recover, so it takes the retry path — and casts no vote."""
+    report = parse_findings("p", "Understood. " + _reply(_TEMPLATE_BLOCK))
+
+    assert _is_parse_failure(report)
+    assert report.verdict is None
+    assert "echo" in report.findings[0].title
+
+
+def test_the_shipped_contract_echoed_whole_is_recognised():
+    """Anti-drift, end to end: the detector is fed the contract we actually ship.
+
+    It goes red if the template in the prompt and the block the detector knows
+    ever part company — which is why they are one constant, not two.
+    """
+    report = parse_findings("p", "Here is the contract:\n" + FINDINGS_CONTRACT)
+
+    assert _is_parse_failure(report)
+    assert report.verdict is None
+
+
+def test_the_shipped_contract_carries_exactly_the_block_the_detector_knows():
+    assert FINDINGS_CONTRACT.count("```json") == 1
+    assert _TEMPLATE_BLOCK in FINDINGS_CONTRACT
+
+
+def test_an_ignored_echo_is_recorded_but_cannot_read_as_new_material():
+    """Said out loud (#24's doctrine), at NOTE so it cannot reset the stall counter."""
+    real = _reply('{"verdict": "NO", "findings": [{"title": "real", '
+                  '"severity": "BLOCKER", "claim_class": "logic"}]}')
+
+    report = parse_findings("p", real + _reply(_TEMPLATE_BLOCK))
+
+    echoes = [f for f in report.findings if f.claim_class == "meta"]
+    assert len(echoes) == 1
+    assert "echo" in echoes[0].title
+    assert echoes[0].severity is Severity.NOTE
+
+
+def test_a_block_that_only_resembles_the_template_still_wins():
+    """The skip rule is exact on purpose: only text we shipped is ever skipped.
+
+    A paraphrase is not silently guessed at — it wins its block, and the verdict
+    guard is what stops it voting. Widening this into "the last block that looks
+    plausible" is how an earlier, stale block gets promoted over a real one.
+    """
+    real = _reply('{"verdict": "NO", "findings": [{"title": "real", '
+                  '"severity": "BLOCKER", "claim_class": "logic"}]}')
+    near = _reply('{"verdict": "YES | NO", "findings": [{"title": "...", '
+                  '"severity": "NOTE | NON_BLOCKING | BLOCKER | UGLY"}]}')
+
+    report = parse_findings("p", real + near)
+
+    assert "real" not in [f.title for f in report.findings]
+    assert report.verdict is None                    # ...but it does not vote
+    assert report.unresolved_verdict == "YES | NO"
+
+
+# --- the verdict is categorical (#26) ----------------------------------------
+
+@pytest.mark.parametrize("raw, expected", [
+    ("YES", "YES"),
+    ("yes", "YES"),
+    ("  YES  ", "YES"),
+    ("YES.", "YES"),                              # trailing punctuation, one word
+    ("'NO'", "NO"),
+    ("no", "NO"),
+])
+def test_one_word_from_the_vocabulary_is_the_vote(raw, expected):
+    report = parse_findings("p", _reply(json.dumps({"verdict": raw, "findings": []})))
+
+    assert report.verdict == expected
+    assert report.unresolved_verdict is None
+
+
+@pytest.mark.parametrize("raw", [
+    "YES | NO",                                   # the contract template, echoed
+    "YES/NO",
+    "YES, no issues found",                       # prose, however affirmative
+    "YES — nothing blocking",
+    "SOUND-WITH-CONCERNS",
+    "MAYBE", "NO UNLESS", "APPROVE", "LGTM", "Y",
+    "", "   ",
+])
+def test_anything_that_is_not_one_of_the_two_words_does_not_vote(raw):
+    """No prose is read. The vote surface is two literals and nothing else.
+
+    Both halves matter: it must not silently count, and it must not silently
+    *not*-count either — the raw value is kept verbatim for a human.
+    """
+    report = parse_findings("p", _reply(json.dumps({"verdict": raw, "findings": []})))
+
+    assert report.verdict is None
+    assert report.unresolved_verdict == raw
+
+
+def test_an_absent_verdict_records_nothing():
+    """The boundary: a persona that claimed no verdict is not one we misread."""
+    report = parse_findings("p", _reply('{"findings": []}'))
+
+    assert report.verdict is None
+    assert report.unresolved_verdict is None
+
+
+def test_a_null_verdict_records_nothing():
+    report = parse_findings("p", _reply('{"verdict": null, "findings": []}'))
+
+    assert report.verdict is None
+    assert report.unresolved_verdict is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('{"x": 1}', "{'x': 1}"),
+    ('3', "3"),
+    ('["YES"]', "['YES']"),
+    ('true', "True"),
+])
+def test_a_non_string_verdict_is_unresolved_and_recorded(raw, expected):
+    """It used to reach the loop's quorum count as a string and vote on ``str()``.
+
+    ``['YES']`` resolved by accident of punctuation, exactly as ``["UGLY"]`` did
+    for severity (#25). The loop keeps its own ``str()`` guard, tested against a
+    backend that returns a non-string verdict directly — see
+    ``tests/engine/test_quorum.py``.
+    """
+    report = parse_findings("p", _reply('{"verdict": %s, "findings": []}' % raw))
+
+    assert report.verdict is None
+    assert report.unresolved_verdict == expected
+
+
+def test_a_recorded_raw_verdict_is_capped():
+    """A model-controlled string reaches the run artefact; bound it there."""
+    report = parse_findings("p", _reply(json.dumps({"verdict": "Z" * 500})))
+
+    assert report.unresolved_verdict == "Z" * 120
+
+
+def test_the_contract_asks_for_the_verdict_the_parser_reads():
+    """The prompt side, because a categorical field we never explained is a trap."""
+    assert "exactly one word" in FINDINGS_CONTRACT
+    assert "no BLOCKER and no UGLY" in FINDINGS_CONTRACT
+
+
+def test_the_extractor_returns_every_fenced_block():
+    from kuang.backends.claude_code.contract import extract_json_blocks
+
+    assert extract_json_blocks(_reply("A") + _reply("B")) == ["A\n", "B\n"]
+    assert extract_json_blocks("no block here") == []
+
+
+def test_an_echo_before_the_real_block_is_not_reported():
+    """Only echoes actually skipped are counted; the last block still wins."""
+    real = _reply('{"verdict": "NO", "findings": [{"title": "real", '
+                  '"severity": "BLOCKER", "claim_class": "logic"}]}')
+
+    report = parse_findings("p", _reply(_TEMPLATE_BLOCK) + real)
+
+    assert [f.title for f in report.findings] == ["real"]
+    assert report.verdict == "NO"
+
+
+def test_an_echo_after_an_empty_review_takes_the_retry():
+    """A stated interaction, pinned rather than special-cased.
+
+    An empty payload plus an echo leaves a report with no verdict and one ``meta``
+    finding — which is the shape ``_is_parse_failure`` keys on, so ``session.spawn``
+    reformats. Benign: the review it would discard is empty, and one cheap call to
+    ask a persona that echoed the contract to restate its findings is the retry
+    doing its job.
+    """
+    report = parse_findings("p", _reply('{"findings": []}') + _reply(_TEMPLATE_BLOCK))
+
+    assert _is_parse_failure(report)
