@@ -2,24 +2,25 @@
 # Copyright (c) 2026 Agilit Ltd
 """Tests for the findings contract parser (``parse_findings``).
 
-The file began as a CHARACTERISATION set written during #19: it pinned what the
-parser did **then**, bugs included, so that the restructure — which gives the
-fenced-JSON extraction exactly one implementation shared with the clusterer —
-could not change it unnoticed. The parser had no direct coverage at all before it,
-so three of #19's four consolidations had no oracle.
+Regression tests. The file began as a CHARACTERISATION set written during #19: it
+pinned what the parser did **then**, bugs included, so that the restructure —
+which gives the fenced-JSON extraction exactly one implementation shared with the
+clusterer — could not change it unnoticed. The parser had no direct coverage at
+all before it, so three of #19's four consolidations had no oracle.
 
-One of the two defects it pinned is now fixed, and its characterisation test was
+Both defects it pinned are now fixed, and both characterisation tests were
 rewritten rather than updated:
 
 * an unresolvable severity no longer silently becomes ``NOTE`` (#24). A decorated
   ``UGLY`` keeps the circuit-breaker; a value the vocabulary cannot resolve is
   escalated to ``UNRESOLVED_SEVERITY`` and **recorded**, never quietly downgraded.
-  Those are regression tests: each goes red without the fix.
+* a model-shaped ``line`` no longer raises out of the parser (#25). Nothing in a
+  contract payload can raise now: the whole thing is untrusted input, coerced or
+  reported, because one persona's reply used to be able to kill a paid run.
 
-One characterisation test remains, pinning a defect that is still open:
-
-* a non-numeric ``line`` raises out of the parser (#25 — one persona's reply can
-  kill a paid run). It is that issue's oracle; leave it as it is until #25.
+So nothing here characterises a defect any more; each test goes red without its
+fix. The contract payload is model-produced, which is why so many of these read
+like abuse — they are the shapes a reasonable reviewer actually emits.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import pytest
 
 from kuang.backends.claude_code.contract import (FINDINGS_CONTRACT,
                                                  UNRESOLVED_SEVERITY,
+                                                 _is_parse_failure,
                                                  parse_findings)
 from kuang.engine import Severity
 
@@ -87,11 +89,30 @@ def test_missing_fields_take_their_defaults():
     (None, None),
     ("", None),
     ("17", 17),           # a numeric string is coerced
+    # --- #25: model-shaped locations. Each of the first five raised. ---
+    ("~120", 120),        # an approximate location
+    ("42-58", 42),        # a range: a human looks at the start of it
+    ("L42", 42),          # a prefixed location
+    ("line 42", 42),
+    ("12.7", 12),         # a float as a string (a real float already truncated)
+    (12.7, 12),
+    ([1, 2], None),       # a container names no single line
+    ({"a": 1}, None),
+    (True, None),         # bool is an int subclass — never line 1
+    ("no idea", None),
+    ("0", None),          # "0" and 0 now agree
+    (-5, None),           # a line is a positive integer or it is absent
+    ("-5", 5),            # ...and the minus is punctuation, not a sign
 ])
 def test_line_coercion(raw, expected):
-    report = parse_findings("p", _reply(
-        '{"findings": [{"title": "t", "line": %s}]}' % ("null" if raw is None
-                                                        else repr(raw).replace("'", '"'))))
+    """A location is advisory, so it is read best-effort — but never fatally.
+
+    Best-effort here and refusal-to-guess for severity (#24) are the same
+    doctrine, not opposite ones: severity drives the breaker and the convergence
+    gate, a location drives nothing. ``Finding.key`` buckets it by ``// 10``
+    precisely because it is approximate.
+    """
+    report = parse_findings("p", _one_finding(line=raw))
 
     assert report.findings[0].line == expected
 
@@ -244,12 +265,106 @@ def test_the_contract_sanctions_an_undecided_persona():
     assert "BLOCKER/UGLY" in FINDINGS_CONTRACT
 
 
-# --- pinned defect: still open (see the module docstring) -------------------
+# --- the payload is untrusted input, everywhere (#25) -----------------------
 
-def test_a_non_numeric_line_raises_out_of_the_parser():
-    """CHARACTERISATION of #25: this exception kills the whole run."""
-    with pytest.raises(ValueError):
-        parse_findings("p", _reply('{"findings": [{"title": "t", "line": "~120"}]}'))
+def test_a_model_shaped_line_does_not_kill_the_run():
+    """REGRESSION for #25: this raised, out of a worker thread, killing the run."""
+    report = parse_findings("p", _one_finding(line="~120", title="approximate"))
+
+    assert report.findings[0].line == 120
+    assert report.findings[0].title == "approximate"
+
+
+@pytest.mark.parametrize("payload", [
+    '{"findings": "none"}',                 # a string
+    '{"findings": {"a": 1}}',               # an object
+    '{"findings": 3}',                      # a number
+    '{"findings": true}',
+    '[{"title": "t"}]',                     # the payload itself is a list
+    '"all good"',                           # ...or a string
+    '42',                                   # ...or a number
+])
+def test_an_unusable_payload_becomes_the_contract_miss_sentinel(payload):
+    """Unreachable findings take the path that already exists — and its retry.
+
+    ``_is_parse_failure`` keys on this shape, so ``session.spawn`` reformats the
+    reply into the contract instead of discarding the review.
+    """
+    report = parse_findings("p", _reply(payload))
+
+    assert _is_parse_failure(report)
+    assert report.verdict is None
+    assert report.findings[0].claim_class == "meta"
+    assert "contract violated" in report.findings[0].title
+
+
+@pytest.mark.parametrize("payload", [
+    '{"verdict": "YES"}',                   # reviewed, found nothing
+    '{"verdict": "YES", "findings": null}',
+    '{"verdict": "YES", "findings": []}',
+])
+def test_a_clean_review_is_not_a_contract_violation(payload):
+    """The regression the shape guard could most easily cause.
+
+    A persona that found nothing omits ``findings`` and votes YES. Reading that
+    as malformed would cost a second paid call, discard the vote, and make
+    CONVERGED unreachable for a healthy panel — see
+    ``tests/engine/test_seam_isolation.py``, which pins the loop half.
+    """
+    report = parse_findings("p", _reply(payload))
+
+    assert report.findings == []
+    assert report.verdict == "YES"
+    assert not _is_parse_failure(report)
+
+
+def test_a_malformed_entry_loses_itself_not_the_reply():
+    report = parse_findings("p", _reply(json.dumps({"verdict": "NO", "findings": [
+        {"title": "a real finding", "severity": "BLOCKER"},
+        "just a sentence",
+        None,
+        {"title": "another real one"}]})))
+
+    titles = [f.title for f in report.findings]
+    assert "a real finding" in titles and "another real one" in titles
+    dropped = [f for f in report.findings if f.claim_class == "meta"]
+    assert len(dropped) == 1
+    assert "2" in dropped[0].title, dropped[0].title
+    assert report.verdict == "NO"        # the rest of the reply still counts
+
+
+def test_a_dropped_entry_cannot_reset_the_stall_counter():
+    """The record of a dropped claim must not read as new material."""
+    report = parse_findings("p", _reply('{"findings": ["nonsense"]}'))
+
+    assert report.findings[0].severity is Severity.NOTE
+
+
+@pytest.mark.parametrize("raw", [["UGLY"], ["UGLY", "BLOCKER"], {"level": "UGLY"}])
+def test_a_non_scalar_severity_is_unresolved_not_stringified(raw):
+    """``str(["UGLY"])`` used to resolve to UGLY by accident of punctuation."""
+    report = parse_findings("p", _one_finding(severity=raw))
+
+    assert report.findings[0].severity is UNRESOLVED_SEVERITY
+    assert report.unresolved_severities == [repr(raw)[:120]]
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('{"x": 1}', "{'x': 1}"),
+    ('3', "3"),
+    ('["YES"]', "['YES']"),
+])
+def test_a_non_string_verdict_is_coerced_not_left_to_the_loop(raw, expected):
+    """It raised in the loop's quorum count, where no seam guard can see it."""
+    report = parse_findings("p", _reply('{"verdict": %s, "findings": []}' % raw))
+
+    assert report.verdict == expected
+
+
+def test_a_non_string_file_is_coerced():
+    report = parse_findings("p", _one_finding(file={"path": "a.py"}, line=3))
+
+    assert report.findings[0].file == "{'path': 'a.py'}"
 
 
 # --- one extractor for one contract (#19) -----------------------------------

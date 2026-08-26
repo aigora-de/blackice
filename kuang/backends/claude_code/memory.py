@@ -56,14 +56,16 @@ def load_prior_findings(path: str | Path) -> str:
     for f in findings:
         if not isinstance(f, dict):
             continue
-        # ``f["line"]`` is deliberately unguarded: a findings object carrying a
-        # "file" but no "line" raises KeyError here today, and making it tolerant
-        # would be a behaviour change, not a move. Filed for Epoch 2 with the rest
-        # of the "treat the contract payload as untrusted input" work (#25).
+        # Every field is read tolerantly (#25): an artefact carrying a "file" but
+        # no "line" used to raise KeyError here and take the seeded re-run down at
+        # startup — the one moment an operator has least context to read a
+        # traceback. A missing line renders exactly as an absent one does on the
+        # other side of the round trip, which is what keeps the two renderers
+        # byte-identical.
         lines.append(ledger_line(
             severity=f.get("severity", "NOTE"), is_open=f.get("open", True),
             persona=f.get("persona", "?"), title=f.get("title", "(untitled)"),
-            file=f.get("file"), line=f["line"] if f.get("file") else None))
+            file=f.get("file"), line=f.get("line") if f.get("file") else None))
     if not lines:
         raise ValueError(f"{path}: findings present but none were readable.")
     return "\n".join(lines)

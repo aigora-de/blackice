@@ -88,6 +88,21 @@ def test_a_resolved_finding_reads_as_resolved_on_both_sides(tmp_path):
     assert seeded_memory == epoch_memory
 
 
+def test_a_seed_whose_finding_has_no_line_key_still_loads(tmp_path):
+    """REGRESSION for #25: ``f["line"]`` raised KeyError on that artefact.
+
+    An artefact written by anything other than this CLI — or by a future version
+    that omits an absent field — used to take the seeded re-run down at startup,
+    which is the one moment the operator has the least context to interpret it.
+    """
+    path = tmp_path / "prior.json"
+    path.write_text(json.dumps({"findings": [
+        {"persona": "P1", "severity": "BLOCKER", "title": "t", "file": "a.py",
+         "open": True}]}))
+
+    assert load_prior_findings(path) == "- [BLOCKER/open] (P1) t @ a.py:None"
+
+
 def test_there_is_exactly_one_renderer():
     """The property the round-trip depends on, stated directly."""
     from kuang import report

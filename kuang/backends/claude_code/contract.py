@@ -106,6 +106,54 @@ def normalise_severity(raw: str) -> Severity | None:
     return label
 
 
+def _coerce_line(raw: object) -> int | None:
+    """Read a location best-effort: the first integer in the value, or ``None``.
+
+    Model-shaped locations are ordinary — ``"~120"``, ``"42-58"``, ``"L42"`` — and
+    every one of them used to raise ``ValueError`` out of a worker thread and kill
+    the run (#25). So: the first run of digits wins (a range yields its start,
+    which is where a human looks), a container or a value with no digits yields no
+    line, and ``bool`` is rejected explicitly because it is an ``int`` subclass and
+    ``true`` is not line 1 — the same trap ``cluster._extract_cluster_groups``
+    guards against.
+
+    Best-effort here and refuse-to-guess for severity (``normalise_severity``) are
+    one doctrine, not two: severity feeds the circuit-breaker and the convergence
+    gate, so guessing it can lose ruin or manufacture a halt, while a location
+    drives nothing — ``Finding.key`` buckets it by ``// 10`` precisely because it
+    is approximate, and a carried-in location is labelled advisory (``memory``).
+
+    A line is a positive integer or it is absent: ``0`` and ``"0"`` now agree (both
+    mean "no line"), and a negative number is no line rather than a nonsense one.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        n = int(raw)
+    elif isinstance(raw, str):
+        match = re.search(r"\d+", raw)
+        if match is None:
+            return None
+        n = int(match.group())
+    else:
+        return None                      # a list or object names no single line
+    return n if n > 0 else None
+
+
+def _contract_violation(persona: str, what: str, evidence: str) -> PersonaReport:
+    """The contract-miss sentinel, for a payload whose findings are unreachable.
+
+    Deliberately the shape ``_is_parse_failure`` keys on, so ``session.spawn``
+    fires its existing reformat retry and the review is recovered rather than
+    discarded. ``verdict`` is dropped with it: a reply we could not read must not
+    vote (quorum counts YES votes), which is what stops an unparseable persona
+    contributing to a good verdict.
+    """
+    return PersonaReport(persona=persona, verdict=None, findings=[
+        Finding(persona, f"findings contract violated: {what}",
+                Severity.NOTE, "meta", evidence=evidence[:400])])
+
+
 def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
                  surface_kind: str = "diff", seeded: str = "") -> str:
     """Assemble the per-epoch review task handed to every persona.
@@ -169,7 +217,13 @@ def extract_json_block(text: str) -> str | None:
 
 
 def parse_findings(persona: str, result_text: str) -> PersonaReport:
-    """Extract the fenced JSON contract from a persona's reply (defensively)."""
+    """Parse a persona's reply into a report. Never raises (#25).
+
+    The whole payload is model-produced, so it is treated as untrusted input:
+    every value is coerced or reported, and no shape a persona can emit reaches an
+    exception. One reviewer citing ``"line": "~120"`` used to end a run that had
+    already paid for every other reviewer.
+    """
     block = extract_json_block(result_text)
     if block is None:
         return PersonaReport(persona=persona, verdict=None, findings=[
@@ -181,26 +235,59 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         return PersonaReport(persona=persona, verdict=None, findings=[
             Finding(persona, f"unparseable JSON findings: {exc}",
                     Severity.NOTE, "meta", evidence=block[:400])])
+    if not isinstance(data, dict):
+        return _contract_violation(
+            persona, f"the payload was a {type(data).__name__}, not an object", block)
+    # Absent or null means "I found nothing" — a clean review, and the commonest
+    # reply we hope to see. Only a PRESENT, non-list value is a violation: reading
+    # an empty review as malformed would cost a second call, discard the persona's
+    # YES, and put CONVERGED out of reach for a healthy panel.
+    raw_findings = data.get("findings")
+    if raw_findings is None:
+        raw_findings = []
+    if not isinstance(raw_findings, list):
+        return _contract_violation(
+            persona, f"'findings' was a {type(raw_findings).__name__}, not a list",
+            block)
+
     findings = []
     unresolved: list[str] = []
-    for f in data.get("findings", []):
+    dropped = 0
+    for f in raw_findings:
+        if not isinstance(f, dict):
+            dropped += 1        # one unusable entry loses itself, not the reply
+            continue
         raw = f.get("severity")
         if raw is None:
             sev = Severity.NOTE     # nothing was claimed, so nothing was misread
-        else:
+        elif isinstance(raw, (str, int, float)) and not isinstance(raw, bool):
             sev = normalise_severity(str(raw))
             if sev is None:
                 # Never a silent downgrade (#24): escalate it AND say we did, so
                 # the operator can see the value we refused to interpret.
                 unresolved.append(str(raw)[:_RAW_SEVERITY_CAP])
                 sev = UNRESOLVED_SEVERITY
-        line = f.get("line") or None
+        else:
+            # A container is a payload shape, not a level. Reading ``["UGLY"]``
+            # through ``str()`` resolved it by accident of punctuation, while
+            # ``["UGLY", "BLOCKER"]`` did not — inconsistent for no reason a
+            # caller could predict, so neither is read.
+            unresolved.append(repr(raw)[:_RAW_SEVERITY_CAP])
+            sev = UNRESOLVED_SEVERITY
+        raw_file = f.get("file")
         findings.append(Finding(
             persona=persona, title=str(f.get("title", "")), severity=sev,
             claim_class=str(f.get("claim_class", "uncategorised")),
-            file=f.get("file") or None, line=int(line) if line else None,
+            file=str(raw_file) if raw_file else None, line=_coerce_line(f.get("line")),
             evidence=str(f.get("evidence", ""))))
-    return PersonaReport(persona=persona, verdict=data.get("verdict"),
+    if dropped:
+        entries = "entry" if dropped == 1 else "entries"
+        findings.append(Finding(
+            persona, f"{dropped} malformed finding {entries} discarded (not objects)",
+            Severity.NOTE, "meta", evidence=str(raw_findings)[:400]))
+    verdict = data.get("verdict")
+    return PersonaReport(persona=persona,
+                         verdict=None if verdict is None else str(verdict),
                          findings=findings, unresolved_severities=unresolved)
 
 

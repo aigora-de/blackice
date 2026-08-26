@@ -129,7 +129,8 @@ def run(
         spec: The why/what/scope of the review (not the how).
         halting: The halting set (budgets, max epochs, stall patience).
         panel: The reviewer ensemble (personas + mandates).
-        spawn: Runs one persona subagent over the surface.
+        spawn: Runs one persona subagent over the surface. May raise; an
+            exception is contained as a meta finding on that persona's report.
         gather: Produces the review surface for each epoch.
         adjudicate: Verifies a finding against source; False refutes/drops it.
         reduce: Folds the deduped ledger into canonical clusters (semantic dedup);
@@ -159,7 +160,17 @@ def run(
         # per persona, so run them concurrently (subprocess calls release the
         # GIL, so threads parallelise fine).
         def _run(pm: tuple[str, str]) -> PersonaReport:
-            return spawn(pm[0], pm[1], surface, epoch)
+            try:
+                return spawn(pm[0], pm[1], surface, epoch)
+            except Exception as exc:  # noqa: BLE001
+                # A persona is a fallible black box, and one that raises must not
+                # take the panel's other reviews with it (#25): the exception used
+                # to propagate out of pool.map and end a run that had already paid
+                # for everyone. Recorded as a finding rather than swallowed, and
+                # deliberately not BaseException — a human's Ctrl-C still stops it.
+                return PersonaReport(persona=pm[0], verdict=None, findings=[
+                    Finding(pm[0], f"persona failed: {type(exc).__name__}: {exc}",
+                            Severity.NOTE, "meta", evidence=repr(exc)[:400])])
 
         if parallel and len(panel.personas) > 1:
             with ThreadPoolExecutor(max_workers=len(panel.personas)) as pool:
@@ -215,7 +226,12 @@ def run(
         material_new = [c for c in new_clusters if c.severity >= Severity.BLOCKER]
         stall_epochs = 0 if material_new else stall_epochs + 1
 
-        yes_votes = sum(1 for r in reports if (r.verdict or "").upper().startswith("YES"))
+        # str(): a backend may hand back a non-string verdict, and the quorum count
+        # is outside the spawn seam's guard — a crash here would end the run (#25).
+        # A report with no verdict is not a YES, which is what keeps a crashed or
+        # unreadable persona from helping produce a CONVERGED verdict.
+        yes_votes = sum(1 for r in reports
+                        if str(r.verdict or "").upper().startswith("YES"))
         quorum_met = yes_votes >= quorum
 
         result.halt = _evaluate_halt(
