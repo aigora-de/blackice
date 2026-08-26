@@ -362,23 +362,17 @@ def test_a_non_string_file_is_coerced():
 
 # --- one extractor for one contract (#19) -----------------------------------
 
-def test_the_extractor_returns_the_last_fenced_block():
-    from kuang.backends.claude_code.contract import extract_json_block
+def test_the_clusterer_shares_the_extractor_and_the_notion_of_verbatim():
+    """Two parsers for one contract meant a fix to one silently left the other.
 
-    assert extract_json_block(_reply("A") + _reply("B")) == "B\n"
-
-
-def test_the_extractor_returns_none_when_there_is_no_fence():
-    from kuang.backends.claude_code.contract import extract_json_block
-
-    assert extract_json_block("no block here") is None
-
-
-def test_the_clusterer_uses_the_same_extractor():
-    """Two parsers for one contract meant a fix to one silently left the other."""
+    Extended for #61: the clusterer grew an echo detector of its own, so it now
+    shares the whitespace normalisation as well. Two notions of "verbatim" would
+    be the same defect this test was written for, one function along.
+    """
     from kuang.backends.claude_code import cluster, contract
 
-    assert cluster.extract_json_block is contract.extract_json_block
+    assert cluster.extract_json_blocks is contract.extract_json_blocks
+    assert cluster._collapse_whitespace is contract._collapse_whitespace
 
 
 # --- an echoed output contract (#26) -----------------------------------------

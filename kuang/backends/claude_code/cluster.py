@@ -9,7 +9,7 @@ from typing import Sequence
 
 from kuang.engine import Cluster, Finding
 
-from .contract import extract_json_block
+from .contract import _collapse_whitespace, extract_json_blocks
 
 
 #
@@ -27,14 +27,27 @@ _CLUSTER_MANDATE = (
     "conservatively. Do NOT review, add, drop, or re-severitise findings — only "
     "cluster the ones you are given.")
 
-_CLUSTER_CONTRACT = """
+# The example the contract shows, hoisted out of the prompt so the text we ship and
+# the text ``_is_cluster_echo`` recognises are one string and cannot drift (#61).
+# Unlike the findings template it is a *plausible real answer*, which is what made
+# the echo dangerous: a clusterer restating it merged findings nobody grouped.
+_CLUSTER_TEMPLATE = '{"clusters": [[0, 3], [1], [2]]}'
+
+_CLUSTER_ECHO = _collapse_whitespace(_CLUSTER_TEMPLATE)
+
+# Note the deliberate absence of a fenced ``json`` marker in the prose below: this
+# contract used to name one inline, so a clusterer restating it handed the
+# extraction regex an opening fence in the middle of a sentence and it captured a
+# fragment of prose (#61, the twin of #26). The only literal fence here is the
+# example's own.
+_CLUSTER_CONTRACT = f"""
 ---
-OUTPUT CONTRACT (mandatory). End your reply with EXACTLY one fenced ```json block
+OUTPUT CONTRACT (mandatory). End your reply with EXACTLY one fenced `json` block
 and nothing after it, assigning finding indices to groups. Every index from 0 to
 N-1 must appear in exactly one group; singletons are expected and encouraged:
 
 ```json
-{"clusters": [[0, 3], [1], [2]]}
+{_CLUSTER_TEMPLATE}
 ```
 """
 
@@ -56,20 +69,47 @@ def build_cluster_prompt(findings: Sequence[Finding]) -> str:
         f"FINDINGS:\n" + "\n".join(lines) + f"\n{_CLUSTER_CONTRACT}")
 
 
+def _is_cluster_echo(block: str) -> bool:
+    """True if a payload is the contract's example restated rather than answered.
+
+    Exact — whitespace-normalised equality with ``_CLUSTER_TEMPLATE`` and nothing
+    else — for the same reason as ``contract._is_contract_echo``: this predicate
+    causes a payload to be **discarded**, so the only text it may ever match is
+    text we shipped.
+
+    The tradeoff is sharper here than for the findings contract, and it is
+    accepted rather than hidden. The findings template is full of obvious
+    placeholders; this example is a *plausible real answer*, so a clusterer that
+    genuinely decides exactly this grouping for exactly four findings is refused
+    and its merge is lost. That failure runs in the safe direction — a duplicate
+    survives — and the mandate this module ships says in as many words that
+    merging distinct issues is worse than leaving duplicates. The undetected case
+    runs the other way: findings merged because the *example* said so.
+    """
+    return _collapse_whitespace(block) == _CLUSTER_ECHO
+
+
 def _extract_cluster_groups(text: str) -> list[list[int]] | None:
     """Pull ``[[0,3],[1],...]`` index-groups from a clusterer reply, or None.
 
-    Tolerant: takes the last fenced ```json block (or the whole text), accepts a
-    ``clusters``/``groups`` key or a bare list, and normalises a stray bare int to
-    a singleton group. Returns None only when nothing list-shaped can be found —
-    the caller then falls back to the identity reduce.
+    Tolerant: takes the last fenced ```json block that is not the contract's own
+    example (or the whole text), accepts a ``clusters``/``groups`` key or a bare
+    list, and normalises a stray bare int to a singleton group. Returns None when
+    nothing list-shaped can be found, and when every candidate was the example
+    echoed back — the caller then falls back to the identity reduce.
 
-    The block itself is found by ``contract.extract_json_block``: one contract,
-    one parser. Falling back to the whole reply when there is no fence is this
-    caller's own tolerance, not the extractor's.
+    The blocks themselves are found by ``contract.extract_json_blocks``: one
+    contract, one parser. Which block to read, and falling back to the whole reply
+    when there is no fence, are this caller's own tolerance — not the extractor's
+    (#19, #26).
     """
-    block = extract_json_block(text)
-    raw = text if block is None else block
+    # No fence at all means read the whole reply, which is this caller's tolerance
+    # and also the shape an *unfenced* echo arrives in, so it is filtered alike.
+    candidates = extract_json_blocks(text) or [text]
+    kept = [c for c in candidates if not _is_cluster_echo(c)]
+    if not kept:
+        return None                  # the contract restated; nothing was grouped
+    raw = kept[-1]
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
