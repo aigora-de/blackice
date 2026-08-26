@@ -201,6 +201,12 @@ class PanelSession:
             for raw in report.unresolved_severities:
                 print(f"  [unresolved severity] ({report.persona}) {raw!r} — "
                       f"escalated to {UNRESOLVED_SEVERITY.name}")
+            # Likewise a verdict that was not a vote (#26): the gate is where a
+            # human decides whether to keep spending, and a panel that looks
+            # short of quorum for a reason nobody can see is a run that lies.
+            if report.unresolved_verdict is not None:
+                print(f"  [unresolved verdict] ({report.persona}) "
+                      f"{report.unresolved_verdict!r} — not counted as a vote")
         if not sys.stdin.isatty():
             return GateDecision(stop=False)
         ans = input("gate — [c]ontinue / [s]top? ").strip().lower()

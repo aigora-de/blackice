@@ -21,6 +21,14 @@ from enum import IntEnum
 from .halting import HaltReason
 
 
+# The one string that is a vote. Quorum is a conjunct of CONVERGED, so the set of
+# verdicts that can produce a good verdict is the set that can make a run lie —
+# and a prefix match let the contract's own placeholder "YES | NO" into it (#26).
+# Defined here, in the vocabulary, so a backend normalising a persona's reply and
+# the loop counting the result cannot drift apart.
+AFFIRMATIVE_VERDICT = "YES"
+
+
 class Severity(IntEnum):
     """Finding severity, ordered so comparisons are meaningful."""
 
@@ -122,13 +130,22 @@ class PersonaReport:
     alike. It is how a run says that it escalated a severity rather than reading
     it (#24): the value stays visible to the operator, verbatim, instead of the
     finding quietly appearing at a level nobody claimed.
+
+    ``unresolved_verdict`` is the same record for the other model-controlled value
+    that drives halting (#26). Severity gates the circuit-breaker; the verdict
+    gates CONVERGED. A verdict that is not a vote must not silently count and must
+    not silently *not*-count either, so the raw string is kept verbatim for the
+    human who decides what the persona meant. ``None`` means the persona either
+    cast a readable vote or claimed no verdict at all — neither is something we
+    misread.
     """
 
     persona: str
     findings: list[Finding] = field(default_factory=list)
-    verdict: str | None = None       # e.g. "SOUND-WITH-CONCERNS" / YES / NO
+    verdict: str | None = None       # AFFIRMATIVE_VERDICT / "NO" / None
     tokens: int = 0
     unresolved_severities: list[str] = field(default_factory=list)
+    unresolved_verdict: str | None = None
 
 
 @dataclass
