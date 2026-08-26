@@ -105,6 +105,13 @@ human. You are the *synthesiser, not the judge* — the human decides.
 - **UGLY** — ruin-class: non-linear, multiplicative, cascading, irreversible.
   A circuit-breaker **and** a non-negotiable gate: you may halt on budget with
   BADs outstanding-and-tracked; **never** with an open UGLY.
+- **Unresolved severity** — a value a persona emitted that did not resolve to one
+  of the four levels: unreadable (`CRITICAL`), or a *declared tie* the contract
+  invites from an undecided reviewer (`BLOCKER/UGLY`). It is escalated to BLOCKER
+  and reported verbatim, per persona, in the run output and under
+  `unresolved_severities` in the JSON — never downgraded, and never silent. The
+  tool does not pick a level it was not given: **you** adjudicate what the
+  reviewer meant, and a tie that turns out to be ruin is yours to promote.
 
 ## Personas (the "how")
 Resolved by precedence, all layers supported:

@@ -44,8 +44,8 @@ from kuang.report import render_argv
 
 from .cluster import (_CLUSTER_MANDATE, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)
-from .contract import (FINDINGS_CONTRACT, _is_parse_failure, build_prompt,
-                       parse_findings)
+from .contract import (FINDINGS_CONTRACT, UNRESOLVED_SEVERITY,
+                       _is_parse_failure, build_prompt, parse_findings)
 from .memory import epoch_summary
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
@@ -194,6 +194,13 @@ class PanelSession:
               f"tokens: {self.tokens}")
         for f in result.new_findings:
             print(f"  [{f.severity.name}] ({f.persona}) {f.title}")
+        # A severity we could not read is reported here as well as at the end of
+        # the run: the gate is where a human decides whether to keep spending, and
+        # they cannot weigh a finding whose level the panel never actually set.
+        for report in result.reports:
+            for raw in report.unresolved_severities:
+                print(f"  [unresolved severity] ({report.persona}) {raw!r} — "
+                      f"escalated to {UNRESOLVED_SEVERITY.name}")
         if not sys.stdin.isatty():
             return GateDecision(stop=False)
         ans = input("gate — [c]ontinue / [s]top? ").strip().lower()
