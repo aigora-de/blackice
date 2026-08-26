@@ -32,10 +32,78 @@ one fenced ```json block and nothing after it:
   ]}}
 ```
 
-Severity: UGLY = a ruin-class hazard (non-linear/multiplicative/cascading/
-irreversible) — use it only for that. BLOCKER = must be fixed or tracked before
-approval. Set verdict "YES" only if you found nothing you cannot approve.
+Severity — write exactly one of these four, uppercase, alone in the field:
+  NOTE          an observation; no action required.
+  NON_BLOCKING  should be addressed or tracked, but does not gate approval.
+  BLOCKER       must be fixed or tracked before approval.
+  UGLY          a ruin-class hazard (non-linear/multiplicative/cascading/
+                irreversible) — use it only for that.
+Put no qualifier, parenthetical or reasoning in that field; it belongs in
+"evidence". If you genuinely cannot decide between two levels, say so rather than
+inventing a certainty you do not have: name both (e.g. "BLOCKER/UGLY") and give
+your reasons in "evidence". Anything that does not resolve to one of the four
+levels — declared ties included — is recorded verbatim and escalated to a human as
+BLOCKER; we never pick a level on your behalf.
+
+Set verdict "YES" only if you found nothing you cannot approve.
 """
+
+# The level an unresolvable severity takes. Deliberately not NOTE (#24: a silent
+# downgrade lost the circuit-breaker) and deliberately not UGLY: defaulting *up*
+# is still guessing at a severity, and a breaker that trips on a typo is one an
+# operator learns to route around. BLOCKER is the lowest level that cannot be
+# swallowed — ``_evaluate_halt`` needs zero open blockers to reach CONVERGED — so
+# a value nobody could read cannot produce a good verdict, and a human resolves it.
+UNRESOLVED_SEVERITY = Severity.BLOCKER
+
+# Words that turn a level named later in the string into prose about it rather
+# than a competing claim: "BLOCKER (not UGLY)" is a BLOCKER.
+_NEGATORS = frozenset({"NOT", "NO", "NEVER"})
+
+# A model-controlled string reaches the run artefact; bound what we keep of it.
+_RAW_SEVERITY_CAP = 120
+
+
+def normalise_severity(raw: str) -> Severity | None:
+    """Resolve a persona's severity string to a level, or ``None`` if we cannot.
+
+    The rule is positional: **the severity is the leading label, and whatever
+    follows it is prose**. So ``"UGLY (ruin-class)"`` is UGLY and
+    ``"BLOCKER (not UGLY)"`` is BLOCKER, while ``"not a blocker"`` and
+    ``"non blocker"`` resolve to nothing — neither *begins* with a word of the
+    vocabulary, and choosing a level for them would be guessing, which is how #24
+    happened. ``"non-blocking"`` does resolve, because it *is* ``NON_BLOCKING``
+    modulo case and separators; the leading pair is checked before the leading
+    token so the two-word name survives being split.
+
+    One guard: a second, un-negated level word later in the string means the
+    persona named two levels and chose neither (``"Blocker/Ugly"``, or the output
+    contract echoed back verbatim). That is a legitimate thing for an undecided
+    reviewer to say and the contract invites it — so we do not resolve it either,
+    and it goes to a human. ``max()`` over the levels named is deliberately not
+    used: a cluster's max is UGLY-preserving because merging two *findings* must
+    not hide a ruin-class one, but a compound string is one persona declining to
+    pick, and picking for it is the guess this parser exists to refuse.
+
+    Returns:
+        The resolved ``Severity``, or ``None`` if the value names no level, or
+        names more than one.
+    """
+    tokens = [t for t in re.split(r"[^A-Z]+", raw.upper()) if t]
+    pair = "_".join(tokens[:2])
+    if pair in Severity.__members__:
+        label, rest = Severity[pair], tokens[2:]
+    elif tokens and tokens[0] in Severity.__members__:
+        label, rest = Severity[tokens[0]], tokens[1:]
+    else:
+        return None
+    for i, token in enumerate(rest):
+        other = Severity.__members__.get(token)
+        if other is not None and other is not label:
+            if i and rest[i - 1] in _NEGATORS:
+                continue                     # "(not UGLY)" is prose about the label
+            return None                      # two levels named, neither chosen
+    return label
 
 
 def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
@@ -114,18 +182,26 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
             Finding(persona, f"unparseable JSON findings: {exc}",
                     Severity.NOTE, "meta", evidence=block[:400])])
     findings = []
+    unresolved: list[str] = []
     for f in data.get("findings", []):
-        try:
-            sev = Severity[str(f.get("severity", "NOTE")).strip().upper()]
-        except KeyError:
-            sev = Severity.NOTE
+        raw = f.get("severity")
+        if raw is None:
+            sev = Severity.NOTE     # nothing was claimed, so nothing was misread
+        else:
+            sev = normalise_severity(str(raw))
+            if sev is None:
+                # Never a silent downgrade (#24): escalate it AND say we did, so
+                # the operator can see the value we refused to interpret.
+                unresolved.append(str(raw)[:_RAW_SEVERITY_CAP])
+                sev = UNRESOLVED_SEVERITY
         line = f.get("line") or None
         findings.append(Finding(
             persona=persona, title=str(f.get("title", "")), severity=sev,
             claim_class=str(f.get("claim_class", "uncategorised")),
             file=f.get("file") or None, line=int(line) if line else None,
             evidence=str(f.get("evidence", ""))))
-    return PersonaReport(persona=persona, verdict=data.get("verdict"), findings=findings)
+    return PersonaReport(persona=persona, verdict=data.get("verdict"),
+                         findings=findings, unresolved_severities=unresolved)
 
 
 def _is_parse_failure(report: PersonaReport) -> bool:

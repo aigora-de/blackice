@@ -27,8 +27,9 @@ import sys
 from pathlib import Path
 
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
-                                          PanelSession, SurfaceError,
-                                          load_personas, load_prior_findings)
+                                          UNRESOLVED_SEVERITY, PanelSession,
+                                          SurfaceError, load_personas,
+                                          load_prior_findings)
 from kuang.engine import HaltingSet, PanelConfig, ReviewSpec, run
 
 
@@ -136,6 +137,18 @@ def main(argv: list[str] | None = None) -> int:
           f" | tokens: {session.tokens}")
     for f in review_run.open_uglies + review_run.open_blockers:
         print(f"  [{f.severity.name}] ({f.persona}) {f.title} @ {f.file}:{f.line}")
+    # Severities the panel emitted that did not resolve to a level (#24). Reported
+    # rather than absorbed: the finding was escalated, not read, and the operator
+    # is the one who decides what the persona meant. Silent when there are none.
+    unresolved = [
+        {"epoch": e.index, "persona": r.persona, "raw": raw}
+        for e in review_run.epochs for r in e.reports
+        for raw in r.unresolved_severities]
+    if unresolved:
+        print(f"\nunresolved severities: {len(unresolved)} — escalated to "
+              f"{UNRESOLVED_SEVERITY.name}, never downgraded")
+        for u in unresolved:
+            print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
     # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
     # finding stays visible above; this groups them (panel is raw material).
     if args.semantic_dedup and review_run.clusters:
@@ -151,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         "open_uglies": len(review_run.open_uglies),
         "open_blockers": len(review_run.open_blockers),
         "tokens": session.tokens,
+        # Named per persona and verbatim, so a run's own artefact says which
+        # severities it escalated rather than read (#24).
+        "unresolved_severities": unresolved,
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open}

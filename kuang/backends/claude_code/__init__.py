@@ -8,6 +8,7 @@ permission policy they share and the ``session`` that wires them into the
 engine's seams. This is the backend's public surface.
 """
 
+from .contract import UNRESOLVED_SEVERITY
 from .memory import load_prior_findings
 from .permissions import DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS
 from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, SURVIVABILITY,
@@ -18,6 +19,6 @@ from .surface import SurfaceError, build_path_surface, gather_diff
 __all__ = [
     "COMPLETENESS_CRITIC", "DEFAULT_ALLOWED_TOOLS", "DEFAULT_DISALLOWED_TOOLS",
     "DEFAULT_PERSONAS", "PanelSession", "Persona", "SURVIVABILITY",
-    "SurfaceError", "build_path_surface", "gather_diff", "load_personas",
-    "load_prior_findings", "parse_claude_md_experts",
+    "SurfaceError", "UNRESOLVED_SEVERITY", "build_path_surface", "gather_diff",
+    "load_personas", "load_prior_findings", "parse_claude_md_experts",
 ]

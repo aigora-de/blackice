@@ -115,12 +115,20 @@ class Cluster:
 
 @dataclass
 class PersonaReport:
-    """One persona's output for one epoch."""
+    """One persona's output for one epoch.
+
+    ``unresolved_severities`` holds the raw severity strings this persona emitted
+    that did not resolve to a level — an unreadable value and a declared tie
+    alike. It is how a run says that it escalated a severity rather than reading
+    it (#24): the value stays visible to the operator, verbatim, instead of the
+    finding quietly appearing at a level nobody claimed.
+    """
 
     persona: str
     findings: list[Finding] = field(default_factory=list)
     verdict: str | None = None       # e.g. "SOUND-WITH-CONCERNS" / YES / NO
     tokens: int = 0
+    unresolved_severities: list[str] = field(default_factory=list)
 
 
 @dataclass
