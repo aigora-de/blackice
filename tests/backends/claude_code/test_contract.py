@@ -21,6 +21,10 @@ rewritten rather than updated — and a third has since been fixed here:
   (#26). Block selection skips a block that is verbatim our own template, and the
   verdict is categorical: one word, ``YES`` or ``NO``, or it is not a vote. This
   one had no characterisation test — it was found by reading, not by the suite.
+* a persona's status is set by the parser rather than inferred from the shape of
+  its report (#30). ``_is_parse_failure`` used to read "no verdict, one finding,
+  claim_class == 'meta'" as *unreadable*, which a genuine review can wear; one
+  characterisation test pinned that false retry as benign and was converted.
 
 So nothing here characterises a defect any more; each test goes red without its
 fix. The contract payload is model-produced, which is why so many of these read
@@ -38,7 +42,7 @@ from kuang.backends.claude_code.contract import (FINDINGS_CONTRACT,
                                                  _TEMPLATE_BLOCK,
                                                  _is_parse_failure,
                                                  parse_findings)
-from kuang.engine import Severity
+from kuang.engine import PersonaStatus, Severity
 
 
 def _reply(body: str) -> str:
@@ -576,15 +580,38 @@ def test_an_echo_before_the_real_block_is_not_reported():
     assert report.verdict == "NO"
 
 
-def test_an_echo_after_an_empty_review_takes_the_retry():
-    """A stated interaction, pinned rather than special-cased.
+def test_an_echo_after_an_empty_review_does_not_take_the_retry():
+    """Converted (#30). This test pinned the retry firing here; it no longer does.
 
-    An empty payload plus an echo leaves a report with no verdict and one ``meta``
-    finding — which is the shape ``_is_parse_failure`` keys on, so ``session.spawn``
-    reformats. Benign: the review it would discard is empty, and one cheap call to
-    ask a persona that echoed the contract to restate its findings is the retry
-    doing its job.
+    The old ``_is_parse_failure`` INFERRED "unreadable" from the shape of a report
+    — no verdict, one finding, ``claim_class == "meta"`` — and an empty payload
+    followed by a contract echo happens to wear that shape. It was pinned as
+    benign. It is not: this reply *was* readable, and #68 measured what the
+    reformatter does when fed text that is not a review — four times out of four
+    it returned a fabricated ``BLOCKER`` attributed to a reviewer that never
+    raised one. Paying a second call to reformat an empty review is buying that
+    risk for nothing.
+
+    ``_is_parse_failure`` now reads the status ``parse_findings`` SET, so a
+    readable empty review is ``FOUND_NOTHING`` and stops here.
     """
     report = parse_findings("p", _reply('{"findings": []}') + _reply(_TEMPLATE_BLOCK))
 
-    assert _is_parse_failure(report)
+    assert not _is_parse_failure(report)
+    assert report.status is PersonaStatus.FOUND_NOTHING
+    # The echo is still recorded, exactly as before — only the retry is gone.
+    assert [f.claim_class for f in report.findings] == ["meta"]
+
+
+def test_a_review_whose_only_finding_is_labelled_meta_is_still_a_review():
+    """The false retry the old inferred predicate bought, stated directly.
+
+    A persona may write ``claim_class: "meta"`` and claim no verdict. That is a
+    review, and it used to be indistinguishable from a reply we could not read.
+    """
+    report = parse_findings("p", _reply(
+        '{"findings": [{"title": "an observation", "severity": "NOTE", '
+        '"claim_class": "meta"}]}'))
+
+    assert not _is_parse_failure(report)
+    assert report.status is PersonaStatus.CONTRIBUTED

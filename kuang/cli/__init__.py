@@ -24,12 +24,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, PanelSession,
-                                          SurfaceError, load_personas,
-                                          load_prior_findings)
+                                          ReduceState, SurfaceError,
+                                          load_personas, load_prior_findings)
 from kuang.engine import HaltingSet, PanelConfig, ReviewSpec, run
 
 
@@ -161,6 +162,45 @@ def main(argv: list[str] | None = None) -> int:
               f"toward quorum")
         for u in unread_verdicts:
             print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
+    # Whether the panel actually RAN (#30). Printed on every run, and this is the
+    # one place the pattern above is deliberately not copied: #24's and #26's
+    # sections report an exception, so their absence is itself a complete claim.
+    # "The panel ran in full" is the claim an operator most needs to trust and no
+    # absent section can make it — and absent data is precisely this defect. Every
+    # status is SET at the source; none is inferred from the ledger, because "zero
+    # findings" is the ambiguous signal that made this issue necessary.
+    participation = [
+        {"epoch": e.index, "persona": r.persona, "status": r.status.value,
+         "findings": len(r.findings)}
+        for e in review_run.epochs for r in e.reports]
+    print(f"\npanel participation: {len(personas)} persona(s) x "
+          f"{len(review_run.epochs)} epoch(s)")
+    for e in review_run.epochs:
+        tally = Counter(r.status.value for r in e.reports)
+        print(f"  epoch {e.index}: " + ", ".join(
+            f"{n} {name.replace('_', ' ')}" for name, n in sorted(tally.items())))
+        for r in e.reports:
+            # The count is findings EMITTED, meta findings included, so it agrees
+            # with what "canonical issues" counts rather than quietly disagreeing.
+            print(f"    [{r.status.value.replace('_', ' ')}] ({r.persona}) "
+                  f"— {len(r.findings)} finding(s)")
+    # Whether the reduce step ran (#30). Stated, never implied by a ratio: a dead
+    # clusterer and a live one that merged nothing used to differ only by the nine
+    # tokens the call itself cost. Two of the states are not degradations, and are
+    # not reported as such.
+    reduce_epochs = [
+        {"epoch": i + 1, "state": st.value, "degraded": st.degraded}
+        for i, st in enumerate(session.reduce_states)]
+    if not args.semantic_dedup:
+        state = ReduceState.NOT_REQUESTED.value.replace("_", " ")
+        print(f"\nsemantic reduce: {state} (--semantic-dedup off)")
+    else:
+        print("\nsemantic reduce:")
+        for entry in reduce_epochs:
+            state = entry["state"].replace("_", " ")
+            line = (f"DEGRADED — {state} (identity reduce used)"
+                    if entry["degraded"] else state)
+            print(f"  epoch {entry['epoch']}: {line}")
     # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
     # finding stays visible above; this groups them (panel is raw material).
     if args.semantic_dedup and review_run.clusters:
@@ -181,6 +221,18 @@ def main(argv: list[str] | None = None) -> int:
         # declined to count as votes (#26).
         "unresolved_severities": unresolved,
         "unresolved_verdicts": unread_verdicts,
+        # Who was ASKED, and from where. Participation below says who took part;
+        # without the roster an artefact read back cold cannot tell a seven-persona
+        # panel with five silent from a two-persona panel that ran in full. It does
+        # NOT close #16: recording the label a sourcing step returned is not the
+        # same as noticing that the step fell back.
+        "panel": {"source": source, "personas": [p.name for p in personas]},
+        # Per persona, per epoch: whether it contributed, found nothing, or never
+        # reviewed — and, if it did not, which channel failed (#30).
+        "participation": participation,
+        # Whether the reduce step ran, was not asked for, had nothing to fold, or
+        # degraded — and on which epoch (#30).
+        "reduce": {"requested": bool(args.semantic_dedup), "epochs": reduce_epochs},
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open}

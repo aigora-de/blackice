@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 # Imported at run time, not only for typing: ``ReviewRun.converged`` compares
 # against ``HaltReason.CONVERGED`` in its body. The dependency stays one-way —
@@ -121,6 +121,39 @@ class Cluster:
         return min((m.key for m in self.members), default="")
 
 
+class PersonaStatus(Enum):
+    """What became of one persona's turn on the panel.
+
+    A closed set naming the OUTCOME of one spawn, and the answer to the question
+    a run could not previously answer at all: a persona that reviewed and found
+    nothing, one that was never spawned, and one that does not exist produced
+    identical output (#30).
+
+    **Set at the source, never derived.** "Zero findings" is precisely the
+    ambiguous signal, so a status computed from the ledger reproduces the defect,
+    and recovering "this one failed" by matching a finding's title would be the
+    same defect one layer up — and would break the moment the wording changed.
+    ``AGENT_ERROR`` and ``SPAWN_FAILED`` are separate members for that reason:
+    the backend's ``agent error: …`` (#29) and the engine's ``persona failed: …``
+    (#25) are worded differently at the source so they can be told apart here.
+
+    Deliberately an outcome and *only* an outcome. A degradation a persona
+    survives — an unreadable severity (#24), a verdict that was not a vote (#26),
+    tools it was denied but still voted without (#67) — is orthogonal: such a
+    persona both contributed and degraded, so forcing it into this enum would
+    mean choosing one and losing the other. Those live as their own fields on
+    ``PersonaReport``, and this vocabulary does not have to reopen to take them.
+    """
+
+    UNREPORTED = "unreported"        # the backend did not say (the default)
+    CONTRIBUTED = "contributed"      # a readable review with at least one finding
+    FOUND_NOTHING = "found_nothing"  # a readable review with no findings
+    UNREADABLE = "unreadable"        # replied; the reply was not a readable review
+    AGENT_ERROR = "agent_error"      # the process ran, no review came back (#29)
+    SPAWN_FAILED = "spawn_failed"    # our own code raised inside the seam (#25)
+    NOT_SPAWNED = "not_spawned"      # no call was made (dry run)
+
+
 @dataclass
 class PersonaReport:
     """One persona's output for one epoch.
@@ -138,6 +171,11 @@ class PersonaReport:
     human who decides what the persona meant. ``None`` means the persona either
     cast a readable vote or claimed no verdict at all — neither is something we
     misread.
+
+    ``status`` is what the run says about whether this persona took part at all
+    (#30). It defaults to ``UNREPORTED`` rather than to any outcome, because a
+    default naming one would let a backend's silence pass for a fact; a backend
+    that does not set it says so, loudly, in the operator's output.
     """
 
     persona: str
@@ -146,6 +184,7 @@ class PersonaReport:
     tokens: int = 0
     unresolved_severities: list[str] = field(default_factory=list)
     unresolved_verdict: str | None = None
+    status: PersonaStatus = PersonaStatus.UNREPORTED
 
 
 @dataclass

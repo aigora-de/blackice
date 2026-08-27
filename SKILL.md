@@ -73,6 +73,16 @@ human. You are the *synthesiser, not the judge* — the human decides.
      starting silently cold.
 
 ## Your responsibilities as the convening session
+- **Read the participation and reduce lines BEFORE the ledger.** Every run states,
+  per persona per epoch, whether it *contributed*, *found nothing*, or never
+  reviewed — and if it did not, which channel failed (`agent error` = the runtime
+  returned no review; `spawn failed` = our own code raised; `unreadable` = it
+  replied and we could not read it; `not spawned` = a dry run). It also states
+  whether the semantic reduce *ran*, was *not requested*, had *nothing to reduce*,
+  or **degraded** and why. A ledger from a panel that did not run in full is still
+  real material, but its *silence* proves nothing: findings nobody raised are not
+  findings nobody found. Never treat a degraded run as a clean pass — say so, and
+  re-run before calling the surface clean.
 - **Between epochs / after halt: synthesise.** Present each persona's view
   *distinctly* (don't blend them); surface disagreement.
 - **Adjudicate BLOCKER/UGLY findings against source before relaying them.** A

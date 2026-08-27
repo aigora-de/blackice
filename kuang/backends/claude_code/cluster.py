@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from enum import Enum
 from typing import Sequence
 
 from kuang.engine import Cluster, Finding
@@ -21,6 +22,42 @@ from .contract import _collapse_whitespace, extract_json_blocks
 # never dropped), bad indices are sanitised, and any failure degrades to the
 # identity reduce. Severity is UGLY-preserving by construction (``Cluster.severity``
 # is the max of its members), so a merge can never hide a ruin-class finding.
+
+class ReduceState(Enum):
+    """What became of the semantic reduce on one epoch (#30).
+
+    ``session.reduce`` degrades to the identity reduce from four branches
+    carrying five distinct reasons, and until now recorded none of them: a
+    clusterer that answered with a conservative grouping merging nothing and one
+    that never answered at all produced byte-identical output bar the nine tokens
+    the call itself cost. "The ratio is the tell" — ``canonical issues: N
+    (reduced from M)`` with ``N == M`` — is refuted by that measurement, not
+    merely weak, and the token count is unreliable for separate reasons (#65).
+
+    Backend-local by design. The engine's ``Reduce`` seam returns
+    ``list[Cluster]`` and nothing else, and it neither reads this nor branches on
+    it; the state lives on ``PanelSession`` beside ``tokens``, which is the same
+    kind of fact about the same calls.
+
+    Two of the states are not degradations. A reduce that was never asked for and
+    one with fewer than two findings to fold did not fail, and a run must not
+    report degradation it did not suffer.
+    """
+
+    NOT_REQUESTED = "not_requested"          # --semantic-dedup off: never wired in
+    DRY_RUN = "dry_run"                      # nothing was spawned
+    NOTHING_TO_REDUCE = "nothing_to_reduce"  # fewer than two findings
+    RAN = "ran"                              # answered; its grouping was used
+    CALL_FAILED = "call_failed"              # DEGRADED: the call errored
+    ECHOED_CONTRACT = "echoed_contract"      # DEGRADED: our example, restated (#61)
+    NO_GROUPING = "no_grouping"              # DEGRADED: nothing list-shaped in the reply
+
+    @property
+    def degraded(self) -> bool:
+        """True only where the reduce was asked for, attempted, and did not work."""
+        return self in (ReduceState.CALL_FAILED, ReduceState.ECHOED_CONTRACT,
+                        ReduceState.NO_GROUPING)
+
 
 _CLUSTER_MANDATE = (
     "You are a careful synthesiser. Group same-issue code-review findings "
@@ -89,14 +126,22 @@ def _is_cluster_echo(block: str) -> bool:
     return _collapse_whitespace(block) == _CLUSTER_ECHO
 
 
-def _extract_cluster_groups(text: str) -> list[list[int]] | None:
-    """Pull ``[[0,3],[1],...]`` index-groups from a clusterer reply, or None.
+def _extract_cluster_groups(
+        text: str) -> tuple[list[list[int]] | None, ReduceState]:
+    """Pull ``[[0,3],[1],...]`` index-groups from a clusterer reply, and say why not.
 
     Tolerant: takes the last fenced ```json block that is not the contract's own
     example (or the whole text), accepts a ``clusters``/``groups`` key or a bare
-    list, and normalises a stray bare int to a singleton group. Returns None when
-    nothing list-shaped can be found, and when every candidate was the example
-    echoed back — the caller then falls back to the identity reduce.
+    list, and normalises a stray bare int to a singleton group.
+
+    Returns ``(groups, RAN)``, or ``(None, <reason>)`` — the caller then falls
+    back to the identity reduce. The reason is returned from here rather than
+    re-derived by the caller because there is exactly one notion of "the example,
+    restated" and it belongs with the detector: two of them for one contract is
+    how a fix to one silently leaves the other (#19, #61). ``ECHOED_CONTRACT`` and
+    ``NO_GROUPING`` are separate because #61 made the echo a path that degrades
+    *by design*, and an operator reading a degraded run needs to know that nothing
+    failed — the model restated our own example back at us.
 
     The blocks themselves are found by ``contract.extract_json_blocks``: one
     contract, one parser. Which block to read, and falling back to the whole reply
@@ -108,12 +153,13 @@ def _extract_cluster_groups(text: str) -> list[list[int]] | None:
     candidates = extract_json_blocks(text) or [text]
     kept = [c for c in candidates if not _is_cluster_echo(c)]
     if not kept:
-        return None                  # the contract restated; nothing was grouped
+        # The contract restated; nothing was grouped.
+        return None, ReduceState.ECHOED_CONTRACT
     raw = kept[-1]
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
-        return None
+        return None, ReduceState.NO_GROUPING
     if isinstance(data, dict):
         groups = data.get("clusters", data.get("groups"))
     elif isinstance(data, list):
@@ -121,7 +167,7 @@ def _extract_cluster_groups(text: str) -> list[list[int]] | None:
     else:
         groups = None
     if not isinstance(groups, list):
-        return None
+        return None, ReduceState.NO_GROUPING
     out: list[list[int]] = []
     for g in groups:
         if isinstance(g, bool):        # bool is an int subclass — reject explicitly
@@ -130,7 +176,7 @@ def _extract_cluster_groups(text: str) -> list[list[int]] | None:
             out.append([g])
         elif isinstance(g, list):
             out.append([i for i in g if isinstance(i, int) and not isinstance(i, bool)])
-    return out
+    return out, ReduceState.RAN
 
 
 def _groups_to_clusters(findings: Sequence[Finding],

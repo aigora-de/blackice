@@ -8,7 +8,8 @@ a dict. ``python -m kuang.engine.fakes`` runs the demo.
 
 from __future__ import annotations
 
-from .findings import EpochResult, Finding, PersonaReport, ReviewRun, Severity
+from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
+                       ReviewRun, Severity)
 from .halting import HaltingSet, HaltReason
 from .loop import PanelConfig, ReviewSpec, run
 from .protocols import GateDecision, ReviewSurface
@@ -18,7 +19,9 @@ class FakeEnsemble:
     """A scripted ``SpawnPersona`` that replays canned per-epoch reports.
 
     ``script[epoch][persona]`` -> ``PersonaReport``. Missing entries yield an
-    empty, YES-verdict report (a persona with nothing left to say).
+    empty, YES-verdict report (a persona with nothing left to say) — which is
+    ``FOUND_NOTHING``, said explicitly, because "set the status at the source"
+    (#30) is a rule about every ``SpawnPersona`` and a test double is one.
     """
 
     def __init__(self, script: dict[int, dict[str, PersonaReport]]) -> None:
@@ -28,7 +31,8 @@ class FakeEnsemble:
         self, persona: str, mandate: str, surface: ReviewSurface, epoch: int  # noqa: ARG002
     ) -> PersonaReport:
         return self._script.get(epoch, {}).get(
-            persona, PersonaReport(persona=persona, verdict="YES")
+            persona, PersonaReport(persona=persona, verdict="YES",
+                                   status=PersonaStatus.FOUND_NOTHING)
         )
 
 
