@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .findings import (AFFIRMATIVE_VERDICT, EpochResult, Finding, PersonaReport,
-                       ReviewRun, Severity)
+                       PersonaStatus, ReviewRun, Severity)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -169,9 +169,16 @@ def run(
                 # to propagate out of pool.map and end a run that had already paid
                 # for everyone. Recorded as a finding rather than swallowed, and
                 # deliberately not BaseException — a human's Ctrl-C still stops it.
-                return PersonaReport(persona=pm[0], verdict=None, findings=[
-                    Finding(pm[0], f"persona failed: {type(exc).__name__}: {exc}",
-                            Severity.NOTE, "meta", evidence=repr(exc)[:400])])
+                # The status is set HERE, at the source, and is the engine's own:
+                # ``SPAWN_FAILED`` means our code raised, against a backend's
+                # ``AGENT_ERROR`` for a runtime that ran and returned no review.
+                # A run must be able to tell those apart (#30).
+                return PersonaReport(
+                    persona=pm[0], verdict=None,
+                    status=PersonaStatus.SPAWN_FAILED,
+                    findings=[
+                        Finding(pm[0], f"persona failed: {type(exc).__name__}: {exc}",
+                                Severity.NOTE, "meta", evidence=repr(exc)[:400])])
 
         if parallel and len(panel.personas) > 1:
             with ThreadPoolExecutor(max_workers=len(panel.personas)) as pool:

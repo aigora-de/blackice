@@ -14,7 +14,7 @@ import json
 import re
 
 from kuang.engine import (AFFIRMATIVE_VERDICT, Finding, PersonaReport,
-                          ReviewSpec, Severity)
+                          PersonaStatus, ReviewSpec, Severity)
 
 
 _SEV = "NOTE | NON_BLOCKING | BLOCKER | UGLY"
@@ -231,7 +231,8 @@ def _contract_violation(persona: str, what: str, evidence: str) -> PersonaReport
     vote (quorum counts YES votes), which is what stops an unparseable persona
     contributing to a good verdict.
     """
-    return PersonaReport(persona=persona, verdict=None, findings=[
+    return PersonaReport(persona=persona, verdict=None,
+                         status=PersonaStatus.UNREADABLE, findings=[
         Finding(persona, f"findings contract violated: {what}",
                 Severity.NOTE, "meta", evidence=evidence[:400])])
 
@@ -337,7 +338,8 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
     """
     blocks = extract_json_blocks(result_text)
     if not blocks:
-        return PersonaReport(persona=persona, verdict=None, findings=[
+        return PersonaReport(persona=persona, verdict=None,
+                             status=PersonaStatus.UNREADABLE, findings=[
             Finding(persona, "no structured output (parse failure)",
                     Severity.NOTE, "meta", evidence=result_text[:400])])
     # Scan back from the end, past our own template. Only echoes actually skipped
@@ -360,7 +362,8 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
     try:
         data = json.loads(block)
     except json.JSONDecodeError as exc:
-        return PersonaReport(persona=persona, verdict=None, findings=[
+        return PersonaReport(persona=persona, verdict=None,
+                             status=PersonaStatus.UNREADABLE, findings=[
             Finding(persona, f"unparseable JSON findings: {exc}",
                     Severity.NOTE, "meta", evidence=block[:400])])
     if not isinstance(data, dict):
@@ -408,6 +411,11 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
             claim_class=str(f.get("claim_class", "uncategorised")),
             file=str(raw_file) if raw_file else None, line=_coerce_line(f.get("line")),
             evidence=str(f.get("evidence", ""))))
+    # Read here and nowhere later: the two blocks below append ``meta`` findings
+    # about the REPLY, not claims about the code, and a status taken after them
+    # would call a persona that found nothing a contributor (#30).
+    status = (PersonaStatus.CONTRIBUTED if findings
+              else PersonaStatus.FOUND_NOTHING)
     if dropped:
         entries = "entry" if dropped == 1 else "entries"
         findings.append(Finding(
@@ -438,10 +446,16 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         unresolved_verdict = repr(raw_verdict)[:_RAW_VALUE_CAP]
     return PersonaReport(persona=persona, verdict=verdict, findings=findings,
                          unresolved_severities=unresolved,
-                         unresolved_verdict=unresolved_verdict)
+                         unresolved_verdict=unresolved_verdict, status=status)
 
 
 def _is_parse_failure(report: PersonaReport) -> bool:
-    """True if a report is the contract-miss sentinel (no parseable JSON block)."""
-    return (report.verdict is None and len(report.findings) == 1
-            and report.findings[0].claim_class == "meta")
+    """True if a reply could not be read as a review, so the retry is worth paying for.
+
+    Reads the status the parser SET rather than inferring it from the shape of the
+    report, which is the same doctrine as #30 itself one field along. The old
+    predicate — no verdict, exactly one finding, ``claim_class == "meta"`` — also
+    matched a genuine review that happened to raise a single finding it labelled
+    ``meta`` and claimed no verdict, and bought a second call for it.
+    """
+    return report.status is PersonaStatus.UNREADABLE

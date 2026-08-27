@@ -38,11 +38,12 @@ from pathlib import Path
 from typing import Sequence
 
 from kuang.engine import (Cluster, EpochResult, Finding, GateDecision,
-                             PersonaReport, ReviewRun, ReviewSpec, Severity)
+                             PersonaReport, PersonaStatus, ReviewRun, ReviewSpec,
+                             Severity)
 from kuang.engine.reduce import _identity_reduce
 from kuang.report import render_argv
 
-from .cluster import (_CLUSTER_MANDATE, _extract_cluster_groups,
+from .cluster import (_CLUSTER_MANDATE, ReduceState, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)
 from .contract import (FINDINGS_CONTRACT, UNRESOLVED_SEVERITY,
                        _is_parse_failure, build_prompt, parse_findings)
@@ -72,6 +73,14 @@ class PanelSession:
         default_factory=lambda: list(DEFAULT_DISALLOWED_TOOLS))
     permission_mode: str = "plan"
     tokens: int = 0
+    # One state per call to ``reduce``, i.e. one per epoch, in order (#30). Kept
+    # HERE, on the backend, rather than returned through the engine's ``Reduce``
+    # seam: that seam returns ``list[Cluster]`` and nothing else, the engine never
+    # reads this and never branches on it, and widening it would oblige every
+    # implementation — the deterministic identity default included — to produce a
+    # diagnostic about a clusterer it does not have. ``tokens`` above is the same
+    # kind of fact about the same calls and lives in the same place.
+    reduce_states: list[ReduceState] = field(default_factory=list)
     prior_summary: str = ""      # cross-EPOCH memory; on_epoch REWRITES it each epoch
     # Cross-RUN memory (issue #13): set once at startup from --prior-findings and
     # never touched again. Deliberately NOT folded into prior_summary, which
@@ -128,12 +137,19 @@ class PanelSession:
             print(f"\n[dry-run] persona={persona} model={model or 'default'}"
                   f"\n  argv= {render_argv(self._argv(prompt, mandate, p.tools, model))}"
                   f"\n  prompt≈ {preview!r}")
-            return PersonaReport(persona=persona, verdict="YES")
+            # Says so, rather than passing for a persona that reviewed and found
+            # nothing (#30) — which is exactly what an absent status let it do.
+            return PersonaReport(persona=persona, verdict="YES",
+                                 status=PersonaStatus.NOT_SPAWNED)
 
         text, toks, err = self._run_claude(prompt, mandate, p.tools, model)
         self.tokens += toks
         if err:
-            return PersonaReport(persona=persona, verdict=None, findings=[
+            # One channel, one wording (#29) — and now a status set beside it, so
+            # #30 does not have to recover "this persona failed" by matching
+            # ``agent error:`` off a finding's title.
+            return PersonaReport(persona=persona, verdict=None,
+                                 status=PersonaStatus.AGENT_ERROR, findings=[
                 Finding(persona, err, Severity.NOTE, "meta")])
         report = parse_findings(persona, text)
         report.tokens = toks
@@ -164,17 +180,32 @@ class PanelSession:
         contract, or fewer than two findings all fall back to the deterministic
         identity reduce, so the engine's control loop keeps working even when the
         clusterer is unavailable.
+
+        Every one of those outcomes is now RECORDED on the session, in ``reduce_states``,
+        one entry per epoch (#30). Falling back silently is what made a dead
+        clusterer and a live one that merged nothing byte-identical in a run's own
+        output. What the engine gets back is unchanged — a partition of the input.
+
+        The dry run is tested before the finding count so the reason reported is
+        the truer one: in a dry run nothing was spawned, so there was never
+        anything to reduce. Both return the identity reduce either way.
         """
         findings = list(findings)
-        if len(findings) < 2 or self.dry_run:
+        if self.dry_run:
+            self.reduce_states.append(ReduceState.DRY_RUN)
+            return _identity_reduce(findings)
+        if len(findings) < 2:
+            self.reduce_states.append(ReduceState.NOTHING_TO_REDUCE)
             return _identity_reduce(findings)
         model = self.cluster_model or self.default_model
         text, toks, err = self._run_claude(
             build_cluster_prompt(findings), _CLUSTER_MANDATE, ["Read"], model)
         self.tokens += toks
         if err:
+            self.reduce_states.append(ReduceState.CALL_FAILED)
             return _identity_reduce(findings)
-        groups = _extract_cluster_groups(text)
+        groups, state = _extract_cluster_groups(text)
+        self.reduce_states.append(state)
         if groups is None:
             return _identity_reduce(findings)
         return _groups_to_clusters(findings, groups)
