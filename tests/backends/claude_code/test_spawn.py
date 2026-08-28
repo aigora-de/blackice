@@ -17,6 +17,12 @@ mistaken for a reviewing one. The file was labelled characterisation-only when t
 error path was the one thing here nothing tested, and #29 is that path — so the
 label is now half wrong and says which half.
 
+*Regression*, from `tools the reviewer never had (#67)` onward: a reviewer that
+reviewed with fewer tools than the panel granted it must not pass for one that had
+them. One test in that section is **characterisation of the runtime, not of our
+code**, and says so in its own docstring — it pins the measurement that
+``permission_denials`` is empty in exactly the state the issue is about.
+
 Nothing here spawns anything: ``subprocess.run`` is replaced for the duration of
 each test. That hermeticity is also this file's limit, and the #29 section says so
 where it matters — a stubbed envelope proves the *handler* correct and proves
@@ -34,7 +40,7 @@ import pytest
 
 from kuang.backends.claude_code import PanelSession, Persona
 from kuang.backends.claude_code import spawn as spawn_module
-from kuang.engine import ReviewSpec
+from kuang.engine import PersonaStatus, ReviewSpec
 
 
 @pytest.fixture
@@ -109,11 +115,11 @@ def test_tools_and_permission_overrides_reach_the_argv(session, captured):
 # --- what comes back --------------------------------------------------------
 
 def test_the_result_and_token_count_are_returned(session, captured):
-    text, toks, err = session._run_claude("P", "M", ["Read"], None)
+    result = session._run_claude("P", "M", ["Read"], None)
 
-    assert '"verdict": "YES"' in text
-    assert toks == 11
-    assert err is None
+    assert '"verdict": "YES"' in result.text
+    assert result.output_tokens == 11
+    assert result.error is None
 
 
 def test_a_non_zero_exit_becomes_an_error_string(session, monkeypatch):
@@ -129,10 +135,10 @@ def test_a_non_zero_exit_becomes_an_error_string(session, monkeypatch):
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 7, stdout="", stderr="boom"))
 
-    text, toks, err = session._run_claude("P", "M", ["Read"], None)
+    result = session._run_claude("P", "M", ["Read"], None)
 
-    assert (text, toks) == ("", 0)
-    assert err == "agent error: claude exited 7: boom"
+    assert (result.text, result.output_tokens) == ("", 0)
+    assert result.error == "agent error: claude exited 7: boom"
 
 
 def test_raw_non_json_stdout_is_tolerated(session, monkeypatch):
@@ -140,7 +146,9 @@ def test_raw_non_json_stdout_is_tolerated(session, monkeypatch):
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 0, stdout="just text", stderr=""))
 
-    assert session._run_claude("P", "M", ["Read"], None) == ("just text", 0, None)
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert (result.text, result.output_tokens, result.error) == ("just text", 0, None)
 
 
 # --- the dry-run report -----------------------------------------------------
@@ -249,9 +257,7 @@ def test_the_error_carries_the_agents_own_diagnosis(session, monkeypatch, env, e
     """
     _envelope(monkeypatch, env)
 
-    _, _, err = session._run_claude("P", "M", ["Read"], None)
-
-    assert err == expected
+    assert session._run_claude("P", "M", ["Read"], None).error == expected
 
 
 def test_an_is_error_envelope_is_a_failure_even_on_a_zero_exit(session, monkeypatch):
@@ -265,9 +271,8 @@ def test_an_is_error_envelope_is_a_failure_even_on_a_zero_exit(session, monkeypa
     """
     _envelope(monkeypatch, _MAX_TURNS, returncode=0)
 
-    _, _, err = session._run_claude("P", "M", ["Read"], None)
-
-    assert err == "agent error: error_max_turns: Reached maximum number of turns (1)"
+    assert session._run_claude("P", "M", ["Read"], None).error == (
+        "agent error: error_max_turns: Reached maximum number of turns (1)")
 
 
 def test_a_failed_call_still_reports_no_tokens(session, monkeypatch):
@@ -280,10 +285,10 @@ def test_a_failed_call_still_reports_no_tokens(session, monkeypatch):
     """
     _envelope(monkeypatch, _MAX_TURNS, returncode=0)
 
-    text, toks, err = session._run_claude("P", "M", ["Read"], None)
+    result = session._run_claude("P", "M", ["Read"], None)
 
-    assert (text, toks) == ("", 0)
-    assert err is not None
+    assert (result.text, result.output_tokens) == ("", 0)
+    assert result.error is not None
     assert _MAX_TURNS["usage"]["output_tokens"] == 187, "the spend the run does not see"
 
 
@@ -395,4 +400,235 @@ def test_json_that_is_not_an_envelope_is_tolerated_like_raw_text(session, monkey
                         lambda argv, **kw: subprocess.CompletedProcess(
                             argv, 0, stdout=stdout, stderr=""))
 
-    assert session._run_claude("P", "M", ["Read"], None) == (stdout, 0, None)
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert (result.text, result.output_tokens, result.error) == (stdout, 0, None)
+
+
+# --- tools the reviewer never had, and tools it was refused (#67) ------------
+#
+# REGRESSION. The envelopes below are real captures from agent CLI 2.1.246, taken
+# by the probe this issue called for — not invented JSON. Trimmed of fields
+# irrelevant to the boundary; every field asserted on is verbatim from the
+# capture, and the two ``result`` strings are the capture's own opening and its
+# own contract block, shortened where marked.
+#
+# The existing #29 captures above have no ``permission_denials`` key because they
+# were trimmed of fields irrelevant to *that* boundary. These were taken for this
+# one.
+
+# The issue's own reproduction case: --disallowedTools Read Grep Glob Edit Write
+# NotebookEdit Bash, on top of --allowedTools Read Grep Glob. The reviewer could
+# open nothing, and the envelope says so NOWHERE — is_error is false, the subtype
+# is "success", and permission_denials is EMPTY. A deny-listed tool is absent, not
+# refused, so there is no call to refuse and nothing to record.
+_DENIED_EVERY_TOOL = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "num_turns": 3, "stop_reason": "end_turn", "terminal_reason": "completed",
+    "permission_denials": [],
+    "result": (
+        "## Verification note (read first)\n\nThis session exposes no file-read, "
+        "grep, or shell tools — the deferred-tool set is "
+        "Cron/Monitor/WebFetch/SendMessage only, and `select:Read,Grep,Bash` "
+        "returned no match. So I could not open `a.py` or run anything.\n\n"
+        # …the review itself, and then its contract. Two of the seven findings the
+        # capture returned, verbatim in title/severity/claim_class; evidence elided.
+        '```json\n{"verdict": "NO",\n  "findings": [\n'
+        '    {"title": "Audit write is a new failure point after the balance '
+        'mutation — failed write yields apparent-failure-after-success, retry '
+        'double-debits", "severity": "UGLY", "claim_class": '
+        '"atomicity/irreversible-state", "file": "a.py", "line": 4, '
+        '"evidence": "…"},\n'
+        '    {"title": "Unescaped src/dst in f-string allows audit-record forgery '
+        'via newline injection", "severity": "BLOCKER", "claim_class": '
+        '"log-injection", "file": "a.py", "line": 4, "evidence": "…"}\n  ]}\n```'),
+    "total_cost_usd": 0.473272,
+    "usage": {"input_tokens": 6, "output_tokens": 8341},
+}
+
+# The only shape that DOES populate the field: a tool present in the session but
+# not on the allow-list, which the agent actually attempted. Note what came back
+# with it — ``tool_input`` carries a whole shell command, verbatim and
+# model-controlled. Note also that the agent recovered: it re-ran the commands
+# separately and completed the task, so an entry here is not itself a degradation.
+_REFUSED_A_TOOL_CALL = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "num_turns": 5, "stop_reason": "end_turn", "terminal_reason": "completed",
+    "permission_denials": [
+        {"tool_name": "Bash",
+         "tool_use_id": "toolu_019WhRupaf8hM9c6ji421qaD",
+         "tool_input": {
+             "command": "grep -n 'transfer' a.py; echo \"---exit:$?---\"; ls *.py",
+             "description": "Search a.py and list Python files"}}],
+    "result": ("Side note: an initial combined Bash command was blocked by the "
+               "permission layer (the `echo` part needed approval); I re-ran the "
+               "two commands separately and both succeeded."),
+    "usage": {"input_tokens": 4, "output_tokens": 212},
+}
+
+
+def test_a_refused_tool_call_reaches_the_caller(session, monkeypatch):
+    """#67's own mechanism, on the one shape that populates it."""
+    _envelope(monkeypatch, _REFUSED_A_TOOL_CALL, returncode=0)
+
+    assert session._run_claude("P", "M", ["Read"], None).denied_tools == ("Bash",)
+
+
+def test_only_the_tool_name_crosses_the_boundary(session, monkeypatch):
+    """The Auditor's constraint, asserted rather than left to review.
+
+    ``tool_input`` is unbounded model-controlled content — here an entire shell
+    command; in general file paths and file contents — and what crosses this
+    boundary is written into a run artefact that gets pasted into a **public**
+    repository's issues. ``tool_use_id`` is a session-internal handle with no
+    operator meaning. The issue asks *which tool*, and ``tool_name`` answers it.
+
+    A deliberate narrowing against #24's and #26's "record it verbatim": that
+    doctrine governs a short scalar whose whole meaning *is* the string, and does
+    not oblige this boundary to forward a blob.
+    """
+    _envelope(monkeypatch, _REFUSED_A_TOOL_CALL, returncode=0)
+
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    leaked = repr(result.denied_tools)
+    assert "grep -n" not in leaked and "ls *.py" not in leaked
+    assert "toolu_019WhRupaf8hM9c6ji421qaD" not in leaked
+
+
+def test_a_healthy_call_reports_no_refusal(session, captured):
+    """The mirror-image defect: a clean run must claim nothing happened."""
+    assert session._run_claude("P", "M", ["Read"], None).denied_tools == ()
+
+
+def test_a_reviewer_denied_every_tool_is_invisible_in_its_own_envelope(session,
+                                                                       monkeypatch):
+    """The measurement that redirected this fix, pinned so it cannot be forgotten.
+
+    CHARACTERISATION of the runtime, not of our code, and it is the whole argument
+    for the deterministic half in ``permissions.unavailable_tools``. The issue
+    proposed detecting this state by reading ``permission_denials``. Measured, the
+    field is EMPTY in exactly this state — a deny-listed tool is removed from the
+    session rather than refused at call time, so no denial is ever recorded — while
+    ``is_error`` is false, the error is ``None``, and the reply parses to a vote.
+
+    Everything ``run_claude`` can see here says the call went well. If a future CLI
+    revision starts populating the field for a deny-listed tool this goes red, which
+    is the honest outcome: the finding would then be reachable from the envelope too.
+    """
+    _envelope(monkeypatch, _DENIED_EVERY_TOOL, returncode=0)
+
+    result = session._run_claude("P", "M", ["Read", "Grep", "Glob"], None)
+
+    assert result.error is None
+    assert result.denied_tools == (), "the envelope does not report this degradation"
+    assert '"verdict": "NO"' in result.text, "and the persona voted anyway"
+
+
+def test_a_refusal_is_reported_even_when_the_call_then_failed(session, monkeypatch):
+    """A call can be refused a tool AND then error. Neither fact displaces the other.
+
+    ``run_claude`` returns early on failure, so the refusal is read before that
+    branch rather than after it — otherwise the one call most likely to have been
+    starved of tools is the one that reports none.
+    """
+    env = dict(_MAX_TURNS, permission_denials=[{"tool_name": "Grep"}])
+    _envelope(monkeypatch, env)
+
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert result.error is not None
+    assert result.denied_tools == ("Grep",)
+
+
+@pytest.mark.parametrize("denials, expected", [
+    # Nothing readable in it: tolerated, and nothing invented from it.
+    (None, ()), ("Bash", ()), (12, ()), ({}, ()),
+    ([None], ()), ([12], ()), (["Bash"], ()), ([{}], ()),
+    ([{"tool_name": None}], ()), ([{"tool_name": 12}], ()),
+    ([{"tool_name": ""}], ()), ([{"tool_use_id": "x"}], ()),
+    # …and the half that makes the rest mean something: one readable entry among
+    # unreadable ones must still arrive. Without these two rows every row above is
+    # satisfied by an extractor that returns nothing at all, which is precisely the
+    # defect. (Written this way because the first draft of this test survived the
+    # vacuity probe: neutering the extractor entirely left it green.)
+    ([12, {"tool_name": "Bash"}, None], ("Bash",)),
+    ([{"tool_name": "Bash"}, "Grep", {"tool_name": "Glob"}], ("Bash", "Glob")),
+])
+def test_a_malformed_denial_list_is_read_for_what_it_has(session, monkeypatch,
+                                                         denials, expected):
+    """#25's doctrine one field along: the envelope is untrusted input.
+
+    Every level here is model-adjacent or runtime-shaped and none of it is ours, so
+    a reply this boundary cannot read is not a reason to lose an epoch every persona
+    has already been paid for — the same courtesy the function already extends to
+    stdout that is not JSON at all. Tolerating it must not mean discarding it: what
+    IS readable still crosses.
+    """
+    _envelope(monkeypatch, dict(_REFUSED_A_TOOL_CALL, permission_denials=denials),
+              returncode=0)
+
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert result.error is None
+    assert result.denied_tools == expected
+
+
+def test_duplicate_refusals_of_one_tool_are_reported_once(session, monkeypatch):
+    """Three refused ``Bash`` calls are one fact about the reviewer, not three."""
+    _envelope(monkeypatch, dict(_REFUSED_A_TOOL_CALL, permission_denials=[
+        {"tool_name": "Bash"}, {"tool_name": "Grep"}, {"tool_name": "Bash"}]),
+        returncode=0)
+
+    assert session._run_claude("P", "M", ["Read"], None).denied_tools == ("Bash", "Grep")
+
+
+# --- and onto the persona's report ------------------------------------------
+
+def test_a_refusal_lands_on_the_persona_report(session, monkeypatch):
+    """Set at the source (#30's doctrine), and orthogonal to the status (#75's).
+
+    The persona both CONTRIBUTED and was degraded, which is why this is a field
+    beside ``unresolved_severities`` and ``unresolved_verdict`` rather than a
+    ``PersonaStatus`` member: forcing it into the outcome enum would mean choosing
+    one of the two facts and losing the other.
+    """
+    _envelope(monkeypatch, dict(_REFUSED_A_TOOL_CALL, result=(
+        '```json\n{"verdict": "YES", "findings": []}\n```')), returncode=0)
+
+    report = session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    assert report.denied_tools == ["Bash"]
+    assert report.status is PersonaStatus.FOUND_NOTHING, "contributed AND degraded"
+    assert report.verdict == "YES", "and its vote still counts (#24/#26 doctrine)"
+
+
+def test_a_refusal_during_the_reformat_retry_is_not_lost(session, monkeypatch):
+    """The retry is a second call and can be starved too; the report is of both.
+
+    The first call is refused ``Bash`` and returns prose with no contract; the
+    reformat call is refused ``Read`` and returns the contract. A report naming
+    only one of them would understate what the reviewer went without.
+    """
+    replies = [
+        dict(_REFUSED_A_TOOL_CALL, result="A prose review with no JSON contract."),
+        dict(_REFUSED_A_TOOL_CALL, permission_denials=[{"tool_name": "Read"}],
+             result='```json\n{"verdict": "YES", "findings": []}\n```'),
+    ]
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(replies.pop(0)), stderr="")
+
+    monkeypatch.setattr(spawn_module.subprocess, "run", fake_run)
+
+    report = session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    assert report.denied_tools == ["Bash", "Read"]
+
+
+def test_a_dry_run_claims_no_refusals(session, capsys):
+    """Nothing was spawned, so nothing was refused — and nothing may be implied."""
+    session.dry_run = True
+
+    assert session.spawn("p", "MANDATE", "SURFACE", 1).denied_tools == []

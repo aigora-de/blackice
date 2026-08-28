@@ -30,7 +30,8 @@ from pathlib import Path
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, PanelSession,
                                           ReduceState, SurfaceError,
-                                          load_personas, load_prior_findings)
+                                          load_personas, load_prior_findings,
+                                          unavailable_tools)
 from kuang.engine import HaltingSet, PanelConfig, ReviewSpec, run
 
 
@@ -94,6 +95,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[panel] {len(personas)} personas from {source}: "
           f"{', '.join(p.name for p in personas)}")
     print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
+    disallowed = (list(args.disallow_tools) if args.disallow_tools is not None
+                  else list(DEFAULT_DISALLOWED_TOOLS))
+    # Tools the panel granted AND deny-listed (#67). Such a tool is not refused when
+    # a reviewer calls it — it is absent from the reviewer's session, so the reviewer
+    # never calls it and the result envelope records nothing at all. Named HERE, not
+    # only in the summary, because it follows from the flags alone: an operator who
+    # first learns of it after the run has already paid for the whole panel.
+    cancelled = {p.name: unavailable_tools(p.tools, disallowed) for p in personas}
+    if any(cancelled.values()):
+        starved = [n for n, t in cancelled.items() if t]
+        print(f"[panel] WARNING: {len(starved)} of {len(personas)} persona(s) were "
+              f"granted tools the deny-list removed, so those tools were NOT "
+              f"available to them: "
+              f"{', '.join(sorted({t for v in cancelled.values() for t in v}))}")
 
     # Cross-run memory (issue #13). Loaded BEFORE the session so a bad path fails
     # here, not three epochs into a paid run, and echoed so a seed that loaded
@@ -111,8 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         personas={p.name: p for p in personas},
         default_model=args.model, cluster_model=args.cluster_model,
         dry_run=args.dry_run, seeded_summary=seeded,
-        disallowed_tools=(list(args.disallow_tools) if args.disallow_tools is not None
-                          else list(DEFAULT_DISALLOWED_TOOLS)),
+        disallowed_tools=disallowed,
         permission_mode=args.permission_mode)
     panel = PanelConfig(personas=[(p.name, p.grounding) for p in personas])
     halting = HaltingSet(token_budget=args.token_budget, max_epochs=args.max_epochs,
@@ -184,6 +198,49 @@ def main(argv: list[str] | None = None) -> int:
             # with what "canonical issues" counts rather than quietly disagreeing.
             print(f"    [{r.status.value.replace('_', ' ')}] ({r.persona}) "
                   f"— {len(r.findings)} finding(s)")
+    # What the panel could actually DO (#67). Two facts, and they are not one fact
+    # reported twice. A tool the panel granted AND deny-listed was never in the
+    # reviewer's session — measured on agent CLI 2.1.246, the runtime removes it
+    # rather than refusing it, so ``permission_denials`` is empty and no envelope
+    # will ever report it. ``refusals`` is the other half: a tool that WAS in the
+    # session, whose use the agent attempted and was refused.
+    #
+    # Always on, for the reason participation is (#30): "the panel had the tools it
+    # says it had" is the claim an operator most needs to trust, and no absent
+    # section can make it. The two halves are reported differently on purpose — a
+    # deny-listed grant is OUR configuration contradicting itself and is a
+    # degradation; a refused call may be the deny-by-default policy working exactly
+    # as intended, so it is stated and not classified.
+    permission_personas = [
+        {"persona": p.name, "granted": list(p.tools),
+         "unavailable": cancelled[p.name]}
+        for p in personas]
+    refusals = [
+        {"epoch": e.index, "persona": r.persona, "tools": list(r.denied_tools)}
+        for e in review_run.epochs for r in e.reports if r.denied_tools]
+    print(f"\npanel permissions: mode={args.permission_mode} | "
+          f"deny-list: {', '.join(disallowed) or 'none'}")
+    starved_records = [r for r in permission_personas if r["unavailable"]]
+    if starved_records:
+        print(f"  DEGRADED — {len(starved_records)} of {len(personas)} persona(s) "
+              f"were granted tools the deny-list removed:")
+        for r in starved_records:
+            print(f"    ({r['persona']}) granted {', '.join(r['granted'])} — "
+                  f"{', '.join(r['unavailable'])} not available")
+    else:
+        print("  every granted tool was available to every persona")
+    for e in review_run.epochs:
+        refused = [r for r in refusals if r["epoch"] == e.index]
+        if args.dry_run:
+            # "no tool call was refused" would be true and would mean the opposite
+            # of what an operator reads into it, so the dry run says which it is.
+            print(f"  epoch {e.index}: nothing was spawned")
+        elif refused:
+            for r in refused:
+                print(f"  epoch {e.index}: ({r['persona']}) refused: "
+                      f"{', '.join(r['tools'])}")
+        else:
+            print(f"  epoch {e.index}: no tool call was refused")
     # Whether the reduce step ran (#30). Stated, never implied by a ratio: a dead
     # clusterer and a live one that merged nothing used to differ only by the nine
     # tokens the call itself cost. Two of the states are not degradations, and are
@@ -230,6 +287,12 @@ def main(argv: list[str] | None = None) -> int:
         # Per persona, per epoch: whether it contributed, found nothing, or never
         # reviewed — and, if it did not, which channel failed (#30).
         "participation": participation,
+        # What the panel could DO: the policy the run actually used, the granted
+        # tools the deny-list cancelled, and the calls the agent was refused (#67).
+        # The policy is recorded beside the verdict because "unavailable: []" is a
+        # claim a reader coming to the artefact cold has no other way to audit.
+        "permissions": {"mode": args.permission_mode, "denied": disallowed,
+                        "personas": permission_personas, "refusals": refusals},
         # Whether the reduce step ran, was not asked for, had nothing to fold, or
         # degraded — and on which epoch (#30).
         "reduce": {"requested": bool(args.semantic_dedup), "epochs": reduce_epochs},

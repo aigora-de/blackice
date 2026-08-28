@@ -142,7 +142,8 @@ class PersonaStatus(Enum):
     tools it was denied but still voted without (#67) — is orthogonal: such a
     persona both contributed and degraded, so forcing it into this enum would
     mean choosing one and losing the other. Those live as their own fields on
-    ``PersonaReport``, and this vocabulary does not have to reopen to take them.
+    ``PersonaReport``, and this vocabulary did not have to reopen to take them —
+    #67 landed as ``denied_tools`` and this enum is unchanged, as predicted.
     """
 
     UNREPORTED = "unreported"        # the backend did not say (the default)
@@ -176,6 +177,20 @@ class PersonaReport:
     (#30). It defaults to ``UNREPORTED`` rather than to any outcome, because a
     default naming one would let a backend's silence pass for a fact; a backend
     that does not set it says so, loudly, in the operator's output.
+
+    ``denied_tools`` names the tools this persona asked for and was refused (#67) —
+    the third of the orthogonal degradations, and the one a persona most visibly
+    survives: the process succeeded, a well-formed contract came back, and it voted.
+    It is a field rather than a ``PersonaStatus`` member for exactly that reason;
+    such a persona both contributed *and* degraded, and the enum names an outcome,
+    so forcing it in would mean choosing one fact and losing the other. Names only,
+    never the refused call's arguments: those are unbounded model-controlled content
+    and this record is written into an artefact meant to be shared.
+
+    Empty is not a claim that the persona had every tool. A tool the panel granted
+    *and* deny-listed is absent from the reviewer's session rather than refused, so
+    no runtime ever reports it here; that half of #67 is deterministic and lives in
+    the backend's ``permissions.unavailable_tools``.
     """
 
     persona: str
@@ -185,6 +200,7 @@ class PersonaReport:
     unresolved_severities: list[str] = field(default_factory=list)
     unresolved_verdict: str | None = None
     status: PersonaStatus = PersonaStatus.UNREPORTED
+    denied_tools: list[str] = field(default_factory=list)
 
 
 @dataclass

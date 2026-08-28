@@ -19,6 +19,7 @@ import pytest
 
 from kuang.backends.claude_code import PanelSession
 from kuang.backends.claude_code.personas import Persona
+from kuang.backends.claude_code.spawn import CallResult
 from kuang.engine import ReviewSpec
 
 
@@ -42,7 +43,7 @@ def _stub(monkeypatch, session, replies):
 
     def _fake(self, prompt, mandate, tools, model):  # noqa: ANN001, ARG001
         prompts.append(prompt)
-        return replies[len(prompts) - 1], 7, None
+        return CallResult(replies[len(prompts) - 1], 7, None)
 
     monkeypatch.setattr(PanelSession, "_run_claude", _fake)
     return prompts

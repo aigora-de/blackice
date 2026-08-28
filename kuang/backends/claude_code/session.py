@@ -50,7 +50,7 @@ from .contract import (FINDINGS_CONTRACT, UNRESOLVED_SEVERITY,
 from .memory import epoch_summary
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
-from .spawn import _resolve_claude_bin, build_argv, run_claude
+from .spawn import CallResult, _resolve_claude_bin, build_argv, run_claude
 from .surface import build_path_surface, gather_diff
 
 
@@ -115,9 +115,9 @@ class PanelSession:
             permission_mode=self.permission_mode, repo_root=self.repo_root,
             model=model)
 
-    # --- one `claude -p` call: returns (result_text, output_tokens, error) ---
+    # --- one `claude -p` call: returns what the envelope said about it ---
     def _run_claude(self, prompt: str, mandate: str, tools: list[str],
-                    model: str | None) -> tuple[str, int, str | None]:
+                    model: str | None) -> CallResult:
         return run_claude(self._argv(prompt, mandate, tools, model),
                           cwd=self.repo_root)
 
@@ -142,17 +142,24 @@ class PanelSession:
             return PersonaReport(persona=persona, verdict="YES",
                                  status=PersonaStatus.NOT_SPAWNED)
 
-        text, toks, err = self._run_claude(prompt, mandate, p.tools, model)
-        self.tokens += toks
-        if err:
+        call = self._run_claude(prompt, mandate, p.tools, model)
+        self.tokens += call.output_tokens
+        # Tools this persona asked for and was refused (#67). Accumulated across
+        # BOTH calls this method can make: the reformat retry is a second call and
+        # can be starved too, and a report naming only one of them would understate
+        # what the reviewer went without. Set at the source, never derived.
+        denied = list(call.denied_tools)
+        if call.error:
             # One channel, one wording (#29) — and now a status set beside it, so
             # #30 does not have to recover "this persona failed" by matching
             # ``agent error:`` off a finding's title.
             return PersonaReport(persona=persona, verdict=None,
-                                 status=PersonaStatus.AGENT_ERROR, findings=[
-                Finding(persona, err, Severity.NOTE, "meta")])
-        report = parse_findings(persona, text)
-        report.tokens = toks
+                                 status=PersonaStatus.AGENT_ERROR,
+                                 denied_tools=denied, findings=[
+                Finding(persona, call.error, Severity.NOTE, "meta")])
+        report = parse_findings(persona, call.text)
+        report.tokens = call.output_tokens
+        report.denied_tools = list(denied)
 
         # Retry-on-contract-miss: the persona reviewed but did not emit the JSON
         # contract (so its findings were lost). Reformat its raw review into the
@@ -161,14 +168,19 @@ class PanelSession:
             reformat = (
                 "Extract the findings from the review below into the EXACT JSON "
                 "contract. Output ONLY the fenced ```json block, nothing else.\n\n"
-                f"REVIEW:\n{text}\n\n{FINDINGS_CONTRACT}")
-            text2, toks2, err2 = self._run_claude(
+                f"REVIEW:\n{call.text}\n\n{FINDINGS_CONTRACT}")
+            retry = self._run_claude(
                 reformat, "You are a formatter: reformat, do not review.", ["Read"], model)
-            self.tokens += toks2
-            if not err2:
-                report2 = parse_findings(persona, text2)
+            self.tokens += retry.output_tokens
+            for tool in retry.denied_tools:
+                if tool not in denied:
+                    denied.append(tool)
+            report.denied_tools = list(denied)
+            if not retry.error:
+                report2 = parse_findings(persona, retry.text)
                 if not _is_parse_failure(report2):
-                    report2.tokens = toks + toks2
+                    report2.tokens = call.output_tokens + retry.output_tokens
+                    report2.denied_tools = list(denied)
                     return report2
         return report
 
@@ -198,13 +210,13 @@ class PanelSession:
             self.reduce_states.append(ReduceState.NOTHING_TO_REDUCE)
             return _identity_reduce(findings)
         model = self.cluster_model or self.default_model
-        text, toks, err = self._run_claude(
+        call = self._run_claude(
             build_cluster_prompt(findings), _CLUSTER_MANDATE, ["Read"], model)
-        self.tokens += toks
-        if err:
+        self.tokens += call.output_tokens
+        if call.error:
             self.reduce_states.append(ReduceState.CALL_FAILED)
             return _identity_reduce(findings)
-        groups, state = _extract_cluster_groups(text)
+        groups, state = _extract_cluster_groups(call.text)
         self.reduce_states.append(state)
         if groups is None:
             return _identity_reduce(findings)

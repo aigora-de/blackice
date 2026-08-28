@@ -22,6 +22,7 @@ import pytest
 
 from kuang.backends.claude_code import PanelSession
 from kuang.backends.claude_code.cluster import _CLUSTER_CONTRACT, _CLUSTER_TEMPLATE
+from kuang.backends.claude_code.spawn import CallResult
 from kuang.engine import Finding, ReviewSpec, Severity
 
 
@@ -41,8 +42,8 @@ def session(tmp_path):
 
 
 def _canned(text, toks=7, err=None):
-    """A stand-in for ``_run_claude`` returning a fixed (text, tokens, err)."""
-    return lambda prompt, mandate, tools, model: (text, toks, err)
+    """A stand-in for ``_run_claude`` returning a fixed ``CallResult``."""
+    return lambda prompt, mandate, tools, model: CallResult(text, toks, err)
 
 
 def _members_by_title(clusters):
@@ -106,7 +107,7 @@ def test_small_input_does_not_call_claude(session):
     def _boom(*a, **k):
         nonlocal called
         called = True
-        return ("", 0, None)
+        return CallResult("", 0, None)
 
     session._run_claude = _boom
     one = [Finding("P1", "solo", Severity.NOTE, "x", "a.py", 1)]

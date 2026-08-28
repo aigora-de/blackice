@@ -28,6 +28,7 @@ import pytest
 from kuang.backends.claude_code import load_personas
 from kuang.backends.claude_code import session as session_module
 from kuang.backends.claude_code.contract import _TEMPLATE_BLOCK
+from kuang.backends.claude_code.spawn import CallResult
 from kuang.cli import main
 
 # Three experts, and no fourth: "completeness" and "ruin" appear in the bodies, so
@@ -51,12 +52,12 @@ Find what everyone else missed; assume shared blind spots.
 Hunt ruin-class hazards only.
 """
 
-_NO_JSON = ("I read the diff and have nothing structured to say.", 0, None)
+_NO_JSON = CallResult("I read the diff and have nothing structured to say.", 0)
 
 
-def _contract(verdict="YES", findings=(), extra="") -> tuple[str, int, None]:
+def _contract(verdict="YES", findings=(), extra="") -> CallResult:
     body = json.dumps({"verdict": verdict, "findings": list(findings)})
-    return (f"I reviewed it.\n\n```json\n{body}\n```\n{extra}", 0, None)
+    return CallResult(f"I reviewed it.\n\n```json\n{body}\n```\n{extra}", 0)
 
 
 _CLEAN = _contract()
@@ -145,7 +146,7 @@ def test_a_silent_persona_and_a_contributor_are_distinguishable(sourced_repo, ca
 
 def test_a_failed_agent_is_not_silence(sourced_repo, capsys, monkeypatch):
     """The measured defect: an error envelope and an empty review looked alike."""
-    _stub(monkeypatch, {"Critic": ("", 0, "agent error: error_max_turns: …")})
+    _stub(monkeypatch, {"Critic": CallResult("", 0, "agent error: error_max_turns: …")})
     _run(sourced_repo)
     payload = _artefact(capsys.readouterr().out)
 
@@ -159,7 +160,7 @@ def test_a_backend_failure_and_an_engine_failure_stay_apart(sourced_repo, capsys
     at the source precisely so this issue can tell them apart. Recovering the
     distinction by matching a finding title would be the same defect one layer up.
     """
-    _stub(monkeypatch, {"Critic": ("", 0, "agent error: error_max_turns: …")})
+    _stub(monkeypatch, {"Critic": CallResult("", 0, "agent error: error_max_turns: …")})
     real_spawn = session_module.PanelSession.spawn
 
     def _spawn(self, persona, mandate, surface, epoch):  # noqa: ANN001
@@ -220,7 +221,7 @@ def test_a_degraded_run_cannot_be_read_as_a_complete_panel(sourced_repo, capsys,
     reader's own question — "may I read this ledger as a full pass?" — so a
     mutation that keeps a plausible-looking section cannot satisfy it.
     """
-    _stub(monkeypatch, {"Critic": ("", 0, "agent error: error_max_turns: …")})
+    _stub(monkeypatch, {"Critic": CallResult("", 0, "agent error: error_max_turns: …")})
     _run(sourced_repo)
     payload = _artefact(capsys.readouterr().out)
 
