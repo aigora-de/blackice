@@ -3,26 +3,39 @@
 """The permission policy: deny-by-default, and never a blanket shell.
 
 One module so there is one place to audit what a reviewer subprocess is allowed
-to do. ``personas`` defaults each reviewer's tools from the allow-list;
-``session`` and the CLI carry the deny-list to the subprocess boundary.
+to do — and, below, an honest account of how far that audit reaches. ``personas``
+defaults each reviewer's tools from the allow-list; ``session`` and the CLI carry
+the deny-list to the subprocess boundary.
 """
 
 from __future__ import annotations
 
 
-# Read-only permission policy (DENY-BY-DEFAULT). Reviewers may READ the diff and
-# source (Read/Grep/Glob); they may NOT run shell or mutate anything.
+# Deny-by-default permission policy. Reviewers may READ the diff and source
+# (Read/Grep/Glob); they may NOT edit, write, or run shell — those four tools are
+# on the deny-list below and are removed from the reviewer's session.
 #
-# IMPORTANT — how permissions work headless: in `claude -p` there is no
-# interactive prompt. An *allowed* tool runs UNSUPERVISED; an unallowed one is
-# auto-DENIED (never asked). Putting bare `Bash` here would pre-approve *all*
-# shell for an LLM reviewing an untrusted diff (rm, git push, network egress),
-# with no human in the per-command loop. In this design HITL is per-EPOCH
-# (convene / synthesise / gate), not per-command, so per-command safety must come
-# from POLICY, not prompts. Verification tools (pytest/git/ruff) are a deliberate,
-# SCOPED add-on for a later version — e.g. --allowedTools "Bash(pytest:*)"
-# "Bash(git diff:*)" — ideally shipped via a `--settings` profile and sandboxed
-# (no internet). Never bare `Bash`. See panel-review-NOTES.md.
+# IMPORTANT — how permissions work headless, and WHAT THIS POLICY DOES NOT BOUND.
+# In `claude -p` there is no interactive prompt. An *allowed* tool runs
+# UNSUPERVISED. A DENY-LISTED tool is removed from the session entirely, so it is
+# never even attempted (#67). A tool on NEITHER list is **not bounded here**:
+# `--allowedTools` marks tools as needing no approval, it does not restrict the
+# set. Measured on agent CLI 2.1.246 under this exact policy, a reviewer called
+# `WebFetch` on an external URL and it SUCCEEDED, with no denial recorded. So this
+# policy bounds the tools it NAMES and nothing else, and "read-only" describes
+# what a reviewer may do to the REPO, not the whole of its reach. #76 tracks
+# bounding the tool set; #4 is the `--settings` profile and sandbox that would do
+# it. Do not read the list below as an exhaustive account of a reviewer's powers
+# until one of those lands.
+#
+# Putting bare `Bash` here would additionally pre-approve *all* shell for an LLM
+# reviewing an untrusted diff (rm, git push, arbitrary egress), with no human in
+# the per-command loop. In this design HITL is per-EPOCH (convene / synthesise /
+# gate), not per-command, so per-command safety must come from POLICY, not
+# prompts. Verification tools (pytest/git/ruff) are a deliberate, SCOPED add-on
+# for a later version — e.g. --allowedTools "Bash(pytest:*)" "Bash(git diff:*)" —
+# ideally shipped via a `--settings` profile and sandboxed (no internet). Never
+# bare `Bash`. See NOTES.md.
 DEFAULT_ALLOWED_TOOLS = ["Read", "Grep", "Glob"]
 DEFAULT_DISALLOWED_TOOLS = ["Edit", "Write", "NotebookEdit", "Bash"]
 

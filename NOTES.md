@@ -69,17 +69,26 @@ injections — e.g.:
 per command; headless (`-p`) has no TTY, so there are no prompts. A tool call
 resolves against `--allowedTools`/`--disallowedTools`, the repo/user
 `settings.json`, and `--permission-mode`. Outcomes: *allowed → runs UNSUPERVISED*,
-*not allowed → auto-DENIED (never asked)*, or *bypass all*.
+*deny-listed → removed from the session, never even attempted*, or *bypass all*.
+
+**Corrected, measured (#76, agent CLI 2.1.246).** This section previously said *not
+allowed → auto-DENIED (never asked)*. That is wrong, and it matters: `--allowedTools`
+marks tools as needing no approval, it does **not** restrict the tool set. A tool on
+neither list still runs. Under the policy below, a reviewer called `WebFetch` on an
+external URL and it succeeded, with `permission_denials: []`.
 
 **The trap:** allow-listing bare `Bash` pre-approves *all* shell for an agent
 reviewing a possibly-untrusted diff — unrestricted, unsupervised (`rm`,
 `git push`, `curl | sh`, network egress). It also inflates cost/latency (personas
 wander, run suites).
 
-**Decision (enforced):** **deny-by-default, read-only.** Allow `Read`/`Grep`/`Glob`;
-disallow `Edit`/`Write`/`NotebookEdit`/`Bash`. The key principle: **HITL in this
-loop is per-EPOCH (convene/synthesise/gate), not per-command — so per-command
-safety must come from POLICY, not prompts.**
+**Decision:** **deny-by-default, read-only** *with respect to the repo*. Allow
+`Read`/`Grep`/`Glob`; disallow `Edit`/`Write`/`NotebookEdit`/`Bash`. Those four are
+genuinely enforced — they are removed from the session. Nothing else is bounded yet
+(#76), so this is not an exhaustive account of a reviewer's powers; item 3 below is
+what would make it one. The key principle: **HITL in this loop is per-EPOCH
+(convene/synthesise/gate), not per-command — so per-command safety must come from
+POLICY, not prompts.**
 
 **Roadmap for verification power, in order of preference:**
 1. **Scoped allow-list** — `--allow-tools "Bash(pytest:*)" "Bash(git diff:*)"

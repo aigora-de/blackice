@@ -121,10 +121,14 @@ and a survivability (ruin) lens are always ensured. Mandates stay open-ended (th
 persona's role is its lens; we don't lead the witness). See [`SKILL.md`](SKILL.md).
 
 ## Permission model
-**Deny-by-default, read-only** (`Read`/`Grep`/`Glob`; no shell or edits) —
-because headless `claude -p` runs any *allowed* tool unsupervised, and HITL here
-is per-epoch, not per-command. Scoped verification (`Bash(pytest:*)`, `Bash(git
-diff:*)`) is opt-in via `--allow-tools`. Never bare `Bash`.
+**Deny-by-default, read-only** with respect to the repo (`Read`/`Grep`/`Glob`;
+no shell or edits) — because headless `claude -p` runs any *allowed* tool
+unsupervised, and HITL here is per-epoch, not per-command. Scoped verification
+(`Bash(pytest:*)`, `Bash(git diff:*)`) is opt-in via `--allow-tools`. Never bare
+`Bash`. **The deny-list bounds the tools it names and not the whole tool set** —
+`--allowedTools` marks tools as needing no approval rather than restricting what
+exists, so a reviewer can still reach tools on neither list (measured: network
+access). Tracked as issue #76; do not rely on this as a sandbox.
 
 ## Layout
 | Path | Role |
