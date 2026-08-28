@@ -145,7 +145,10 @@ receives *all* prior epochs' findings (cross-epoch memory, no intra-epoch debate
 **Tools ground behaviour + permission policy:** deny-by-default. Personas get
 **read-only** source inspection (`Read`/`Grep`/`Glob`) and **no shell or edit
 tools** — because headless `claude -p` runs any *allowed* tool unsupervised (no
-prompt), and HITL here is per-epoch, not per-command. Scoped verification tools
+prompt), and HITL here is per-epoch, not per-command. That deny-list bounds the
+tools it **names**, not the whole tool set: a reviewer can still reach tools on
+neither list (measured: network access, issue #76), so treat "read-only" as a
+statement about the repo rather than a sandbox. Scoped verification tools
 (`Bash(pytest:*)`, `Bash(git diff:*)`) are **opt-in** via `--allow-tools` — the
 permissioned mode that lets the empiricist actually run the suite. A shipped
 `--settings` profile + sandbox are further hardening. Never bare `Bash`. See `NOTES.md`.
