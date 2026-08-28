@@ -12,7 +12,42 @@ import json
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class CallResult:
+    """What the envelope told us about one ``claude -p`` call.
+
+    The boundary used to return ``(result_text, output_tokens, error)`` and discard
+    the envelope, so a diagnostic that was not one of those three could not reach a
+    caller at all: #29 read five fields out of it, built one error string, and
+    dropped the rest.
+
+    Deliberately *this* channel and not a wider tuple. The envelope carries several
+    things nobody reads — ``num_turns`` (#70), ``total_cost_usd`` (#65) — and a
+    channel designed as "the one field I need" is redesigned once per issue, with
+    every call site re-unpacking each time. A dataclass takes a new field without
+    touching a single existing call site.
+
+    Deliberately not the envelope itself, either. It is untrusted, unbounded,
+    model-adjacent input (#25), and handing the dict downstream would invite callers
+    to reach into arbitrary keys — the drift this boundary exists to prevent. Fields
+    are extracted, validated and named here, and nothing else crosses.
+
+    ``denied_tools`` holds the NAMES of tools whose use was refused (#67), and only
+    the names: ``tool_input`` is unbounded model-controlled content — an entire
+    shell command in the capture this was written against — and what crosses here is
+    written into a run artefact that gets pasted into public issues. See
+    ``permissions.unavailable_tools`` for the other, deterministic half of #67; a
+    deny-listed tool is absent rather than refused, so it never appears here.
+    """
+
+    text: str
+    output_tokens: int
+    error: str | None = None
+    denied_tools: tuple[str, ...] = field(default=())
 
 
 def _resolve_claude_bin() -> str:
@@ -79,8 +114,36 @@ def _describe_failure(env: dict | None, *, returncode: int, stderr: str) -> str:
     return f"{label}: {detail[:300]}" if detail else label
 
 
-def run_claude(argv: list[str], *, cwd: Path) -> tuple[str, int, str | None]:
-    """Spawn one ``claude`` call. Returns ``(result_text, output_tokens, error)``.
+def _denied_tools(env: dict | None) -> tuple[str, ...]:
+    """Tool names the agent asked for and was refused, deduped, first-seen order.
+
+    #25's doctrine one field along: the envelope is untrusted input. Every level
+    here is model-adjacent or runtime-shaped and none of it is ours, so a
+    ``permission_denials`` that is not a list, an entry that is not a mapping, and a
+    ``tool_name`` that is not a string are all tolerated rather than raised on. A
+    reply this boundary cannot read is not a reason to lose an epoch every persona
+    has already been paid for.
+
+    Deduped because three refused ``Bash`` calls are one fact about the reviewer,
+    not three, and this is read by a human deciding whether the review was grounded.
+    """
+    if env is None:
+        return ()
+    denials = env.get("permission_denials")
+    if not isinstance(denials, list):
+        return ()
+    names: list[str] = []
+    for entry in denials:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("tool_name")
+        if isinstance(name, str) and name and name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def run_claude(argv: list[str], *, cwd: Path) -> CallResult:
+    """Spawn one ``claude`` call. Returns what the envelope said about it.
 
     Never raises on the model's behalf: a failure becomes an error string the
     caller records as a meta finding, and stdout that is not the expected JSON
@@ -97,6 +160,10 @@ def run_claude(argv: list[str], *, cwd: Path) -> tuple[str, int, str | None]:
     Tokens are deliberately **not** counted for a failed call, though the envelope
     reports them: what counts against the budget decides when a run halts, which is
     control flow and belongs to #65 with its own evidence.
+
+    Refused tools (#67) are read BEFORE the failure branch, not after it: a call can
+    be starved of tools and then error, and the call most likely to have been
+    starved must not be the one that reports none.
     """
     proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(cwd))
     try:
@@ -105,9 +172,12 @@ def run_claude(argv: list[str], *, cwd: Path) -> tuple[str, int, str | None]:
         env = None
     if not isinstance(env, dict):
         env = None  # valid JSON that is not an envelope is still just text
+    denied = _denied_tools(env)
     if proc.returncode != 0 or (env is not None and env.get("is_error") is True):
-        return "", 0, "agent error: " + _describe_failure(
-            env, returncode=proc.returncode, stderr=proc.stderr)
+        return CallResult("", 0, "agent error: " + _describe_failure(
+            env, returncode=proc.returncode, stderr=proc.stderr), denied)
     if env is None:
-        return proc.stdout, 0, None  # tolerate raw text
-    return env.get("result", ""), int((env.get("usage") or {}).get("output_tokens", 0)), None
+        return CallResult(proc.stdout, 0, None, denied)  # tolerate raw text
+    return CallResult(env.get("result", ""),
+                      int((env.get("usage") or {}).get("output_tokens", 0)),
+                      None, denied)

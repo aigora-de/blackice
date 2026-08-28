@@ -20,13 +20,14 @@ import json
 import pytest
 
 from kuang.backends.claude_code import session as session_module
+from kuang.backends.claude_code.spawn import CallResult
 from kuang.cli import main
 
 
 def _stub_claude(monkeypatch, findings_json: str) -> None:
     """Every persona replies with the same canned contract block."""
     def _fake(self, prompt, mandate, tools, model):  # noqa: ANN001, ARG001
-        return f"I reviewed it.\n\n```json\n{findings_json}\n```\n", 0, None
+        return CallResult(f"I reviewed it.\n\n```json\n{findings_json}\n```\n", 0)
 
     monkeypatch.setattr(session_module.PanelSession, "_run_claude", _fake)
 

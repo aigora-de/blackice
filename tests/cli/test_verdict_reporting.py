@@ -21,6 +21,7 @@ import json
 import pytest
 
 from kuang.backends.claude_code import session as session_module
+from kuang.backends.claude_code.spawn import CallResult
 from kuang.backends.claude_code.contract import _TEMPLATE_BLOCK
 from kuang.cli import main
 
@@ -28,7 +29,7 @@ from kuang.cli import main
 def _stub_reply(monkeypatch, reply: str) -> None:
     """Every persona hands back the same canned reply text."""
     def _fake(self, prompt, mandate, tools, model):  # noqa: ANN001, ARG001
-        return reply, 0, None
+        return CallResult(reply, 0)
 
     monkeypatch.setattr(session_module.PanelSession, "_run_claude", _fake)
 

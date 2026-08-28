@@ -83,6 +83,14 @@ human. You are the *synthesiser, not the judge* — the human decides.
   real material, but its *silence* proves nothing: findings nobody raised are not
   findings nobody found. Never treat a degraded run as a clean pass — say so, and
   re-run before calling the surface clean.
+- **Read the permissions line too, and read it as grounding.** Every run states the
+  policy it used and, per persona, any granted tool the deny-list removed — such a
+  tool is *absent* from the reviewer's session, not refused, so nothing else in the
+  output betrays it. A panel that reviewed with no read tools speculated; its
+  findings are hypotheses about a diff nobody opened, and its clean verdict is worth
+  nothing. Refused tool *calls* are listed separately and are **not** a degradation
+  on their own — deny-by-default means a refused `Bash` is usually the policy
+  working. Adjudicate against source with extra care when either appears.
 - **Between epochs / after halt: synthesise.** Present each persona's view
   *distinctly* (don't blend them); surface disagreement.
 - **Adjudicate BLOCKER/UGLY findings against source before relaying them.** A

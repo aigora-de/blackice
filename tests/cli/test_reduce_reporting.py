@@ -24,6 +24,7 @@ import json
 import pytest
 
 from kuang.backends.claude_code import session as session_module
+from kuang.backends.claude_code.spawn import CallResult
 from kuang.backends.claude_code.cluster import _CLUSTER_TEMPLATE
 from kuang.cli import main
 
@@ -51,18 +52,19 @@ def _finding(title, line):
             "file": "a.py", "line": line, "evidence": "read it"}
 
 
-def _contract(findings) -> tuple[str, int, None]:
+def _contract(findings) -> CallResult:
     body = json.dumps({"verdict": "NO", "findings": findings})
-    return (f"I reviewed it.\n\n```json\n{body}\n```\n", 0, None)
+    return CallResult(f"I reviewed it.\n\n```json\n{body}\n```\n", 0)
 
 
 # A genuine grouping that merges nothing: what a healthy conservative clusterer
 # returns most of the time, and the variant the dead one was indistinguishable from.
-MERGED_NOTHING = (f"Grouped.\n\n```json\n{json.dumps({'clusters': [[0], [1]]})}\n```\n",
-                  0, None)
-CALL_ERROR = ("", 0, "agent error: error_max_turns: Reached maximum number of turns")
-ECHOED = (f"Here you go.\n\n```json\n{_CLUSTER_TEMPLATE}\n```\n", 0, None)
-NO_GROUPING = ("I could not group these findings.", 0, None)
+MERGED_NOTHING = CallResult(
+    f"Grouped.\n\n```json\n{json.dumps({'clusters': [[0], [1]]})}\n```\n", 0)
+CALL_ERROR = CallResult(
+    "", 0, "agent error: error_max_turns: Reached maximum number of turns")
+ECHOED = CallResult(f"Here you go.\n\n```json\n{_CLUSTER_TEMPLATE}\n```\n", 0)
+NO_GROUPING = CallResult("I could not group these findings.", 0)
 
 
 @pytest.fixture
