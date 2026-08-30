@@ -30,8 +30,9 @@ from pathlib import Path
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, PanelSession,
                                           ReduceState, SurfaceError,
-                                          called_no_tool, load_personas,
-                                          load_prior_findings, unavailable_tools)
+                                          SurfaceRecord, called_no_tool,
+                                          load_personas, load_prior_findings,
+                                          unavailable_tools)
 from kuang.engine import (HaltingSet, PanelConfig, PersonaReport, ReviewSpec,
                           run)
 
@@ -55,6 +56,37 @@ def _turn_note(report: PersonaReport) -> str:
             note += " — CALLED NO TOOL"
         return note
     return ", turn count unreported" if report.status.reviewed else ""
+
+
+def _surface_note(record: SurfaceRecord | None) -> str:
+    """What one epoch's line says about the surface the panel was handed (#69).
+
+    Silent unless the panel was given less than the operator named — a healthy
+    run must claim nothing, and a rule that fires on a small diff or a surface
+    that fits is the mirror image of the defect it reports. Saying so out loud on
+    a healthy run is #11's acceptance criterion (a `[surface]` confirmation line,
+    with used/cap bytes), deliberately left to it; the artefact carries the fact
+    every epoch either way, which is where a cold read needs it.
+
+    Each loss is named for what it was, never totalled: files dropped whole at the
+    cap, the one file cut mid-way because it alone over-ran, a file that could not
+    be decoded, and a named path that matched nothing tracked are four different
+    things to have gone wrong with a review, and an operator deciding whether to
+    re-run at a higher cap needs to know which. Counts and not names — naming them
+    is #11 and #74.
+    """
+    if record is None or not record.degraded:
+        return ""
+    lost = []
+    if record.omitted:
+        lost.append(f"{record.omitted} file(s) omitted at the cap")
+    if record.truncated:
+        lost.append("1 file cut mid-way at the cap")
+    if record.unreadable:
+        lost.append(f"{record.unreadable} file(s) could not be read")
+    if record.unresolved:
+        lost.append(f"{record.unresolved} named path(s) matched no tracked file")
+    return f" — SURFACE REDUCED ({'; '.join(lost)})"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -216,6 +248,19 @@ def main(argv: list[str] | None = None) -> int:
         {"epoch": e.index, "persona": r.persona, "status": r.status.value,
          "findings": len(r.findings), "turns": r.turns}
         for e in review_run.epochs for r in e.reports]
+    # What the panel was GIVEN (#69), one record per epoch, in the order they were
+    # gathered. Known before any subprocess exists, so it is reported in a dry run
+    # too — the opposite of ``turns``, where 0 means the runtime did not say, and
+    # the same as #67's deterministic half. Pre-flight confirmation is the dry
+    # run's only job, and "you named three files and one fitted" is the single
+    # most useful thing it can say about a path-mode review.
+    surface_epochs = [
+        {"epoch": i + 1, "mode": rec.mode, "omitted": rec.omitted,
+         "truncated": rec.truncated, "unreadable": rec.unreadable,
+         "unresolved": rec.unresolved, "bounded": rec.bounded,
+         "degraded": rec.degraded}
+        for i, rec in enumerate(session.surface_states)]
+    surface_by_epoch = dict(enumerate(session.surface_states, 1))
     print(f"\npanel participation: {len(personas)} persona(s) x "
           f"{len(review_run.epochs)} epoch(s)")
     for e in review_run.epochs:
@@ -229,6 +274,12 @@ def main(argv: list[str] | None = None) -> int:
         if ungrounded:
             line += (f" — {len(ungrounded)} CALLED NO TOOL "
                      f"(answered from the prompt alone)")
+        # And what they were given, beside what they did with it. Two marks and
+        # two failures: a surface the operator did not get and a reviewer that
+        # did not look have different causes, either can happen without the
+        # other, and neither may absorb the other. Once per epoch, because the
+        # engine gathers once per epoch and hands every persona the same string.
+        line += _surface_note(surface_by_epoch.get(e.index))
         print(line)
         for r in e.reports:
             # The count is findings EMITTED, meta findings included, so it agrees
@@ -333,6 +384,14 @@ def main(argv: list[str] | None = None) -> int:
         # claim a reader coming to the artefact cold has no other way to audit.
         "permissions": {"mode": args.permission_mode, "denied": disallowed,
                         "personas": permission_personas, "refusals": refusals},
+        # What the panel was GIVEN, per epoch: whether the assembled surface was
+        # the one that was asked for, and — where it was not — how it fell short
+        # (#69). Always present, because an absent key makes no claim and a run
+        # read back cold cannot otherwise tell a review of everything from a
+        # review of a third of it. ``bounded: false`` says a cap was never applied
+        # to this mode at all (#27), which is what this record does NOT check.
+        # What the surface WAS, rather than how it fell short, is #74.
+        "surface": surface_epochs,
         # Whether the reduce step ran, was not asked for, had nothing to fold, or
         # degraded — and on which epoch (#30).
         "reduce": {"requested": bool(args.semantic_dedup), "epochs": reduce_epochs},

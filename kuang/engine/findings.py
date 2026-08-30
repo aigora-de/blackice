@@ -148,10 +148,21 @@ class PersonaStatus(Enum):
 
     The line that draws it: **did a review happen** is an outcome and belongs
     here; **how well was it grounded** is a fact about a review that did happen
-    and belongs beside it. A persona with nothing to review at all therefore falls
-    on THIS side of the line, which is why #69 may land as a member while #70 did
-    not — an asymmetry that is a claim about this vocabulary, argued rather than
-    assumed.
+    and belongs beside it.
+
+    That line was written expecting a persona with **nothing to review at all**
+    (#69) to fall on THIS side of it and land as a member — an asymmetry argued
+    rather than assumed, and offered to be broken on the record. It was. Measured,
+    the state it named is **unreachable**: an empty surface raises ``SurfaceError``
+    in both of the backend's modes and the run stops before a persona exists (#18),
+    so the persona that IS reachable reviewed a *partial* surface — it contributed,
+    and it was under-grounded. A member would have named a state the code refuses
+    to enter. #69 therefore landed beside this enum as well, and not even on
+    ``PersonaReport``: the surface is gathered once per EPOCH and handed to every
+    persona unchanged, so it is not a fact about one spawn at all.
+
+    What survives is the line itself. What did not survive is a prediction about
+    which side a case falls on, made before anyone checked whether it can happen.
     """
 
     UNREPORTED = "unreported"        # the backend did not say (the default)

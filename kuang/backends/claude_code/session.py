@@ -54,7 +54,7 @@ from .memory import epoch_summary
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
 from .spawn import CallResult, _resolve_claude_bin, build_argv, run_claude
-from .surface import build_path_surface, gather_diff
+from .surface import DIFF_SURFACE, SurfaceRecord, build_path_surface, gather_diff
 
 
 @dataclass
@@ -84,6 +84,16 @@ class PanelSession:
     # diagnostic about a clusterer it does not have. ``tokens`` above is the same
     # kind of fact about the same calls and lives in the same place.
     reduce_states: list[ReduceState] = field(default_factory=list)
+    # One record per call to ``gather``, i.e. one per epoch, in order (#69), and
+    # kept here for the reason ``reduce_states`` is: the engine's ``GatherSurface``
+    # seam returns the surface text and nothing else, the engine never reads this
+    # and never branches on it, and widening the seam would oblige every
+    # implementation — a backend with no cap included — to produce a diagnostic
+    # about one. A surface is gathered ONCE PER EPOCH and handed to every persona
+    # unchanged, so this is an epoch fact and not a spawn fact: putting it on
+    # seven ``PersonaReport``s would repeat one fact seven times and imply the
+    # personas could differ, which they cannot.
+    surface_states: list[SurfaceRecord] = field(default_factory=list)
     prior_summary: str = ""      # cross-EPOCH memory; on_epoch REWRITES it each epoch
     # Cross-RUN memory (issue #13): set once at startup from --prior-findings and
     # never touched again. Deliberately NOT folded into prior_summary, which
@@ -102,12 +112,21 @@ class PanelSession:
         mistyped ref stops the run instead of handing the panel an empty string
         to unanimously approve.
 
+        What each epoch's surface cost is recorded in ``surface_states`` (#69).
+        A run that refuses records nothing: it never reached a panel, so there is
+        no reduced surface to report and none is invented.
+
         Raises:
             SurfaceError: git failed, or the requested surface is empty.
         """
         if self.paths:  # path mode: full content of the named files/dirs (issue #6)
-            return build_path_surface(self.repo_root, self.paths, self.max_surface_bytes)
-        return gather_diff(self.repo_root, self.base, self.head)
+            surface, record = build_path_surface(
+                self.repo_root, self.paths, self.max_surface_bytes)
+            self.surface_states.append(record)
+            return surface
+        surface = gather_diff(self.repo_root, self.base, self.head)
+        self.surface_states.append(DIFF_SURFACE)
+        return surface
 
     # --- the argv this session would spawn: the call and the dry run agree ---
     def _argv(self, prompt: str, mandate: str, tools: list[str],
