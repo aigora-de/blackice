@@ -11,6 +11,12 @@ a review it had never performed.
 
 The fix is to refuse to assemble a surface git could not produce. These tests go
 red if the return code is ignored again.
+
+The last section is the consequence of that refusal (#69). Because an *empty*
+surface is refused in both modes, the surface failure that can still reach a panel
+is one that is **present and is not the one that was asked for** — and what each
+epoch's surface cost is now recorded on the session, one record per gather, in the
+order they were gathered. Also regression tests.
 """
 
 from __future__ import annotations
@@ -89,3 +95,65 @@ def test_path_mode_does_not_touch_the_diff_path(changed_repo):
     session = _session(changed_repo, paths=["a.py"])
 
     assert "--- FILE: a.py" in session.gather(1)
+
+
+# --- what the run knows about the surface it gathered (#69) -------------------
+#
+# ``gather`` refuses an EMPTY surface (above), so the reachable failure is a
+# surface that is PRESENT and is not the one the operator asked for. The record
+# is kept here, on the session, one per epoch in order — the same place and the
+# same shape as ``reduce_states`` (#30), and for the same reason: the engine's
+# ``GatherSurface`` seam returns the surface text and nothing else, it never
+# reads this and never branches on it, and widening it would oblige every
+# implementation to produce a diagnostic about a cap it does not have.
+
+def test_a_diff_mode_gather_records_that_no_cap_was_applied(changed_repo):
+    session = _session(changed_repo)
+    session.gather(1)
+
+    assert len(session.surface_states) == 1
+    rec = session.surface_states[0]
+    assert rec.mode == "diff"
+    assert rec.bounded is False, "diff mode ignores the cap entirely (#27)"
+    assert rec.degraded is False, "and losing nothing is not a degradation"
+
+
+def test_a_path_mode_gather_records_what_the_cap_dropped(changed_repo):
+    (changed_repo / "b.py").write_text("B = 2\n" * 40)
+    session = _session(changed_repo, paths=["a.py", "b.py"], max_surface_bytes=60)
+    session.gather(1)
+
+    rec = session.surface_states[0]
+    assert rec.mode == "paths"
+    assert rec.bounded is True
+    assert rec.degraded is True
+    assert rec.omitted == 1
+
+
+def test_one_record_per_epoch_in_order(changed_repo):
+    """The surface is re-gathered every epoch, so the record is per epoch.
+
+    An epoch whose surface was cut and one whose surface was whole must not be
+    collapsed into a single claim about the run.
+    """
+    (changed_repo / "b.py").write_text("B = 2\n" * 40)
+    session = _session(changed_repo, paths=["a.py", "b.py"], max_surface_bytes=60)
+    session.gather(1)
+    session.max_surface_bytes = 100_000
+    session.gather(2)
+
+    assert [r.degraded for r in session.surface_states] == [True, False]
+
+
+def test_a_refused_surface_records_nothing(changed_repo):
+    """A run that stops is not a run that reviewed a reduced surface.
+
+    ``SurfaceError`` ends the run before any persona exists, so there is no
+    reduced surface to report and none is invented.
+    """
+    session = _session(changed_repo)
+    session.base = "no-such-ref"
+    with pytest.raises(SurfaceError):
+        session.gather(1)
+
+    assert session.surface_states == []

@@ -96,6 +96,16 @@ human. You are the *synthesiser, not the judge* — the human decides.
   nothing. Refused tool *calls* are listed separately and are **not** a degradation
   on their own — deny-by-default means a refused `Bash` is usually the policy
   working. Adjudicate against source with extra care when either appears.
+- **Read what the panel was GIVEN, not only what it did.** Every run states, per
+  epoch, whether the assembled surface was the one that was asked for; an epoch
+  marked `SURFACE REDUCED` says which way it fell short — files dropped at the
+  `--max-surface-bytes` cap, one file cut mid-way, a file that could not be read,
+  or a named path that matched nothing tracked. A panel reviewing a third of what
+  you named finds nothing in the other two thirds and votes on the whole; re-run
+  at a higher cap before reading that silence as clean. The counts are exact and
+  they are not the whole risk: **diff mode applies no cap at all**, so
+  `bounded: false` in the artefact means nothing was checked there rather than
+  that nothing was lost.
 - **Between epochs / after halt: synthesise.** Present each persona's view
   *distinctly* (don't blend them); surface disagreement.
 - **Adjudicate BLOCKER/UGLY findings against source before relaying them.** A

@@ -7,12 +7,21 @@ Two modes. Diff mode reviews a change (``git diff base...head``); path mode
 a size cap. Both refuse to produce a surface they could not assemble, because a
 panel handed an empty string finds nothing, votes YES, and the loop halts
 CONVERGED — the tool reporting GOOD on a review it never performed (#18).
+
+Because both refuse the empty case, the surface failure that IS reachable is a
+surface that is **present and is not the one that was asked for**: files dropped
+at the cap, one file cut mid-way, a file that could not be read, or a named path
+that matched nothing tracked. Path mode has always computed every one of those
+and thrown it away, returning only the string — so a panel handed a third of what
+was named reported ``found_nothing`` like any other clean review (#69). Assembly
+now returns a ``SurfaceRecord`` beside the text.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -24,6 +33,55 @@ class SurfaceError(RuntimeError):
     report GOOD on a review it never performed. A surface that cannot be built is
     an operator error to be corrected, never a review with no findings.
     """
+
+
+@dataclass(frozen=True)
+class SurfaceRecord:
+    """How the assembled surface differs from the one that was asked for (#69).
+
+    Set where the surface is built and never derived. The difference is known
+    exactly — a count of what the assembler dropped, not an estimate of what a
+    reviewer could read — which is why there is no threshold here and none is
+    honest: "the surface looks implausibly small" is a rule on a value nobody has
+    baselined, and it fires on a healthy one-line diff.
+
+    **Counts, never names, and never the surface itself.** This record is written
+    into an artefact that gets pasted into a public repo's issues, and a review
+    surface is unbounded content — whole files, or a whole diff. Naming the files
+    that were lost is #11's and #74's acceptance criterion, deliberately left to
+    them so this cannot be mistaken for having met it.
+
+    ``bounded`` is what the rule does NOT cover, stated in the run's own output
+    rather than only in a docstring: diff mode applies no cap at all (#27), so it
+    can lose nothing to one and this record can detect nothing there. The mirror
+    image — a surface larger than a reviewer can actually read — needs #27, and
+    ``bounded=False`` is where an operator reads that it went unchecked.
+    """
+
+    mode: str                 # "paths" | "diff"
+    omitted: int = 0          # whole files dropped once the cap was reached
+    truncated: bool = False   # the first file, cut in place because it alone over-ran
+    unreadable: int = 0       # named files that could not be decoded (binary, IO)
+    unresolved: int = 0       # named paths that matched no tracked file
+    bounded: bool = True      # whether a cap was applied to this mode at all
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the panel was given less than the operator named.
+
+        One rule, four shapes, and every shape falls out of it. An unbounded
+        surface is NOT one of them: nothing was lost, and a run must not report a
+        degradation it did not suffer.
+        """
+        return bool(self.omitted or self.truncated or self.unreadable
+                    or self.unresolved)
+
+
+# Diff mode assembles the whole of ``git diff`` or refuses (see ``gather_diff``),
+# so its record is a constant rather than a computation. It is emitted anyway,
+# every epoch, because an absent record makes no claim and "we did not check" is
+# itself the thing an operator needs told (#27).
+DIFF_SURFACE = SurfaceRecord(mode="diff", bounded=False)
 
 
 def _expand_paths(repo_root: Path, paths: list[str]) -> tuple[list[Path], list[str]]:
@@ -78,7 +136,8 @@ def _render_file(rel: str, text: str) -> str:
     return f"\n--- FILE: {rel} ({len(lines)} lines) ---\n{body}\n"
 
 
-def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str:
+def build_path_surface(repo_root: Path, paths: list[str],
+                       max_bytes: int) -> tuple[str, SurfaceRecord]:
     """Assemble a whole-file review surface from the named files/directories.
 
     Renders each file's full content with ``file:line`` fidelity, honouring a
@@ -87,6 +146,12 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
     itself exceeds the cap is truncated in place with a marker, so there is always
     something to review while the cap still bounds the surface.
 
+    Returns the surface **and** a ``SurfaceRecord`` of how it differs from what
+    was asked for (#69). The record is returned rather than recovered later by
+    matching ``--- OMITTED ---`` out of the string: reading a fact back off
+    wording is the defect ``PersonaStatus`` forbids one layer up, and it breaks
+    the moment a notice is reworded.
+
     Raises:
         SurfaceError: None of the requested paths yielded reviewable content.
     """
@@ -94,6 +159,8 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
     files, missing = _expand_paths(repo_root, paths)
     chunks: list[str] = []
     omitted: list[tuple[str, str]] = []
+    unreadable = 0
+    truncated = False
     used = 0
     for fp in files:
         rel = os.path.relpath(fp, repo_root)
@@ -101,6 +168,7 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
             text = fp.read_text()
         except (OSError, UnicodeDecodeError):
             omitted.append((rel, "unreadable/binary"))
+            unreadable += 1
             continue
         rendered = _render_file(rel, text)
         if used + len(rendered) > max_bytes:
@@ -110,6 +178,7 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
                 budget = max(max_bytes - used, 0)
                 chunks.append(rendered[:budget]
                               + f"\n… [truncated at surface cap: {rel}]\n")
+                truncated = True
                 used = max_bytes
             else:
                 omitted.append((rel, "surface cap"))
@@ -129,7 +198,11 @@ def build_path_surface(repo_root: Path, paths: list[str], max_bytes: int) -> str
     if omitted:
         surface += ("\n--- OMITTED (not shown) ---\n"
                     + "\n".join(f"- {rel}: {why}" for rel, why in omitted) + "\n")
-    return surface
+    # Counted apart, because they are lost for different reasons and a run that
+    # blamed a binary file on the cap would be the instrument lying about itself.
+    return surface, SurfaceRecord(
+        mode="paths", omitted=len(omitted) - unreadable, truncated=truncated,
+        unreadable=unreadable, unresolved=len(missing))
 
 
 def gather_diff(repo_root: Path, base: str, head: str) -> str:
