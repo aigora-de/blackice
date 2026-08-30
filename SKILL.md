@@ -77,12 +77,17 @@ human. You are the *synthesiser, not the judge* — the human decides.
   per persona per epoch, whether it *contributed*, *found nothing*, or never
   reviewed — and if it did not, which channel failed (`agent error` = the runtime
   returned no review; `spawn failed` = our own code raised; `unreadable` = it
-  replied and we could not read it; `not spawned` = a dry run). It also states
-  whether the semantic reduce *ran*, was *not requested*, had *nothing to reduce*,
-  or **degraded** and why. A ledger from a panel that did not run in full is still
-  real material, but its *silence* proves nothing: findings nobody raised are not
-  findings nobody found. Never treat a degraded run as a clean pass — say so, and
-  re-run before calling the surface clean.
+  replied and we could not read it; `not spawned` = a dry run). Each line also
+  carries the **turn count**, and a persona marked `CALLED NO TOOL` answered from
+  the prompt alone — it opened no file, ran no test and checked no claim, so every
+  finding it made is speculation and its verdict, clean or ruinous, is worth
+  nothing. Measured, a healthy review runs 6-9 turns; one turn means no tool call
+  was made, and nothing finer is claimed. It also states whether the semantic
+  reduce *ran*, was *not requested*, had *nothing to reduce*, or **degraded** and
+  why. A ledger from a panel that did not run in full is still real material, but
+  its *silence* proves nothing: findings nobody raised are not findings nobody
+  found. Never treat a degraded run as a clean pass — say so, and re-run before
+  calling the surface clean.
 - **Read the permissions line too, and read it as grounding.** Every run states the
   policy it used and, per persona, any granted tool the deny-list removed — such a
   tool is *absent* from the reviewer's session, not refused, so nothing else in the
