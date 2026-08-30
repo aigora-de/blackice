@@ -21,9 +21,12 @@ Design choices realised across this package (see
   ``CLAUDE.md``) is its lens; we do not impose a prescriptive checklist that would
   "lead the witness".
 * **Tools as behavioural grounding.** Every reviewer gets read-only source
-  inspection + test/lint *execution* (``Read``/``Grep``/``git``/``pytest``/
-  ``ruff``) and **no edit tools** — biasing them to verify against source and run
-  the tests rather than speculate. The policy lives in ``permissions``.
+  inspection (``Read``/``Grep``/``Glob``) and **no edit tools** — biasing them to
+  verify against source rather than speculate. Test/lint *execution* is **not** the
+  default and never has been: ``Bash`` is deny-listed, so a reviewer cannot run
+  ``pytest``, ``git`` or ``ruff`` at all unless an operator opts in with a scoped
+  ``--allow-tools 'Bash(pytest:*)'``. And the deny-list bounds the tools it NAMES,
+  not the whole tool set (#76). The policy lives in ``permissions``.
 * **Independent within an epoch;** epoch > 1 is handed *all* prior epochs'
   findings (cross-epoch memory), so the panel builds on itself without
   intra-epoch debate (which would reintroduce groupthink).
