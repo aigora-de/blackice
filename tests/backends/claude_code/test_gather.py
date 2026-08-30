@@ -9,8 +9,14 @@ panel was handed the literal string ``(empty diff)``: every persona found
 nothing, voted YES, and the loop halted **CONVERGED**. The tool reported GOOD on
 a review it had never performed.
 
-The fix is to refuse to assemble a surface git could not produce. These tests go
-red if the return code is ignored again.
+The fix is to refuse to assemble a surface git could not produce — and it is
+**two** guards, not one: a non-zero return code, and empty stdout. They are tested
+apart on purpose (#87). Removing the return-code guard used to leave the bad-ref
+test green, because a bad ref produces no stdout and the *empty* guard raised in its
+place: the test passed on a mechanism it does not name, and this module's docstring
+claimed a coverage it did not have. Each test below now says which guard it holds,
+and ``test_a_git_failure_that_still_printed_something_is_refused`` covers the state
+where only the return code can save the run.
 
 The last section is the consequence of that refusal (#69). Because an *empty*
 surface is refused in both modes, the surface failure that can still reach a panel
@@ -23,7 +29,10 @@ from __future__ import annotations
 
 import pytest
 
+import subprocess
+
 from kuang.backends.claude_code import PanelSession, SurfaceError
+from kuang.backends.claude_code import surface as surface_module
 from kuang.cli import main
 from kuang.engine import ReviewSpec
 
@@ -36,11 +45,49 @@ def _session(changed_repo, **kw) -> PanelSession:
 # --- the defect ---------------------------------------------------------------
 
 def test_a_bad_base_ref_raises_instead_of_yielding_an_empty_surface(changed_repo):
+    """And raises for the RIGHT reason: git failed, not "the diff was empty".
+
+    Both guards are live in this state, so asserting only that something was raised
+    let the empty-stdout guard stand in for the return-code guard and kept the test
+    green without it (#87). The distinction is not cosmetic — the two messages send
+    an operator to different mistakes.
+    """
     session = _session(changed_repo)
     session.base = "no-such-ref"
 
-    with pytest.raises(SurfaceError):
+    with pytest.raises(SurfaceError) as excinfo:
         session.gather(1)
+
+    assert "failed (" in str(excinfo.value), "the empty-diff guard stood in for it"
+
+
+def test_a_git_failure_that_still_printed_something_is_refused(changed_repo,
+                                                              monkeypatch):
+    """Non-zero exit WITH output on stdout — the one state only this guard covers.
+
+    Nothing exercised it before (#87). git can fail after writing a partial diff:
+    a broken index, an unreadable object part-way through, a `dubious ownership`
+    refusal. The empty-stdout guard cannot help there, and a partial diff presented
+    as a whole one is exactly the review-that-never-happened this module exists for.
+
+    The subprocess is stubbed because the state is hard to provoke reliably from a
+    real repo, and this is characterisation of OUR handling, not of git.
+    """
+    def _fake_run(argv, **kw):  # noqa: ANN001, ARG001
+        return subprocess.CompletedProcess(
+            argv, 128,
+            stdout="diff --git a/a.py b/a.py\n@@ -1 +1 @@\n-return 1\n",
+            stderr="fatal: unable to read tree abc123")
+
+    monkeypatch.setattr(surface_module.subprocess, "run", _fake_run)
+    session = _session(changed_repo)
+
+    with pytest.raises(SurfaceError) as excinfo:
+        session.gather(1)
+
+    message = str(excinfo.value)
+    assert "failed (128)" in message
+    assert "unable to read tree" in message
 
 
 def test_the_failure_names_the_refs_and_carries_git_s_own_message(changed_repo):
@@ -92,7 +139,16 @@ def test_path_mode_with_no_reviewable_files_raises(changed_repo):
 
 
 def test_path_mode_does_not_touch_the_diff_path(changed_repo):
+    """With a base ref that CANNOT resolve, so taking the diff path would raise.
+
+    The previous form passed a valid ``base``, so a gather that ran ``git diff`` as
+    well succeeded invisibly and the test held nothing its siblings did not (#87).
+    The empty base is not a contrivance: ``cli.main`` passes ``base=args.base or ""``
+    and path mode never requires ``--base``, so an empty ref is what a real
+    path-mode run actually carries.
+    """
     session = _session(changed_repo, paths=["a.py"])
+    session.base = ""
 
     assert "--- FILE: a.py" in session.gather(1)
 
