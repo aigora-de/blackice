@@ -36,8 +36,12 @@ context.
   reproducible. No wall-clock or randomness in control flow.
 - **Backend-agnostic by construction.** The engine knows nothing about any specific
   agent runtime; runtimes are dependency-injected backends. Keep that seam clean.
-- **Deny-by-default on permissions.** Reviewers run read-only unless a scoped
-  verification allow-list is explicitly opted in. Never grant a blanket shell.
+- **Deny-by-default on permissions.** Reviewers run read-only *with respect to the
+  repo* unless a scoped verification allow-list is explicitly opted in. Never grant a
+  blanket shell. The deny-list bounds the tools it **names**, not the whole tool set:
+  `--allowedTools` marks tools as needing no approval rather than restricting what
+  exists, so a reviewer can still reach tools on neither list (measured: network
+  access, #76). It is not a sandbox and must not be described as one (#79).
 - **Personas are a parameter, not a hard-code.** Sourced by precedence: a target
   repo's `CLAUDE.md` experts → `panel.yaml`/`panel.md` → a distilled default.
 
@@ -54,6 +58,36 @@ context.
   backend specifics into the engine, or CLI wiring into the backend. The engine
   imports nothing from a backend, and `tests/engine/test_backend_agnostic.py`
   enforces it.
+
+# EVIDENCE AND CLOSE-OUT
+
+The bar every recent PR has been held to. It is not written anywhere else, and it
+has repeatedly caught defects in the *tests* rather than in the code.
+
+- **Measure the runtime before designing against one of its fields.** #29, #67 and
+  #70 each asserted a mechanism that measurement changed or narrowed. Capture the
+  live envelope first, quote it verbatim (trimmed to the boundary in question), and
+  **correct the issue on the issue** rather than quietly designing around it.
+- **Mutation-verify every load-bearing test.** Neuter the guard, run the full suite,
+  confirm **exactly**-red, restore, record the matrix. Include a **vacuity probe**
+  (make everything report healthy at once) and a mutation implementing the design
+  you **rejected**, so the doctrine test is shown to be load-bearing. Mutate every
+  line you *print*, not only every rule you compute — untested output is untested.
+  Any test killed by nothing is either a gap or needs justifying individually.
+- **Property tests come in pairs.** "A degraded run cannot be read as a clean one"
+  passes trivially if everything reports degraded; a second test must forbid that.
+- **A rule that fires on a healthy run is the mirror image of the defect.** Prefer
+  the exactly-knowable rule, state plainly what it under-reports, and name the
+  sibling mechanism that covers the rest. A tolerance rule must be one principle that
+  every case falls out of, not a patched table — and never a threshold on a value
+  nobody has baselined.
+- **One issue, one branch, one PR, squash-merged, branch deleted.** Before opening a
+  PR, grep its body for a GitHub closing keyword next to any issue number other than
+  the one it closes — #16 was closed by accident exactly that way.
+- **On close-out, amend the epoch tracker in writing:** tick the member, record what
+  the fix actually covers and what it deliberately does not, and add anything filed
+  along the way to both the member list and the membership rationale. Hand off to the
+  next issue in a comment if this one settled something it inherits.
 
 # NO AI ATTRIBUTION
 
