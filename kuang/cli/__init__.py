@@ -30,9 +30,31 @@ from pathlib import Path
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, PanelSession,
                                           ReduceState, SurfaceError,
-                                          load_personas, load_prior_findings,
-                                          unavailable_tools)
-from kuang.engine import HaltingSet, PanelConfig, ReviewSpec, run
+                                          called_no_tool, load_personas,
+                                          load_prior_findings, unavailable_tools)
+from kuang.engine import (HaltingSet, PanelConfig, PersonaReport, ReviewSpec,
+                          run)
+
+
+def _turn_note(report: PersonaReport) -> str:
+    """What one persona's participation line says about its turn count (#70).
+
+    Three states, kept apart because collapsing any two of them is the defect this
+    reports. A count the runtime gave; a count it did not give for a persona that
+    nonetheless reviewed — said aloud, because a backend's silence must not pass
+    for a fact; and nothing at all for a persona that was never called, whose
+    status already says so and which suffered no degradation to report.
+
+    The CALLED NO TOOL note is attached only to a persona that produced a review
+    of record. A call that errored or crashed has no review to be ungrounded, and
+    #29 already reports it under its own heading — one failure, one heading.
+    """
+    if report.turns > 0:
+        note = f", {report.turns} turn(s)"
+        if report.status.reviewed and called_no_tool(report.turns):
+            note += " — CALLED NO TOOL"
+        return note
+    return ", turn count unreported" if report.status.reviewed else ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,21 +205,36 @@ def main(argv: list[str] | None = None) -> int:
     # absent section can make it — and absent data is precisely this defect. Every
     # status is SET at the source; none is inferred from the ledger, because "zero
     # findings" is the ambiguous signal that made this issue necessary.
+    # ``turns`` rides on the same records rather than opening a fourth always-on
+    # section (#70). A turn count is a fact about one spawn, which is exactly what
+    # a participation record is, and this section is already always-on — so the
+    # claim "the panel actually opened the source" is made where the claim "the
+    # panel ran" is, without a further block on every run. Measured on agent CLI
+    # 2.1.246, ONE turn means the reviewer answered from the prompt alone: see
+    # ``spawn.called_no_tool`` for the rule and why nothing finer is claimed.
     participation = [
         {"epoch": e.index, "persona": r.persona, "status": r.status.value,
-         "findings": len(r.findings)}
+         "findings": len(r.findings), "turns": r.turns}
         for e in review_run.epochs for r in e.reports]
     print(f"\npanel participation: {len(personas)} persona(s) x "
           f"{len(review_run.epochs)} epoch(s)")
     for e in review_run.epochs:
         tally = Counter(r.status.value for r in e.reports)
-        print(f"  epoch {e.index}: " + ", ".join(
-            f"{n} {name.replace('_', ' ')}" for name, n in sorted(tally.items())))
+        line = f"  epoch {e.index}: " + ", ".join(
+            f"{n} {name.replace('_', ' ')}" for name, n in sorted(tally.items()))
+        # Said once per epoch, in words, so a reader scanning a seven-persona
+        # three-epoch run does not have to reconstruct it from the marks below.
+        ungrounded = [r for r in e.reports
+                      if r.status.reviewed and called_no_tool(r.turns)]
+        if ungrounded:
+            line += (f" — {len(ungrounded)} CALLED NO TOOL "
+                     f"(answered from the prompt alone)")
+        print(line)
         for r in e.reports:
             # The count is findings EMITTED, meta findings included, so it agrees
             # with what "canonical issues" counts rather than quietly disagreeing.
             print(f"    [{r.status.value.replace('_', ' ')}] ({r.persona}) "
-                  f"— {len(r.findings)} finding(s)")
+                  f"— {len(r.findings)} finding(s){_turn_note(r)}")
     # What the panel could actually DO (#67). Two facts, and they are not one fact
     # reported twice. A tool the panel granted AND deny-listed was never in the
     # reviewer's session — measured on agent CLI 2.1.246, the runtime removes it
@@ -285,7 +322,10 @@ def main(argv: list[str] | None = None) -> int:
         # same as noticing that the step fell back.
         "panel": {"source": source, "personas": [p.name for p in personas]},
         # Per persona, per epoch: whether it contributed, found nothing, or never
-        # reviewed — and, if it did not, which channel failed (#30).
+        # reviewed — and, if it did not, which channel failed (#30) — plus what the
+        # review cost in turns, which is how a run says whether the reviewer opened
+        # anything at all (#70). ``turns: 0`` means the runtime did not say; a
+        # persona that was never spawned is at 0 and suffered nothing.
         "participation": participation,
         # What the panel could DO: the policy the run actually used, the granted
         # tools the deny-list cancelled, and the calls the agent was refused (#67).

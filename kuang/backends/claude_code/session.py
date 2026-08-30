@@ -149,17 +149,27 @@ class PanelSession:
         # can be starved too, and a report naming only one of them would understate
         # what the reviewer went without. Set at the source, never derived.
         denied = list(call.denied_tools)
+        # What the review cost in turns (#70). The REVIEW call's count, and only
+        # it: the reformat retry below is a formatter that needs no tool, and the
+        # only ONE-turn call in this issue's whole measurement was one. Summing
+        # the two would render 1 + 5 as 6 and launder an ungrounded review into a
+        # grounded-looking one; taking the later count would report the
+        # formatter's turns for a review that opened nothing, or flag a healthy
+        # seven-turn review that merely missed the contract. The review is the
+        # thing that was grounded or was not.
+        turns = call.num_turns
         if call.error:
             # One channel, one wording (#29) — and now a status set beside it, so
             # #30 does not have to recover "this persona failed" by matching
             # ``agent error:`` off a finding's title.
             return PersonaReport(persona=persona, verdict=None,
                                  status=PersonaStatus.AGENT_ERROR,
-                                 denied_tools=denied, findings=[
+                                 denied_tools=denied, turns=turns, findings=[
                 Finding(persona, call.error, Severity.NOTE, "meta")])
         report = parse_findings(persona, call.text)
         report.tokens = call.output_tokens
         report.denied_tools = list(denied)
+        report.turns = turns
 
         # Retry-on-contract-miss: the persona reviewed but did not emit the JSON
         # contract (so its findings were lost). Reformat its raw review into the
@@ -181,6 +191,7 @@ class PanelSession:
                 if not _is_parse_failure(report2):
                     report2.tokens = call.output_tokens + retry.output_tokens
                     report2.denied_tools = list(denied)
+                    report2.turns = turns
                     return report2
         return report
 

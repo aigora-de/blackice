@@ -23,6 +23,12 @@ them. One test in that section is **characterisation of the runtime, not of our
 code**, and says so in its own docstring — it pins the measurement that
 ``permission_denials`` is empty in exactly the state the issue is about.
 
+*Regression*, from `a review that called no tool (#70)` onward: a reviewer that
+answered from the prompt alone must not pass for one that opened the source. This
+section also carries a **characterisation of the runtime** —
+``test_a_turn_is_not_a_tool_call`` — and it is the argument against the threshold
+that issue asked about rather than a guard on our code.
+
 Nothing here spawns anything: ``subprocess.run`` is replaced for the duration of
 each test. That hermeticity is also this file's limit, and the #29 section says so
 where it matters — a stubbed envelope proves the *handler* correct and proves
@@ -632,3 +638,284 @@ def test_a_dry_run_claims_no_refusals(session, capsys):
     session.dry_run = True
 
     assert session.spawn("p", "MANDATE", "SURFACE", 1).denied_tools == []
+
+
+# --- a review that called no tool (#70) --------------------------------------
+#
+# REGRESSION. The envelopes below are real captures from agent CLI 2.1.246, taken
+# by the probe this issue called for — not invented JSON. Trimmed of fields
+# irrelevant to this boundary; every field asserted on is verbatim from the
+# capture, and the ``result`` strings are the captures' own openings, shortened
+# where marked.
+#
+# The healthy baseline this issue asked for, because none existed: ten live calls
+# under the argv ``build_argv`` builds, over a 5-file surface and a one-line diff,
+# with Read/Grep/Glob, with Read alone, and with a scoped Bash grant, ran 6 to 9
+# turns — 7, 7, 7, 9, 7, 8 from the probe and 6, 7, 9 from a three-persona panel
+# driven end to end. The only ONE-turn call was the reformat retry.
+
+# The healthy case. A read-heavy review of a five-file surface: it opened the
+# files, said so, and took SEVEN turns to do it.
+_HEALTHY_REVIEW = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "num_turns": 7, "stop_reason": "end_turn", "terminal_reason": "completed",
+    "permission_denials": [],
+    "result": (
+        "## Review\n\nI read all five files on disk (they match the review "
+        "surface byte-for-byte). **I could not execute the tests — this session "
+        "has no shell tool** — so every claim below is derived from reading the "
+        "source, and I've said in each finding exactly what I checked.\n\n"
+        # …the review itself, and then its contract; elided.
+        '```json\n{"verdict": "NO", "findings": []}\n```'),
+    "total_cost_usd": 0.5662955,
+    "usage": {"input_tokens": 6, "output_tokens": 13312},
+}
+
+# The defect, reproduced live: ONE turn, ``is_error`` false, no denial, and a
+# well-formed contract carrying a vote and an UGLY. Nothing else in the envelope
+# distinguishes it from the capture above. It is the reformat retry — the one call
+# ``PanelSession.spawn`` makes that reliably needs no tool at all.
+_CALLED_NO_TOOL = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "num_turns": 1, "stop_reason": "end_turn", "terminal_reason": "completed",
+    "permission_denials": [],
+    "result": (
+        '```json\n{"verdict": "NO",\n  "findings": [\n'
+        '    {"title": "NaN amount bypasses every guard, permanently poisons '
+        'balances and enables unbounded minting", "severity": "UGLY", '
+        '"claim_class": "input-validation-ruin", "file": "transfer.py", '
+        '"line": 22, "evidence": "…"}\n  ]}\n```'),
+    "total_cost_usd": 0.211466,
+    "usage": {"input_tokens": 2, "output_tokens": 3925},
+}
+
+
+def test_a_healthy_reviews_turn_count_reaches_the_caller(session, monkeypatch):
+    """The baseline nobody had taken. Seven turns, and the boundary now sees it."""
+    _envelope(monkeypatch, _HEALTHY_REVIEW, returncode=0)
+
+    assert session._run_claude("P", "M", ["Read", "Grep", "Glob"], None).num_turns == 7
+
+
+def test_a_review_that_called_no_tool_is_visible_here_and_nowhere_else(session,
+                                                                       monkeypatch):
+    """The defect. Every other guard in the run reports this call as healthy.
+
+    ``is_error`` is false so #29 cannot see it; ``permission_denials`` is empty and
+    the tools were granted so #67 cannot either; it parses to a contract with a
+    vote, so #30 records it as a persona that contributed. ``num_turns`` is the
+    only field in the envelope that says the reviewer opened nothing.
+    """
+    _envelope(monkeypatch, _CALLED_NO_TOOL, returncode=0)
+
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert result.error is None, "no other guard sees it"
+    assert result.denied_tools == (), "and neither does #67's"
+    assert '"verdict": "NO"' in result.text, "and it voted"
+    assert result.num_turns == 1
+
+
+@pytest.mark.parametrize("turns, expected", [
+    # 0 is "the envelope did not say", never "called no tool" — see below.
+    (0, False),
+    # The one value the measurement supports.
+    (1, True),
+    # Everything above it. 3 is _DENIED_EVERY_TOOL, which opened NOTHING; 7, 8 and
+    # 9 are the measured healthy range. A rule with a threshold between them would
+    # have to call 3 ungrounded and 7 grounded, and the capture below shows that
+    # the counter does not carry that meaning.
+    (2, False), (3, False), (5, False), (7, False), (8, False), (9, False),
+])
+def test_only_one_turn_is_claimed_as_no_tool_call(turns, expected):
+    """The rule, and the whole of it: ``> 1`` and nothing finer (#70 decision 1).
+
+    Measured on agent CLI 2.1.246, ``num_turns`` counts tool-call round-trips plus
+    the final answering turn — so ONE turn is an unambiguous statement that no tool
+    was called, and it is the only value that is. The converse does not hold and is
+    not claimed: see ``test_a_turn_is_not_a_tool_call``.
+    """
+    assert spawn_module.called_no_tool(turns) is expected
+
+
+@pytest.mark.parametrize("value, expected", [
+    # Unreadable, or absent: 0, meaning "the envelope did not say".
+    (None, 0), ("7", 0), (7.5, 0), (-1, 0), ([7], 0), ({}, 0),
+    # ``True`` is an int in Python and would read as one turn — i.e. as the
+    # degradation itself — so it is rejected explicitly rather than by accident.
+    (True, 0), (False, 0),
+    # …and the half that makes the rest mean something: a readable count still
+    # arrives. Without these rows every row above is satisfied by an extractor
+    # that returns nothing at all, which is the defect this issue is about.
+    (1, 1), (7, 7), (0, 0),
+])
+def test_an_unreadable_turn_count_is_read_for_what_it_has(session, monkeypatch,
+                                                          value, expected):
+    """#25's doctrine one field along: the envelope is untrusted input.
+
+    A count this boundary cannot read is "we do not know", never "it called no
+    tool" — a run must not report a degradation it did not measure, which is the
+    same rule that keeps a dry run silent about one.
+    """
+    _envelope(monkeypatch, dict(_HEALTHY_REVIEW, num_turns=value), returncode=0)
+
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert result.num_turns == expected
+    assert result.error is None, "an unreadable count is not a failed call"
+
+
+def test_an_envelope_without_the_field_reports_no_turn_count(session, monkeypatch):
+    """A runtime that does not report turns must not read as one that called none."""
+    env = {k: v for k, v in _HEALTHY_REVIEW.items() if k != "num_turns"}
+    _envelope(monkeypatch, env, returncode=0)
+
+    assert session._run_claude("P", "M", ["Read"], None).num_turns == 0
+    assert spawn_module.called_no_tool(0) is False
+
+
+def test_raw_non_json_stdout_reports_no_turn_count(session, monkeypatch):
+    """There is no envelope to read, so there is no count — and no claim."""
+    monkeypatch.setattr(spawn_module.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(
+                            argv, 0, stdout="just text", stderr=""))
+
+    assert session._run_claude("P", "M", ["Read"], None).num_turns == 0
+
+
+def test_a_failed_call_still_reports_its_turn_count(session, monkeypatch):
+    """Read BEFORE the failure branch, for #67's reason at the same boundary.
+
+    A call can call no tool and then error, and the call least likely to have
+    opened anything must not be the one that reports nothing about it. Both real
+    failure captures carry the field: ``_MAX_TURNS`` at 2, ``_API_ERROR`` at 1.
+    """
+    _envelope(monkeypatch, _MAX_TURNS)
+
+    result = session._run_claude("P", "M", ["Read"], None)
+
+    assert result.error is not None
+    assert result.num_turns == 2
+
+
+def test_a_turn_is_not_a_tool_call(session, monkeypatch):
+    """CHARACTERISATION OF THE RUNTIME, not of our code — and the limit of the rule.
+
+    ``_DENIED_EVERY_TOOL`` is the #67 capture: a reviewer with **no tools at all**
+    in its session, which opened nothing and said so in prose, and which reports
+    ``num_turns: 3``. So a turn is not a tool call, and no threshold above 1 is
+    evidence that source was inspected — the reviewer here spent its turns
+    searching for tools that were not there. Measured again for this issue and
+    much further out: in a live panel run with every review tool deny-listed, two
+    personas reached **12 and 13** turns having opened nothing.
+
+    This is the argument against the threshold this issue asked about, pinned so
+    that proposing one later has to argue past a measurement. If a future CLI
+    revision changes what the counter counts, this goes red, which is honest.
+    """
+    _envelope(monkeypatch, _DENIED_EVERY_TOOL, returncode=0)
+
+    result = session._run_claude("P", "M", ["Read", "Grep", "Glob"], None)
+
+    assert result.num_turns == 3
+    assert spawn_module.called_no_tool(result.num_turns) is False, \
+        "3 turns, and it opened nothing: the count does not measure grounding"
+
+
+# --- and onto the persona's report ------------------------------------------
+
+def test_a_turn_count_lands_on_the_persona_report(session, monkeypatch):
+    """Set at the source (#30's doctrine), and orthogonal to the status (#67's).
+
+    The persona both CONTRIBUTED and reviewed nothing, which is why this is a field
+    beside ``unresolved_severities``, ``unresolved_verdict`` and ``denied_tools``
+    rather than a ``PersonaStatus`` member: the enum names the OUTCOME of one
+    spawn, and forcing a survived degradation into it would mean choosing one of
+    the two facts and losing the other.
+    """
+    _envelope(monkeypatch, _CALLED_NO_TOOL, returncode=0)
+
+    report = session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    assert report.turns == 1
+    assert report.status is PersonaStatus.CONTRIBUTED, \
+        "it reviewed nothing AND contributed"
+    assert report.verdict == "NO", "and its vote still counts (#24/#26/#67 doctrine)"
+    assert [f.severity.name for f in report.findings] == ["UGLY"], \
+        "including an UGLY, which is why discarding the vote would unlatch the breaker"
+
+
+def test_the_reformat_retrys_turns_do_not_become_the_reviews(session, monkeypatch):
+    """The laundering guard, and it is measured rather than imagined.
+
+    The retry is a formatter: it needs no tool, and the live capture of one is the
+    single ONE-turn call in the whole measurement. Two wrong answers are available
+    here and the tests below reject both — summing the calls would render 1 + 5 = 6
+    and clear the rule, and taking the last call's count would report the retry's 5
+    for a review that opened nothing.
+
+    The report is of the REVIEW call, because the review is the thing that was
+    grounded or was not; the formatter never had anything to ground.
+    """
+    replies = [
+        dict(_CALLED_NO_TOOL, result="A prose review with no JSON contract."),
+        dict(_HEALTHY_REVIEW, num_turns=5,
+             result='```json\n{"verdict": "YES", "findings": []}\n```'),
+    ]
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(replies.pop(0)), stderr="")
+
+    monkeypatch.setattr(spawn_module.subprocess, "run", fake_run)
+
+    report = session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    assert report.verdict == "YES", "the retry produced the contract of record"
+    assert report.turns == 1, "and the REVIEW still opened nothing"
+
+
+def test_a_grounded_review_is_not_relabelled_by_its_retry(session, monkeypatch):
+    """The mirror image, and the reason the rule is not 'the last call's count'.
+
+    A seven-turn review that missed the contract is grounded; its one-turn
+    formatter is not evidence about the review, and must not be reported as if it
+    were. A rule that took the retry's count would flag this healthy persona.
+    """
+    replies = [
+        dict(_HEALTHY_REVIEW, result="A prose review with no JSON contract."),
+        _CALLED_NO_TOOL,
+    ]
+
+    def fake_run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(replies.pop(0)), stderr="")
+
+    monkeypatch.setattr(spawn_module.subprocess, "run", fake_run)
+
+    assert session.spawn("p", "MANDATE", "SURFACE", 1).turns == 7
+
+
+def test_a_failed_persona_still_reports_what_the_envelope_said(session, monkeypatch):
+    """The fact is set at the source for every persona, whatever became of it."""
+    _envelope(monkeypatch, _MAX_TURNS)
+
+    report = session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    assert report.status is PersonaStatus.AGENT_ERROR
+    assert report.turns == 2
+
+
+def test_a_dry_run_reports_no_turn_count(session, capsys):
+    """Nothing was spawned, so no turn was taken — and none may be implied.
+
+    Zero is "we never asked", not "it called no tool": #30 separated ``NOT_SPAWNED``
+    from ``FOUND_NOTHING`` and ``ReduceState.DRY_RUN`` from ``RAN`` for this reason,
+    and a dry run must not report a degradation it did not suffer.
+    """
+    session.dry_run = True
+
+    report = session.spawn("p", "MANDATE", "SURFACE", 1)
+
+    assert report.turns == 0
+    assert report.status is PersonaStatus.NOT_SPAWNED

@@ -139,11 +139,19 @@ class PersonaStatus(Enum):
 
     Deliberately an outcome and *only* an outcome. A degradation a persona
     survives — an unreadable severity (#24), a verdict that was not a vote (#26),
-    tools it was denied but still voted without (#67) — is orthogonal: such a
-    persona both contributed and degraded, so forcing it into this enum would
-    mean choosing one and losing the other. Those live as their own fields on
-    ``PersonaReport``, and this vocabulary did not have to reopen to take them —
-    #67 landed as ``denied_tools`` and this enum is unchanged, as predicted.
+    tools it was denied but still voted without (#67), a review that called no
+    tool at all (#70) — is orthogonal: such a persona both contributed and
+    degraded, so forcing it into this enum would mean choosing one and losing the
+    other. Those live as their own fields on ``PersonaReport``, and this
+    vocabulary did not have to reopen to take them — #67 landed as
+    ``denied_tools`` and #70 as ``turns``, and this enum is unchanged.
+
+    The line that draws it: **did a review happen** is an outcome and belongs
+    here; **how well was it grounded** is a fact about a review that did happen
+    and belongs beside it. A persona with nothing to review at all therefore falls
+    on THIS side of the line, which is why #69 may land as a member while #70 did
+    not — an asymmetry that is a claim about this vocabulary, argued rather than
+    assumed.
     """
 
     UNREPORTED = "unreported"        # the backend did not say (the default)
@@ -153,6 +161,18 @@ class PersonaStatus(Enum):
     AGENT_ERROR = "agent_error"      # the process ran, no review came back (#29)
     SPAWN_FAILED = "spawn_failed"    # our own code raised inside the seam (#25)
     NOT_SPAWNED = "not_spawned"      # no call was made (dry run)
+
+    @property
+    def reviewed(self) -> bool:
+        """Whether a review of record came back — material that enters the run.
+
+        The two statuses whose persona produced findings and a vote. Used to
+        decide whether a degradation *of a review* may be reported against this
+        persona at all: a call that errored, crashed, or never happened has no
+        review to be ungrounded (#70), and reporting one against it would say the
+        same failure twice under two headings.
+        """
+        return self in (PersonaStatus.CONTRIBUTED, PersonaStatus.FOUND_NOTHING)
 
 
 @dataclass
@@ -191,6 +211,17 @@ class PersonaReport:
     *and* deny-listed is absent from the reviewer's session rather than refused, so
     no runtime ever reports it here; that half of #67 is deterministic and lives in
     the backend's ``permissions.unavailable_tools``.
+
+    ``turns`` is what the backend's runtime said this persona's REVIEW cost in
+    turns (#70) — the fourth orthogonal degradation, and the one that is invisible
+    everywhere else: a reviewer that called no tool answered from the prompt alone,
+    and its process succeeded, its tools were granted, and it voted. The raw count
+    is kept rather than a verdict on it, for #24's reason — the operator decides
+    what a count means, and a backend that reports a number nobody can interpret
+    at least reports it. **0 means the backend did not say**; a persona that was
+    never spawned is at 0 and has suffered nothing. What a given count implies is
+    the backend's knowledge, not this vocabulary's: see
+    ``backends.claude_code.spawn.called_no_tool``.
     """
 
     persona: str
@@ -201,6 +232,7 @@ class PersonaReport:
     unresolved_verdict: str | None = None
     status: PersonaStatus = PersonaStatus.UNREPORTED
     denied_tools: list[str] = field(default_factory=list)
+    turns: int = 0
 
 
 @dataclass

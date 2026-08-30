@@ -36,6 +36,13 @@ class CallResult:
     to reach into arbitrary keys — the drift this boundary exists to prevent. Fields
     are extracted, validated and named here, and nothing else crosses.
 
+    ``num_turns`` is what the runtime says the call cost in turns (#70). Measured
+    on agent CLI 2.1.246 it counts tool-call round-trips plus the final answering
+    turn, so **1 means the agent answered without calling a single tool** — see
+    ``called_no_tool``. **0 means the envelope did not say**, never "called no
+    tool": a call that happened takes at least one turn, so zero is a value the
+    runtime cannot legitimately report and is free to mean *unknown*.
+
     ``denied_tools`` holds the NAMES of tools whose use was refused (#67), and only
     the names: ``tool_input`` is unbounded model-controlled content — an entire
     shell command in the capture this was written against — and what crosses here is
@@ -48,6 +55,42 @@ class CallResult:
     output_tokens: int
     error: str | None = None
     denied_tools: tuple[str, ...] = field(default=())
+    num_turns: int = 0
+
+
+# The one turn count that is a claim about grounding, and the whole of the rule
+# (#70). Measured on agent CLI 2.1.246 under the argv ``build_argv`` builds: ten
+# live calls over a five-file surface and a one-line diff, with Read/Grep/Glob,
+# with Read alone, and with a scoped Bash grant, ran 6 to 9 turns — including a
+# whole three-persona panel driven end to end through the CLI. The only ONE-turn
+# call was the reformat retry, a formatter that needs no tool by design.
+#
+# Deliberately not a threshold. ``num_turns`` counts turns, not tool calls: in a
+# live panel with every review tool removed from the session, two of the three
+# personas reached 12 and 13 turns having opened nothing, hunting for tools that
+# were not there (#67's capture did the same at 3). So a value above 1 is not
+# evidence that source was inspected, and any ``>= N`` rule would be a judgement
+# about "enough review" on a counter that does not measure review. One turn is
+# unambiguous — there was no round-trip for a tool result to come back in — and
+# nothing finer is measurable today.
+#
+# It therefore UNDER-reports, deliberately: in that same run only the third
+# persona was caught here. The other two are caught by ``permissions``'
+# deterministic half (#67), which knows from the flags alone that their tools were
+# cancelled. Neither rule subsumes the other — this one sees a reviewer that did
+# not look, that one sees a reviewer that could not — which is why both are
+# printed.
+UNGROUNDED_TURNS = 1
+
+
+def called_no_tool(turns: int) -> bool:
+    """Whether this call answered without calling a single tool (#70).
+
+    False for 0, which means the envelope reported no count at all — a run must
+    not report a degradation it did not measure, and a dry run must not report one
+    it did not suffer.
+    """
+    return turns == UNGROUNDED_TURNS
 
 
 def _resolve_claude_bin() -> str:
@@ -142,6 +185,26 @@ def _denied_tools(env: dict | None) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _num_turns(env: dict | None) -> int:
+    """The turn count the envelope reported, or 0 if it reported none (#70).
+
+    #25's doctrine, and here it decides which way the run errs. The value is
+    runtime-shaped and is not ours, so anything unreadable — absent, a string, a
+    float, a negative — reads as 0, *we do not know*, rather than as 1, *it called
+    no tool*. A boundary that guesses would report a degradation nobody measured,
+    which is the same defect as missing one that happened.
+
+    ``bool`` is excluded explicitly: it is an ``int`` in Python, so ``True`` would
+    otherwise arrive as one turn — as the degradation itself — by accident.
+    """
+    if env is None:
+        return 0
+    turns = env.get("num_turns")
+    if isinstance(turns, bool) or not isinstance(turns, int) or turns < 0:
+        return 0
+    return turns
+
+
 def run_claude(argv: list[str], *, cwd: Path) -> CallResult:
     """Spawn one ``claude`` call. Returns what the envelope said about it.
 
@@ -161,9 +224,10 @@ def run_claude(argv: list[str], *, cwd: Path) -> CallResult:
     reports them: what counts against the budget decides when a run halts, which is
     control flow and belongs to #65 with its own evidence.
 
-    Refused tools (#67) are read BEFORE the failure branch, not after it: a call can
-    be starved of tools and then error, and the call most likely to have been
-    starved must not be the one that reports none.
+    Refused tools (#67) and the turn count (#70) are read BEFORE the failure branch,
+    not after it: a call can be starved of tools and then error, and the call most
+    likely to have been starved must not be the one that reports none. Both real
+    failure captures carry a turn count, and one of them is ``1``.
     """
     proc = subprocess.run(argv, capture_output=True, text=True, cwd=str(cwd))
     try:
@@ -172,12 +236,12 @@ def run_claude(argv: list[str], *, cwd: Path) -> CallResult:
         env = None
     if not isinstance(env, dict):
         env = None  # valid JSON that is not an envelope is still just text
-    denied = _denied_tools(env)
+    denied, turns = _denied_tools(env), _num_turns(env)
     if proc.returncode != 0 or (env is not None and env.get("is_error") is True):
         return CallResult("", 0, "agent error: " + _describe_failure(
-            env, returncode=proc.returncode, stderr=proc.stderr), denied)
+            env, returncode=proc.returncode, stderr=proc.stderr), denied, turns)
     if env is None:
-        return CallResult(proc.stdout, 0, None, denied)  # tolerate raw text
+        return CallResult(proc.stdout, 0, None, denied, turns)  # tolerate raw text
     return CallResult(env.get("result", ""),
                       int((env.get("usage") or {}).get("output_tokens", 0)),
-                      None, denied)
+                      None, denied, turns)

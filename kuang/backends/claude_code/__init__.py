@@ -16,12 +16,14 @@ from .permissions import (DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS,
 from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, SURVIVABILITY,
                        Persona, load_personas, parse_claude_md_experts)
 from .session import PanelSession
+from .spawn import called_no_tool
 from .surface import SurfaceError, build_path_surface, gather_diff
 
 __all__ = [
     "COMPLETENESS_CRITIC", "DEFAULT_ALLOWED_TOOLS", "DEFAULT_DISALLOWED_TOOLS",
     "DEFAULT_PERSONAS", "PanelSession", "Persona", "ReduceState", "SURVIVABILITY",
-    "SurfaceError", "UNRESOLVED_SEVERITY", "build_path_surface", "gather_diff",
+    "SurfaceError", "UNRESOLVED_SEVERITY", "build_path_surface", "called_no_tool",
+    "gather_diff",
     "load_personas", "load_prior_findings", "parse_claude_md_experts",
     "unavailable_tools",
 ]
