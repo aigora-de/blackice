@@ -234,7 +234,7 @@ def _contract_violation(persona: str, what: str, evidence: str) -> PersonaReport
     return PersonaReport(persona=persona, verdict=None,
                          status=PersonaStatus.UNREADABLE, findings=[
         Finding(persona, f"findings contract violated: {what}",
-                Severity.NOTE, "meta", evidence=evidence[:400])])
+                Severity.NOTE, "meta", evidence=evidence[:400], about_run=True)])
 
 
 def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
@@ -341,7 +341,8 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         return PersonaReport(persona=persona, verdict=None,
                              status=PersonaStatus.UNREADABLE, findings=[
             Finding(persona, "no structured output (parse failure)",
-                    Severity.NOTE, "meta", evidence=result_text[:400])])
+                    Severity.NOTE, "meta", evidence=result_text[:400],
+                    about_run=True)])
     # Scan back from the end, past our own template. Only echoes actually skipped
     # are counted, so a reply whose last block is real reports nothing.
     echoes = 0
@@ -365,7 +366,7 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         return PersonaReport(persona=persona, verdict=None,
                              status=PersonaStatus.UNREADABLE, findings=[
             Finding(persona, f"unparseable JSON findings: {exc}",
-                    Severity.NOTE, "meta", evidence=block[:400])])
+                    Severity.NOTE, "meta", evidence=block[:400], about_run=True)])
     if not isinstance(data, dict):
         return _contract_violation(
             persona, f"the payload was a {type(data).__name__}, not an object", block)
@@ -413,14 +414,18 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
             evidence=str(f.get("evidence", ""))))
     # Read here and nowhere later: the two blocks below append ``meta`` findings
     # about the REPLY, not claims about the code, and a status taken after them
-    # would call a persona that found nothing a contributor (#30).
+    # would call a persona that found nothing a contributor (#30). They carry
+    # ``about_run`` for the same reason, set HERE because this is the code that
+    # knows (#73) — the findings built above come from the persona's JSON and
+    # never carry it, whatever ``claim_class`` the persona chose to write.
     status = (PersonaStatus.CONTRIBUTED if findings
               else PersonaStatus.FOUND_NOTHING)
     if dropped:
         entries = "entry" if dropped == 1 else "entries"
         findings.append(Finding(
             persona, f"{dropped} malformed finding {entries} discarded (not objects)",
-            Severity.NOTE, "meta", evidence=str(raw_findings)[:400]))
+            Severity.NOTE, "meta", evidence=str(raw_findings)[:400],
+            about_run=True))
     if echoes:
         # Recorded, not retried: the review itself was recovered, so a second paid
         # call would buy nothing. NOTE because it is a fact about the reply, not a
@@ -429,7 +434,7 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         blocks_word = "block" if echoes == 1 else "blocks"
         findings.append(Finding(
             persona, f"output contract echoed: {echoes} template {blocks_word} ignored",
-            Severity.NOTE, "meta", evidence=_TEMPLATE_BLOCK[:400]))
+            Severity.NOTE, "meta", evidence=_TEMPLATE_BLOCK[:400], about_run=True))
     # Absent or null is the default below and records nothing: a persona that
     # claimed no verdict is not one whose verdict we misread (#26), exactly as an
     # absent severity is not a level we got wrong.

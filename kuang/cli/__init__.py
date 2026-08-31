@@ -348,11 +348,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  epoch {entry['epoch']}: {line}")
     # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
     # finding stays visible above; this groups them (panel is raw material).
+    #
+    # Counted in two halves (#73). A tooling failure — ``agent error:`` (#29),
+    # ``persona failed:`` (#25), the contract parser's diagnoses — is a finding
+    # about the INSTRUMENT, and adding it to the count of defects in the change
+    # is the run reporting itself as part of its own results. Nothing is excluded
+    # to achieve it: both halves stay in the ledger and in the artefact, because a
+    # failed persona's diagnosis has to remain recoverable, and only the count is
+    # split. The flag is set where each finding is produced and is never matched
+    # out of ``claim_class``, which is model-controlled — see ``Finding``.
+    #
+    # Both numbers are printed even when one is zero: "0 about the run" is the
+    # claim an operator needs, and an absent clause cannot make it.
+    issues_in_change = sum(1 for c in review_run.clusters if not c.about_run)
+    issues_about_run = len(review_run.clusters) - issues_in_change
     if args.semantic_dedup and review_run.clusters:
-        print(f"\ncanonical issues: {len(review_run.clusters)} "
+        print(f"\ncanonical issues: {issues_in_change} in the change | "
+              f"{issues_about_run} about the run "
               f"(reduced from {len(review_run.ledger)} raw findings)")
         for c in sorted(review_run.clusters, key=lambda c: c.severity, reverse=True):
-            print(f"  [{c.severity.name}] ({len(c.members)}x) {c.title}")
+            mark = " — about the run" if c.about_run else ""
+            print(f"  [{c.severity.name}] ({len(c.members)}x) {c.title}{mark}")
     # Machine-readable output for the convening (synthesis) session to consume.
     print("\n--- JSON ---")
     print(json.dumps({
@@ -395,16 +411,24 @@ def main(argv: list[str] | None = None) -> int:
         # Whether the reduce step ran, was not asked for, had nothing to fold, or
         # degraded — and on which epoch (#30).
         "reduce": {"requested": bool(args.semantic_dedup), "epochs": reduce_epochs},
+        # How many canonical issues are about the CHANGE and how many are about
+        # the RUN (#73), so a headline read cold cannot mix a defect in the code
+        # with a failure of the panel that read it. Every finding and every
+        # cluster below carries the same flag, so the split is auditable rather
+        # than asserted, and nothing is dropped from either array to produce it.
+        "issues_in_change": issues_in_change,
+        "issues_about_run": issues_about_run,
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
-             "file": f.file, "line": f.line, "open": f.counts_open}
+             "file": f.file, "line": f.line, "open": f.counts_open,
+             "about_run": f.about_run}
             for f in review_run.ledger.values()],
         # Canonical clusters (the reduce/view). With the default identity reduce
         # this is one cluster per finding; with --semantic-dedup it collapses
         # same-concept findings while every raw finding stays under "findings".
         "clusters": [
             {"title": c.title, "severity": c.severity.name, "open": c.counts_open,
-             "size": len(c.members),
+             "size": len(c.members), "about_run": c.about_run,
              "members": [{"persona": m.persona, "severity": m.severity.name,
                           "title": m.title, "file": m.file, "line": m.line}
                          for m in c.members]}
