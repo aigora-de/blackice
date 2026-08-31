@@ -315,11 +315,22 @@ def test_a_clean_run_is_not_read_as_a_contaminated_one():
     "[ungrounded]",
     "called no tool",
     "check it against the source",
+    "An UNTAGGED line is not a CHECKED line",
+    "what surface a reviewer was given",
+    "which tools it was refused",
 ], ids=["the-claim", "about-run-tag", "about-run-action", "ungrounded-tag",
-        "ungrounded-cause", "ungrounded-action"])
+        "ungrounded-cause", "ungrounded-action", "untagged-is-not-checked",
+        "under-reports-the-surface", "under-reports-refusals"])
 def test_the_prompt_says_what_each_mark_means_and_what_to_do(fragment):
     """#24's lesson: tolerating more without changing what the tool ASKS FOR
     leaves the cause in place. The two marks carry two different instructions.
+
+    The last three rows are what the marks do NOT say, and they are here because
+    tagging some lines is what makes an untagged one read as vouched-for — a
+    hazard this change introduces rather than one it inherits. An untagged line is
+    one nothing is known against, not one anybody checked: a finding *fabricated*
+    by the reformat retry (#63) carries no tag and never can, and the tags are
+    silent about a reduced surface (#69) and a refused tool (#67).
     """
     # The prior block carries NO tag, so every fragment below has to come from
     # the legend: asserting a tag that the fixture itself supplies is a test that

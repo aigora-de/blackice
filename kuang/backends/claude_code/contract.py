@@ -286,6 +286,11 @@ def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
                    "  [ungrounded]     raised by a reviewer that called no tool, so "
                    "it was answered from the prompt alone — treat it as unverified "
                    "and check it against the source before you build on it.\n"
+                   "An UNTAGGED line is not a CHECKED line: it is one this "
+                   "run has no reason to doubt, not one it verified.\n"
+                   "The tags say nothing about what surface a reviewer was "
+                   "given, or which tools it was refused, so adjudicate every "
+                   "line you build on against the source.\n"
                    f"{prior}\n")
     return (
         f"Adversarially review {subject}. Be critical: find where it is wrong, "
