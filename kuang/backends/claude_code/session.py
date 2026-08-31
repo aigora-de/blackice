@@ -187,7 +187,8 @@ class PanelSession:
             return PersonaReport(persona=persona, verdict=None,
                                  status=PersonaStatus.AGENT_ERROR,
                                  denied_tools=denied, turns=turns, findings=[
-                Finding(persona, call.error, Severity.NOTE, "meta")])
+                Finding(persona, call.error, Severity.NOTE, "meta",
+                        about_run=True)])
         report = parse_findings(persona, call.text)
         report.tokens = call.output_tokens
         report.denied_tools = list(denied)

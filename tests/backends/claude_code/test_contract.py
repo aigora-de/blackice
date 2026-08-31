@@ -615,3 +615,46 @@ def test_a_review_whose_only_finding_is_labelled_meta_is_still_a_review():
 
     assert not _is_parse_failure(report)
     assert report.status is PersonaStatus.CONTRIBUTED
+
+
+# --- whose finding is it: the parser's, or the persona's? (#73) --------------
+#
+# Every diagnosis this module produces is a finding about the RUN, not about the
+# change under review, and it says so at the point it is built. The flag exists
+# because the obvious alternative — matching ``claim_class == "meta"`` in the
+# consumer — reads a model-controlled string: measured, excluding that string from
+# the ledger turns a run that should halt ``escalate_ugly`` on a persona-declared
+# ``meta`` UGLY into one that halts ``converged``. The last two rows below are the
+# ones that keep this test honest; without them, "everything is about the run"
+# would satisfy it.
+
+@pytest.mark.parametrize("reply, title_starts, about_run", [
+    # The five diagnoses this module produces, one row each.
+    ("I could not comply.", "no structured output", True),
+    (_reply("{not json at all"), "unparseable JSON findings", True),
+    (_reply('"all good"'), "findings contract violated", True),
+    (_reply('{"findings": "none"}'), "findings contract violated", True),
+    (_reply('{"findings": ["a string", {"title": "real"}]}'),
+     "1 malformed finding entry discarded", True),
+    (_reply(_TEMPLATE_BLOCK), "findings contract violated", True),
+    (_reply('{"verdict": "NO", "findings": [{"title": "real defect", '
+            '"severity": "BLOCKER", "claim_class": "logic"}]}')
+     + _reply(_TEMPLATE_BLOCK), "output contract echoed", True),
+    # ...and the persona's own claims, which are never about the run whatever
+    # they are labelled. A finding about a metaclass is naturally called `meta`.
+    (_reply('{"verdict": "NO", "findings": [{"title": "real defect", '
+            '"severity": "BLOCKER", "claim_class": "logic"}]}'),
+     "real defect", False),
+    (_reply('{"verdict": "NO", "findings": [{"title": "metaclass mutates state", '
+            '"severity": "UGLY", "claim_class": "meta"}]}'),
+     "metaclass mutates state", False),
+], ids=["no-json-block", "unparseable-json", "payload-not-an-object",
+        "findings-not-a-list", "malformed-entry", "echo-only",
+        "real-plus-echo", "persona-real-finding", "persona-labelled-meta"])
+def test_who_a_finding_is_about_is_set_where_it_is_built(reply, title_starts,
+                                                         about_run):
+    report = parse_findings("p", reply)
+    match = [f for f in report.findings if f.title.startswith(title_starts)]
+
+    assert match, [f.title for f in report.findings]
+    assert match[0].about_run is about_run

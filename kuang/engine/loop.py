@@ -178,7 +178,8 @@ def run(
                     status=PersonaStatus.SPAWN_FAILED,
                     findings=[
                         Finding(pm[0], f"persona failed: {type(exc).__name__}: {exc}",
-                                Severity.NOTE, "meta", evidence=repr(exc)[:400])])
+                                Severity.NOTE, "meta", evidence=repr(exc)[:400],
+                                about_run=True)])
 
         if parallel and len(panel.personas) > 1:
             with ThreadPoolExecutor(max_workers=len(panel.personas)) as pool:

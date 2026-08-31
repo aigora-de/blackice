@@ -54,6 +54,27 @@ class Finding:
     ``verified`` records adjudication against source: ``None`` = not yet checked,
     ``True`` = confirmed, ``False`` = refuted (dropped; the panellist "withdrew on
     the evidence"). Only confirmed/unadjudicable findings count toward halting.
+
+    ``about_run`` says this finding reports the **instrument**, not the change
+    under review (#73) — ``agent error: …`` (#29), ``persona failed: …`` (#25),
+    and the contract parser's diagnoses. Without it an operator's headline count
+    adds one failure of the panel to one defect in the code, which are not the
+    same kind of thing.
+
+    **Set by the code that produces the finding, and never matched out of
+    ``claim_class``.** That is a measurement, not a preference: ``claim_class`` is
+    a model-controlled string taken from the persona's own JSON, and ``meta`` is
+    an ordinary word in review — a finding about a metaclass or about metadata is
+    naturally labelled that way. Excluding ``claim_class == "meta"`` from the
+    ledger was measured to turn a run that halts ``escalate_ugly`` with one open
+    UGLY into one that halts ``converged`` with none: a consumer-side match on
+    model data **unlatches the circuit-breaker**, which is #24's and #26's
+    doctrine one field along. A finding built from a persona's reply therefore
+    never carries this flag, because it is not something a persona can say.
+
+    Deliberately outside ``key``: the flag changes what a run *reports*, never
+    which findings are the same finding, so ledger identity is unchanged and
+    prior runs still match.
     """
 
     persona: str
@@ -64,6 +85,7 @@ class Finding:
     line: int | None = None
     evidence: str = ""
     verified: bool | None = None
+    about_run: bool = False          # reports the instrument, not the change (#73)
 
     @property
     def key(self) -> str:
@@ -110,6 +132,16 @@ class Cluster:
     @property
     def counts_open(self) -> bool:
         return any(m.counts_open for m in self.members)
+
+    @property
+    def about_run(self) -> bool:
+        """True if ANY member reports the instrument (#73).
+
+        ``max``-preserving, exactly as ``severity`` is, and for the same reason: a
+        reduce step must not be able to launder an instrument failure into the
+        change's issue count by merging it with a real finding.
+        """
+        return any(m.about_run for m in self.members)
 
     @property
     def key(self) -> str:
@@ -271,6 +303,20 @@ class ReviewRun:
     @property
     def converged(self) -> bool:
         return self.halt_reason is HaltReason.CONVERGED
+
+    # --- what the findings are ABOUT: the change, or the run itself (#73) ---
+    # A partition of the ledger, never a filter of it. Both halves stay in
+    # ``ledger`` and in the artefact — a failed persona's diagnosis has to remain
+    # recoverable — and only the reported COUNT is split.
+    @property
+    def change_findings(self) -> list[Finding]:
+        """Findings about the code under review: what the panel was convened for."""
+        return [f for f in self.ledger.values() if not f.about_run]
+
+    @property
+    def run_findings(self) -> list[Finding]:
+        """Findings about the instrument: what went wrong while reviewing."""
+        return [f for f in self.ledger.values() if f.about_run]
 
     # --- raw, finding-level view (every panellist's claim stays visible) ---
     @property

@@ -96,6 +96,14 @@ human. You are the *synthesiser, not the judge* — the human decides.
   nothing. Refused tool *calls* are listed separately and are **not** a degradation
   on their own — deny-by-default means a refused `Bash` is usually the policy
   working. Adjudicate against source with extra care when either appears.
+- **Two issue counts, and they are different kinds of thing.** With
+  `--semantic-dedup` the headline reads `canonical issues: N in the change | M
+  about the run`. The second half counts failures of the **instrument** — a
+  persona that errored, one whose reply could not be read, one our own code
+  crashed on — not defects in the code you asked about. Report and adjudicate the
+  first; treat the second as a reason to distrust the run's silence and re-run.
+  Both halves stay in the artefact, so a failed persona's diagnosis is still
+  recoverable; nothing is filtered out to produce the split.
 - **Read what the panel was GIVEN, not only what it did.** Every run states, per
   epoch, whether the assembled surface was the one that was asked for; an epoch
   marked `SURFACE REDUCED` says which way it fell short — files dropped at the
