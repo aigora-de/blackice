@@ -146,7 +146,7 @@ def test_the_epoch_checkpoint_does_not_clobber_the_seed(changed_repo):
     session = PanelSession(
         repo_root=changed_repo, spec=ReviewSpec(why="w", what="x"), base="", head="HEAD",
         paths=["a.py"], personas={}, seeded_summary="- [BLOCKER/open] carried in")
-    run = SimpleNamespace(ledger={
+    run = SimpleNamespace(epochs=[], ledger={
         "k": Finding("P1", "found this run", Severity.NOTE, "meta",
                      file="a.py", line=1)})
 

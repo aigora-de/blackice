@@ -10,7 +10,7 @@ engine's seams. This is the backend's public surface.
 
 from .cluster import ReduceState
 from .contract import UNRESOLVED_SEVERITY
-from .memory import load_prior_findings
+from .memory import load_prior_findings, ungrounded_keys
 from .permissions import (DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS,
                           unavailable_tools)
 from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, SURVIVABILITY,
@@ -27,5 +27,5 @@ __all__ = [
     "UNRESOLVED_SEVERITY", "build_path_surface", "called_no_tool",
     "gather_diff",
     "load_personas", "load_prior_findings", "parse_claude_md_experts",
-    "unavailable_tools",
+    "unavailable_tools", "ungrounded_keys",
 ]
