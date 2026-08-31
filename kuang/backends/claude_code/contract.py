@@ -272,8 +272,21 @@ def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
                    "open, and then look for what that run missed):\n"
                    f"{seeded}\n")
     if epoch > 1 and prior:
+        # The tags are set by us and explained here, in the same breath, because a
+        # mark whose meaning is not stated is decoration: #24's lesson is that a
+        # fix which tolerates more without changing what the tool ASKS FOR leaves
+        # the cause in place. Two tags, two different instructions — one line is
+        # not a claim about the change at all, the other is a claim nobody checked.
         memory += ("\n\nPRIOR EPOCHS' FINDINGS (this run — build on these; say if "
-                   f"they are resolved, and look for what they missed):\n{prior}\n")
+                   "they are resolved, and look for what they missed). Two tags "
+                   "mark lines this run knows were NOT grounded in the source:\n"
+                   "  [about the run]  a failure of the review panel itself, not a "
+                   "defect in the change — do not build on it, and do not restate "
+                   "it as a finding.\n"
+                   "  [ungrounded]     raised by a reviewer that called no tool, so "
+                   "it was answered from the prompt alone — treat it as unverified "
+                   "and check it against the source before you build on it.\n"
+                   f"{prior}\n")
     return (
         f"Adversarially review {subject}. Be critical: find where it is wrong, "
         f"incomplete, or dangerous — approve only what you cannot break.\n\n"

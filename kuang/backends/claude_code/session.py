@@ -50,7 +50,7 @@ from .cluster import (_CLUSTER_MANDATE, ReduceState, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)
 from .contract import (FINDINGS_CONTRACT, UNRESOLVED_SEVERITY,
                        _is_parse_failure, build_prompt, parse_findings)
-from .memory import epoch_summary
+from .memory import epoch_summary, ungrounded_keys
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
 from .spawn import CallResult, _resolve_claude_bin, build_argv, run_claude
@@ -258,7 +258,16 @@ class PanelSession:
 
     # --- checkpoint: refresh cross-epoch memory from the ledger ---
     def on_epoch(self, run: ReviewRun) -> None:
-        self.prior_summary = epoch_summary(run.ledger.values())
+        """Rewrite the next epoch's prior context from the whole ledger.
+
+        The whole ledger, still: nothing is excluded (#71). What is added is the
+        provenance the next panel needs to weigh a line — which of them this run
+        knows were not grounded in the source. The join is available here and
+        nowhere downstream, because ``epoch_summary`` sees findings while the
+        degradations are facts about a call; ``run`` carries both.
+        """
+        self.prior_summary = epoch_summary(run.ledger.values(),
+                                           ungrounded_keys(run))
 
     def budget_spent(self) -> int:
         return self.tokens

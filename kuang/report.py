@@ -11,8 +11,9 @@ from __future__ import annotations
 
 
 def ledger_line(*, severity: str, is_open: bool, persona: str, title: str,
-                file: str | None, line: int | None) -> str:
-    """Render one ledger entry: ``- [SEV/state] (persona) title @ file:line``.
+                file: str | None, line: int | None,
+                about_run: bool = False, ungrounded: bool = False) -> str:
+    """Render one ledger entry: ``- [SEV/state] (persona) title @ file:line [tags]``.
 
     The line is a contract, not a convenience: ``session.on_epoch`` renders this
     run's ledger into cross-epoch memory, the CLI writes the same findings out as
@@ -24,10 +25,23 @@ def ledger_line(*, severity: str, is_open: bool, persona: str, title: str,
     Takes primitives rather than a ``Finding`` because one caller has a Finding
     and the other has a JSON object; each keeps its own tolerance for absent
     fields, which is parsing, not presentation.
+
+    The line carries per-finding **provenance** as well as per-finding **state**
+    (#71). ``about_run`` says the finding is the instrument's own diagnosis
+    (#73); ``ungrounded`` says the call that produced it opened nothing (#70).
+    Both default to ``False`` so an artefact written before either existed — or by
+    anything other than this CLI — renders exactly as it did, which is what keeps
+    a cold seed byte-identical to the run that produced it. What each tag MEANS is
+    stated where a persona reads it, in ``contract.build_prompt``: a tag nobody
+    explained is decoration.
     """
     state = "open" if is_open else "resolved"
     loc = f"{file}:{line}" if file else "-"
-    return f"- [{severity}/{state}] ({persona}) {title} @ {loc}"
+    # Fixed order, so two renderings of one finding cannot differ by arrangement.
+    tags = "".join(mark for flag, mark in
+                   ((about_run, " [about the run]"), (ungrounded, " [ungrounded]"))
+                   if flag)
+    return f"- [{severity}/{state}] ({persona}) {title} @ {loc}{tags}"
 
 
 def render_argv(argv: list[str]) -> str:

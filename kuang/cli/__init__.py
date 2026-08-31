@@ -32,7 +32,7 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           ReduceState, SurfaceError,
                                           SurfaceRecord, called_no_tool,
                                           load_personas, load_prior_findings,
-                                          unavailable_tools)
+                                          unavailable_tools, ungrounded_keys)
 from kuang.engine import (HaltingSet, PanelConfig, PersonaReport, ReviewSpec,
                           run)
 
@@ -370,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             mark = " — about the run" if c.about_run else ""
             print(f"  [{c.severity.name}] ({len(c.members)}x) {c.title}{mark}")
     # Machine-readable output for the convening (synthesis) session to consume.
+    ungrounded = ungrounded_keys(review_run)
     print("\n--- JSON ---")
     print(json.dumps({
         "halt_reason": review_run.halt_reason.value,
@@ -418,11 +419,17 @@ def main(argv: list[str] | None = None) -> int:
         # than asserted, and nothing is dropped from either array to produce it.
         "issues_in_change": issues_in_change,
         "issues_about_run": issues_about_run,
+        # ``ungrounded`` is the other half of a finding's provenance (#71): the
+        # call that first raised it called no tool, so the claim was answered from
+        # the prompt alone. It rides here rather than only in cross-epoch memory
+        # because this artefact is the INPUT to a later run's ``--prior-findings``
+        # — without it a contaminated run seeds the next one clean. Computed by the
+        # same join ``on_epoch`` uses, so the two cannot disagree.
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open,
-             "about_run": f.about_run}
-            for f in review_run.ledger.values()],
+             "about_run": f.about_run, "ungrounded": key in ungrounded}
+            for key, f in review_run.ledger.items()],
         # Canonical clusters (the reduce/view). With the default identity reduce
         # this is one cluster per finding; with --semantic-dedup it collapses
         # same-concept findings while every raw finding stays under "findings".
