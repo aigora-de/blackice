@@ -119,6 +119,20 @@ def test_a_persona_that_called_no_tool_is_named(sourced_repo, capsys, monkeypatc
     assert not any("(Analyst)" in ln for ln in marked), "and the grounded one is not"
 
 
+def _participation_epoch_line(out: str) -> str:
+    """Epoch 1's line in the PARTICIPATION section: what the panel did.
+
+    Re-aimed by #74, not weakened: the always-on ``review surface:`` section it
+    added carries an ``epoch 1:`` line of its own, one section above this one, so
+    a test about participation now has to say which section it means. The
+    assertions below are unchanged.
+    """
+    lines = out.splitlines()
+    start = next(i for i, ln in enumerate(lines)
+                 if ln.startswith("panel participation:"))
+    return next(ln for ln in lines[start:] if ln.startswith("  epoch 1:"))
+
+
 def test_the_epoch_line_says_how_many_called_no_tool(sourced_repo, capsys,
                                                      monkeypatch):
     """The count and its meaning, once per epoch, above the per-persona marks.
@@ -130,8 +144,7 @@ def test_the_epoch_line_says_how_many_called_no_tool(sourced_repo, capsys,
     _stub(monkeypatch, {"Critic": _contract(turns=_NO_TOOL),
                         "Sentinel": _contract(turns=_NO_TOOL)})
     _run(sourced_repo)
-    epoch_line = next(ln for ln in capsys.readouterr().out.splitlines()
-                      if ln.startswith("  epoch 1:"))
+    epoch_line = _participation_epoch_line(capsys.readouterr().out)
 
     assert "2 CALLED NO TOOL" in epoch_line, epoch_line
     assert "answered from the prompt alone" in epoch_line, "the mark is unexplained"
@@ -139,8 +152,7 @@ def test_the_epoch_line_says_how_many_called_no_tool(sourced_repo, capsys,
     # …and it must be able to say nothing, too.
     _stub(monkeypatch, {})
     _run(sourced_repo)
-    clean = next(ln for ln in capsys.readouterr().out.splitlines()
-                 if ln.startswith("  epoch 1:"))
+    clean = _participation_epoch_line(capsys.readouterr().out)
     assert "CALLED NO TOOL" not in clean
 
 

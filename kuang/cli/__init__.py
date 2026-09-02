@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import textwrap
 from collections import Counter
 from pathlib import Path
 
@@ -61,19 +62,18 @@ def _turn_note(report: PersonaReport) -> str:
 def _surface_note(record: SurfaceRecord | None) -> str:
     """What one epoch's line says about the surface the panel was handed (#69).
 
-    Silent unless the panel was given less than the operator named — a healthy
-    run must claim nothing, and a rule that fires on a small diff or a surface
-    that fits is the mirror image of the defect it reports. Saying so out loud on
-    a healthy run is #11's acceptance criterion (a `[surface]` confirmation line,
-    with used/cap bytes), deliberately left to it; the artefact carries the fact
-    every epoch either way, which is where a cold read needs it.
+    Silent unless the panel was given less than the operator named — a rule that
+    fires on a small diff or a surface that fits is the mirror image of the defect
+    it reports. What the surface WAS is said unconditionally, one line up
+    (``_surface_epoch_line``); this is the clause that says something went wrong,
+    and absence is a claim it can afford to make.
 
     Each loss is named for what it was, never totalled: files dropped whole at the
     cap, the one file cut mid-way because it alone over-ran, a file that could not
     be decoded, and a named path that matched nothing tracked are four different
     things to have gone wrong with a review, and an operator deciding whether to
-    re-run at a higher cap needs to know which. Counts and not names — naming them
-    is #11 and #74.
+    re-run at a higher cap needs to know which. The counts here; the names below
+    (#74).
     """
     if record is None or not record.degraded:
         return ""
@@ -87,6 +87,85 @@ def _surface_note(record: SurfaceRecord | None) -> str:
     if record.unresolved:
         lost.append(f"{record.unresolved} named path(s) matched no tracked file")
     return f" — SURFACE REDUCED ({'; '.join(lost)})"
+
+
+def _surface_complete(record: SurfaceRecord) -> str:
+    """What one epoch's line says when nothing was lost — and the two modes do
+    not say the same thing (#74).
+
+    Path mode applies a cap and can report against it, so it can say every named
+    path was included. Diff mode applies no cap at all (#27), so all it can
+    honestly say is that nothing was dropped and nothing was bounded: claiming a
+    completeness nobody checked is the failure this whole epoch is about. Two
+    sentences, two source lines, each mutable apart.
+    """
+    if record.mode == "diff":
+        return " — nothing was dropped, and no cap was applied"
+    return " — every named path was included"
+
+
+def _surface_header(record: SurfaceRecord) -> str:
+    """The run-constant inputs: the mode, what was named, and the cap.
+
+    Taken from the first epoch's record because these are the operator's own
+    argv and do not vary between epochs; what does vary is on the epoch lines.
+    """
+    if record.mode == "diff":
+        refs = f"{record.refs[0]}...{record.refs[1]}" if record.refs else "unreported"
+        return (f"review surface: diff — {refs} | "
+                "no cap was applied (diff mode is unbounded)")
+    named = " ".join(record.paths) if record.paths else "unreported"
+    cap = f"cap {record.cap} bytes" if record.cap is not None else "no cap was applied"
+    return f"review surface: paths — {named} | {cap}"
+
+
+def _surface_epoch_line(index: int, record: SurfaceRecord) -> str:
+    """What this epoch's surface was made of, and how it fell short if it did.
+
+    The surface is re-gathered every epoch and legitimately CHANGES between them:
+    a diff shrinks as fixes land at the gate, which is the tool working. So the
+    composition is per-epoch, and a smaller surface is never reported as a loss.
+
+    A file count the runtime could not give is said aloud rather than printed as
+    a 0 that reads like a measurement — ``_turn_note``'s rule, applied to a fact
+    of ours instead of a backend's.
+    """
+    counted = (f"{record.files} file(s)" if record.files is not None
+               else "file count unreported")
+    line = f"  epoch {index}: {counted}, {record.size} bytes"
+    return line + (_surface_note(record) or _surface_complete(record))
+
+
+def _name_line(label: str, names: tuple[str, ...]) -> str:
+    """One loss, named. Wrapped with a hanging indent, count first.
+
+    The list is not capped: a cap on it would be a threshold on a value nobody
+    has baselined, and the artefact already carries unbounded ``findings``. The
+    count leads, so a reader who does not want the names has already read the
+    number. Wrapping is presentation and nothing else — no name is elided.
+    """
+    return textwrap.fill(f"{label} ({len(names)}): {', '.join(names)}", width=88,
+                         initial_indent="    ", subsequent_indent="      ")
+
+
+def _surface_loss_lines(record: SurfaceRecord) -> list[str]:
+    """The files the operator named and did not get (#74's third criterion).
+
+    Named because a count tells an operator how many files never reached a
+    reviewer but not which, and the decision they have to make — re-run at a
+    higher cap, or fix the path — needs the which. The files that WERE included
+    are counted and never named: that boundary is #69's, and it holds.
+    """
+    lines = []
+    if record.omitted_files:
+        lines.append(_name_line("omitted at the cap", record.omitted_files))
+    if record.truncated_file:
+        lines.append(_name_line("cut mid-way at the cap", (record.truncated_file,)))
+    if record.unreadable_files:
+        lines.append(_name_line("could not be read", record.unreadable_files))
+    if record.unresolved_paths:
+        lines.append(_name_line("matched no tracked file", record.unresolved_paths))
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -254,13 +333,33 @@ def main(argv: list[str] | None = None) -> int:
     # the same as #67's deterministic half. Pre-flight confirmation is the dry
     # run's only job, and "you named three files and one fitted" is the single
     # most useful thing it can say about a path-mode review.
+    # What it WAS is appended after how it fell short (#74), so every key an
+    # earlier artefact carried is unchanged and in the same place: a run archived
+    # before this landed diffs against one taken after it, purely additively.
     surface_epochs = [
         {"epoch": i + 1, "mode": rec.mode, "omitted": rec.omitted,
          "truncated": rec.truncated, "unreadable": rec.unreadable,
          "unresolved": rec.unresolved, "bounded": rec.bounded,
-         "degraded": rec.degraded}
+         "degraded": rec.degraded,
+         "size": rec.size, "files": rec.files, "cap": rec.cap,
+         "refs": list(rec.refs) if rec.refs else None, "paths": list(rec.paths),
+         "omitted_files": list(rec.omitted_files),
+         "truncated_file": rec.truncated_file,
+         "unreadable_files": list(rec.unreadable_files),
+         "unresolved_paths": list(rec.unresolved_paths)}
         for i, rec in enumerate(session.surface_states)]
-    surface_by_epoch = dict(enumerate(session.surface_states, 1))
+    # Always on, for the reason participation is (#30): "this is what the panel
+    # looked at" is a claim no absent section can make, exactly as "the panel ran
+    # in full" is. What the panel was GIVEN, then what it DID with it — so #69's
+    # mark rides here, on the line carrying the composition it qualifies, rather
+    # than on the participation line as well. Two sections about one thing is the
+    # failure this section exists to avoid.
+    if session.surface_states:
+        print(f"\n{_surface_header(session.surface_states[0])}")
+        for i, rec in enumerate(session.surface_states, 1):
+            print(_surface_epoch_line(i, rec))
+            for line in _surface_loss_lines(rec):
+                print(line)
     print(f"\npanel participation: {len(personas)} persona(s) x "
           f"{len(review_run.epochs)} epoch(s)")
     for e in review_run.epochs:
@@ -274,12 +373,11 @@ def main(argv: list[str] | None = None) -> int:
         if ungrounded:
             line += (f" — {len(ungrounded)} CALLED NO TOOL "
                      f"(answered from the prompt alone)")
-        # And what they were given, beside what they did with it. Two marks and
-        # two failures: a surface the operator did not get and a reviewer that
-        # did not look have different causes, either can happen without the
-        # other, and neither may absorb the other. Once per epoch, because the
-        # engine gathers once per epoch and hands every persona the same string.
-        line += _surface_note(surface_by_epoch.get(e.index))
+        # What they were GIVEN is one section up (#74), not repeated here. Still
+        # two marks and two failures: a surface the operator did not get and a
+        # reviewer that did not look have different causes, either can happen
+        # without the other, and neither may absorb the other — they are simply
+        # reported where each belongs.
         print(line)
         for r in e.reports:
             # The count is findings EMITTED, meta findings included, so it agrees
