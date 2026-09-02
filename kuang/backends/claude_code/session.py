@@ -54,7 +54,7 @@ from .memory import epoch_summary, ungrounded_keys
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
 from .spawn import CallResult, _resolve_claude_bin, build_argv, run_claude
-from .surface import DIFF_SURFACE, SurfaceRecord, build_path_surface, gather_diff
+from .surface import SurfaceRecord, build_path_surface, gather_diff
 
 
 @dataclass
@@ -119,13 +119,15 @@ class PanelSession:
         Raises:
             SurfaceError: git failed, or the requested surface is empty.
         """
-        if self.paths:  # path mode: full content of the named files/dirs (issue #6)
-            surface, record = build_path_surface(
-                self.repo_root, self.paths, self.max_surface_bytes)
-            self.surface_states.append(record)
-            return surface
-        surface = gather_diff(self.repo_root, self.base, self.head)
-        self.surface_states.append(DIFF_SURFACE)
+        # One shape, both modes (#74): each assembler returns the surface and a
+        # record of what it was made of. Diff mode's used to be a module constant,
+        # which could carry neither its refs nor its size.
+        surface, record = (
+            # path mode: full content of the named files/dirs (issue #6)
+            build_path_surface(self.repo_root, self.paths, self.max_surface_bytes)
+            if self.paths else
+            gather_diff(self.repo_root, self.base, self.head))
+        self.surface_states.append(record)
         return surface
 
     # --- the argv this session would spawn: the call and the dry run agree ---

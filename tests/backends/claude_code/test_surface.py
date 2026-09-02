@@ -19,12 +19,13 @@ halted ``converged``. Every test in both sections is a regression test.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import fields
 
 import pytest
 
-from kuang.backends.claude_code.surface import (DIFF_SURFACE, SurfaceError,
-                                                   _expand_paths, _render_file,
+from kuang.backends.claude_code.surface import (SurfaceError, _expand_paths,
+                                                   _render_file,
                                                    build_path_surface,
                                                    gather_diff)
 
@@ -227,7 +228,7 @@ def test_the_cap_boundary_is_exact(git_repo, commit_all, cap_delta, expected):
 def test_a_diff_surface_records_that_no_cap_was_applied(changed_repo):
     """Diff mode is not bounded at all (#27), and the record says so rather than
     claiming a completeness nobody checked."""
-    text, rec = gather_diff(changed_repo, "HEAD~1", "HEAD"), DIFF_SURFACE
+    text, rec = gather_diff(changed_repo, "HEAD~1", "HEAD")
     assert text
     assert rec.mode == "diff"
     assert rec.bounded is False
@@ -252,16 +253,214 @@ def test_a_file_that_talks_about_the_cap_is_not_a_cap_breach(git_repo, commit_al
     assert rec.degraded is False, "and nothing was lost"
 
 
-def test_only_counts_cross_the_boundary(git_repo, commit_all):
+def test_only_names_and_counts_cross_the_boundary(git_repo, commit_all):
     """The record is a fact ABOUT the surface, never the surface.
 
     It is written into an artefact that gets pasted into a public repo's issues,
     and a review surface is unbounded content — whole files, or a whole diff. The
     same narrowing #67 made for a refused call's arguments.
+
+    **Converted, not weakened, by #74** (it was ``test_only_counts_cross_the_
+    boundary``). Names now cross too, and the argument for the narrowing is on
+    the record: a path is a name, not content; every persona is already handed
+    the same list of dropped paths in its prompt; a path is bounded by the
+    filesystem where a file is not; and a surface record is our data, not a
+    model's. The half that forbids **content** is unchanged, and is strengthened
+    below with the content of an OMITTED file — a path the old test never
+    exercised, because until now an omitted file had no field to leak into.
     """
-    (git_repo / "a.py").write_text("SECRET_LOOKING_TOKEN = 1\n")
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "b.py").write_text("SECRET_LOOKING_TOKEN = 2\n")
+    commit_all(git_repo)
+    cap = _cap_for(_render_file("a.py", "A = 1"))
+    _, rec = build_path_surface(git_repo, ["a.py", "b.py"], max_bytes=cap)
+
+    assert {f.name for f in fields(rec)} == {
+        "mode", "bounded", "size", "files", "cap", "refs", "paths",
+        "omitted_files", "truncated_file", "unreadable_files", "unresolved_paths"}
+    assert rec.omitted_files == ("b.py",), "the NAME of the dropped file crosses"
+    assert "SECRET_LOOKING_TOKEN" not in repr(rec), "its CONTENT does not"
+
+
+# --- what the surface WAS, not only how it fell short (#74) ------------------
+#
+# #69 recorded the difference between the surface that was asked for and the one
+# that was produced, and nothing else: two runs over entirely different files
+# were byte-identical in their records. These pin the composition beside the
+# loss, so an archived run can be compared with a later one over the "same"
+# surface — and so a dropped file is NAMED, which is this issue's criterion and
+# was deliberately left out of #69's.
+
+def test_the_record_says_what_the_surface_was_made_of(git_repo, commit_all):
+    """The composition, on a run where nothing was lost at all.
+
+    A record that only speaks up when something went wrong cannot answer *what
+    was reviewed*, which is #40's fourth exit criterion and not its first.
+    """
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "b.py").write_text("B = 2\n")
+    commit_all(git_repo)
+    surface, rec = build_path_surface(git_repo, ["a.py", "b.py"], max_bytes=10_000)
+
+    assert rec.paths == ("a.py", "b.py"), "the operator's own argv, as given"
+    assert rec.files == 2
+    assert rec.size == len(surface)
+    assert rec.cap == 10_000
+    assert rec.degraded is False
+
+
+def test_two_surfaces_that_lost_nothing_are_told_apart(git_repo, commit_all):
+    """The regression, at the source: #69's record could not tell these apart.
+
+    Both runs are healthy, so every loss counter is zero in both. If the record
+    is equal here, no artefact downstream can say which files were reviewed.
+    """
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "b.py").write_text("B = 2\n" * 20)
+    commit_all(git_repo)
+    _, first = build_path_surface(git_repo, ["a.py"], max_bytes=10_000)
+    _, second = build_path_surface(git_repo, ["b.py"], max_bytes=10_000)
+
+    assert first.degraded is False and second.degraded is False
+    assert first != second
+    assert (first.paths, first.size) != (second.paths, second.size)
+
+
+def test_files_dropped_at_the_cap_are_named_in_order(git_repo, commit_all):
+    """Named, not just counted — and in the order the assembler dropped them.
+
+    An operator deciding whether to re-run at a higher cap needs to know which
+    files never reached a reviewer; a count tells them only how many.
+    """
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "b.py").write_text("B = 2\n")
+    (git_repo / "c.py").write_text("C = 3\n")
+    commit_all(git_repo)
+    cap = _cap_for(_render_file("a.py", "A = 1"))
+    _, rec = build_path_surface(git_repo, ["a.py", "b.py", "c.py"], max_bytes=cap)
+
+    assert rec.omitted_files == ("b.py", "c.py")
+    assert rec.omitted == len(rec.omitted_files), "one source of truth, not two"
+    assert rec.files == 1, "and what DID fit is counted"
+
+
+def test_the_file_cut_mid_way_is_named(tmp_path):
+    """The truncation is one named file, so the record names it rather than
+    carrying a bare flag a reader cannot act on."""
+    (tmp_path / "big.py").write_text("\n".join(f"line{i}" for i in range(500)) + "\n")
+    _, rec = build_path_surface(tmp_path, ["big.py"], max_bytes=200)
+
+    assert rec.truncated_file == "big.py"
+    assert rec.truncated is True, "and the flag still derives from the name"
+    assert rec.omitted_files == ()
+
+
+def test_unreadable_files_and_unresolved_paths_are_named_apart(git_repo, commit_all):
+    """Four losses, four names, and never one blamed on another.
+
+    A run that named a binary file among the cap's casualties would be the
+    instrument lying about itself, which is this epoch's whole subject.
+    """
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "img.bin").write_bytes(b"\xff\xfe\x00\x01binary")
+    commit_all(git_repo)
+    _, rec = build_path_surface(
+        git_repo, ["a.py", "img.bin", "gone.py", "also_gone.py"], max_bytes=10_000)
+
+    assert rec.unreadable_files == ("img.bin",)
+    assert rec.unresolved_paths == ("gone.py", "also_gone.py")
+    assert rec.omitted_files == (), "nothing was dropped at the cap"
+    assert (rec.unreadable, rec.unresolved) == (1, 2)
+
+
+def test_a_complete_surface_names_nothing(git_repo, commit_all):
+    """The mirror image of every test above: nothing lost, nothing named."""
+    (git_repo / "a.py").write_text("A = 1\n")
     commit_all(git_repo)
     _, rec = build_path_surface(git_repo, ["a.py"], max_bytes=10_000)
-    assert {f.name for f in fields(rec)} == {
-        "mode", "omitted", "truncated", "unreadable", "unresolved", "bounded"}
-    assert "SECRET_LOOKING_TOKEN" not in repr(rec)
+
+    assert rec.omitted_files == ()
+    assert rec.unreadable_files == ()
+    assert rec.unresolved_paths == ()
+    assert rec.truncated_file is None
+    assert rec.degraded is False
+
+
+def test_a_name_is_never_recovered_from_the_surface_text(git_repo, commit_all):
+    """The rejected design, killed at the source.
+
+    Recovering the dropped files by parsing ``--- OMITTED ---`` back out of the
+    string reads a fact off wording, and is wrong on the first file that
+    discusses the cap — this project's own ``surface.py`` contains both markers.
+    The names come from the assembler, which is the only thing that knows.
+    """
+    (git_repo / "surface_ish.py").write_text(
+        'NOTICE = "--- OMITTED (not shown) ---"\nWHY = "- b.py: surface cap"\n')
+    commit_all(git_repo)
+    text, rec = build_path_surface(git_repo, ["surface_ish.py"], max_bytes=10_000)
+
+    assert "- b.py: surface cap" in text, "the surface really does say it"
+    assert rec.omitted_files == (), "and the record is not fooled by it"
+    assert rec.degraded is False
+
+
+def test_the_size_is_the_surface_as_handed_over_notices_included(git_repo,
+                                                                 commit_all):
+    """``size`` can exceed ``cap``, and that is the honest number.
+
+    The cap bounds the rendered file content; the assembler's own OMITTED notice
+    rides on top of it, and a persona is handed both. Reporting the bounded
+    figure instead would report a size nobody was given — and it is the surface,
+    not the cap, that a later run is compared against.
+    """
+    (git_repo / "a.py").write_text("A = 1\n")
+    (git_repo / "b.py").write_text("B = 2\n")
+    commit_all(git_repo)
+    cap = _cap_for(_render_file("a.py", "A = 1"))
+    surface, rec = build_path_surface(git_repo, ["a.py", "b.py"], max_bytes=cap)
+
+    assert rec.size == len(surface)
+    assert rec.size > rec.cap, "the notice about the loss is part of the surface"
+    assert rec.omitted_files == ("b.py",), "and the loss itself is unaffected"
+
+
+def test_a_diff_record_states_its_refs_size_and_file_count(changed_repo):
+    """Diff mode is the default, and "412 bytes" is a weak answer to *of what*.
+
+    The count comes from a second ``git diff --name-only``, which is
+    authoritative; parsing it out of the diff text is the design rejected above.
+    """
+    text, rec = gather_diff(changed_repo, "HEAD~1", "HEAD")
+
+    assert rec.mode == "diff"
+    assert rec.refs == ("HEAD~1", "HEAD")
+    assert rec.size == len(text)
+    assert rec.files == 1
+    assert rec.cap is None and rec.bounded is False
+    assert rec.degraded is False
+    assert (rec.omitted_files, rec.unreadable_files,
+            rec.unresolved_paths) == ((), (), ())
+    assert rec.truncated_file is None
+
+
+def test_a_diff_file_count_git_will_not_give_is_said_aloud_not_guessed(
+        changed_repo, monkeypatch):
+    """A second git call must never kill the run it only describes.
+
+    ``files is None`` is the same shape as ``turn count unreported`` (#70): a
+    fact nobody could establish is said aloud, never defaulted to a number that
+    reads like a measurement.
+    """
+    real = subprocess.run
+
+    def _fake(cmd, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        if "--name-only" in cmd:
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: no")
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr("kuang.backends.claude_code.surface.subprocess.run", _fake)
+    text, rec = gather_diff(changed_repo, "HEAD~1", "HEAD")
+
+    assert text, "the run is unharmed"
+    assert rec.files is None
+    assert rec.size == len(text), "and everything knowable is still known"
