@@ -139,20 +139,30 @@ def test_an_empty_panel_reviewed_nothing():
 
 
 def test_the_breaker_still_outranks_no_review():
-    """Ruin is checked first and is never a permitted halt-with-open state.
+    """Ruin is checked first, and is never a permitted halt-with-open state.
 
-    An UGLY raised in epoch 1 stays open in the ledger, so an epoch 2 that reviewed
-    nothing must still escalate rather than report the milder reason.
+    The state had to be measured before it could be tested, and the obvious way to
+    write this test is wrong. An UGLY carried from epoch 1 into an epoch 2 that
+    reviewed nothing is **unreachable**: a finding is open unless adjudication
+    refutes it, and an open UGLY escalates in the epoch it appears, so the loop
+    halts before a second epoch exists. Asserting it would have named a state the
+    code refuses to enter — and it passed against a mutation putting NO_REVIEW
+    *ahead* of the breaker, which is how the error was found rather than argued.
+
+    What is reachable is the same epoch: a report that carries a finding without a
+    review behind it. No backend here produces one — the Claude backend's own
+    failure diagnoses are ``NOTE`` (#29) — so this is a guarantee about the
+    ``SpawnPersona`` seam, which takes any runtime, rather than about today's
+    caller. That is the same reason ``test_a_non_string_verdict_does_not_end_the_run``
+    exists, and the same gap #89 is open on.
     """
     def spawn(persona, mandate, surface, epoch):  # noqa: ANN001, ARG001
-        if epoch == 1:
-            return PersonaReport(
-                persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
-                findings=[Finding(persona, f"{persona}: unbounded loss",
-                                  Severity.UGLY, f"{persona}-lens", "a.py", 1)])
-        return PersonaReport(persona=persona, status=PersonaStatus.NOT_SPAWNED)
+        return PersonaReport(
+            persona=persona, status=PersonaStatus.AGENT_ERROR,
+            findings=[Finding(persona, f"{persona}: unbounded loss",
+                              Severity.UGLY, f"{persona}-lens", "a.py", 1)])
 
-    review_run = _run(spawn, max_epochs=2)
+    review_run = _run(spawn)
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
 
