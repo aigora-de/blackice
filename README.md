@@ -79,7 +79,9 @@ It is looked for in this order:
 If none resolve, a live run currently fails with a `FileNotFoundError` traceback
 at the first spawn rather than a diagnosis ([#51](https://github.com/aigora-de/blackice/issues/51)).
 `--dry-run` spawns nothing, so it works without `claude` installed and is the
-cheapest way to confirm the rest of the wiring.
+cheapest way to confirm the rest of the wiring. Because it reviews nothing, it
+reports no verdict: it halts `no_review`, never `converged`. It still exits `0` —
+the pre-flight check succeeded; there was simply no review to have an outcome.
 
 ## Quickstart
 ```bash

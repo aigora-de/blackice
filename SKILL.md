@@ -5,7 +5,8 @@ description: >-
   records-critical / irreversible code (money movement, tax or regulatory
   records, data integrity, safety, migrations, auth). It drives one `claude -p`
   subagent PER reviewer persona PER epoch, iterating until a halting condition
-  (converged / budget / epochs / stall) or a ruin-class "UGLY" circuit-breaker.
+  (converged / budget / epochs / stall / no review) or a ruin-class "UGLY"
+  circuit-breaker.
   Use when a change "looks obviously right" but being wrong is expensive, or when
   the user asks for a deep/rigorous/adversarial/multi-expert review, a "panel",
   or to "find edge cases, traps, pathologies". NOT for routine, reversible, or
@@ -38,7 +39,9 @@ human. You are the *synthesiser, not the judge* — the human decides.
 2. **(Optional pre-flight)** `--dry-run` to confirm *which* personas were sourced
    (e.g. from `CLAUDE.md`) and eyeball the assembled prompt. This spawns **no**
    `claude` process — it only prints the planned wiring — so it costs nothing.
-   Worth doing the first time on a repo; skip it thereafter.
+   Worth doing the first time on a repo; skip it thereafter. It halts
+   **`no_review`** and never `converged`: nothing was reviewed, so there is no
+   verdict to report, and a pre-flight check must not be readable as a pass.
    ```
    kuang \
      --repo <root> --base <base> --head <head> --dry-run
