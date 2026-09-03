@@ -30,7 +30,7 @@ class HaltReason(Enum):
     EPOCH = "epoch"                    # max epochs reached
     STALL = "stall"                    # no new material findings, blockers still open
     ABORTED = "aborted"                # human gate stopped the loop
-    NO_REVIEW = "no_review"            # no persona reviewed: there is no verdict to give
+    NO_REVIEW = "no_review"            # no persona reviewed: there is no verdict
 
     # NO_REVIEW is for a state the loop cannot usefully CONTINUE from, which is the
     # rule that keeps this vocabulary from growing once per issue. Nothing was
