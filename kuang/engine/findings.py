@@ -217,6 +217,36 @@ class PersonaStatus(Enum):
         """
         return self in (PersonaStatus.CONTRIBUTED, PersonaStatus.FOUND_NOTHING)
 
+    @property
+    def did_not_review(self) -> bool:
+        """Whether the run KNOWS this persona produced no review at all (#72).
+
+        Deliberately **not** the negation of ``reviewed``. ``UNREPORTED`` is the
+        default and means the backend did not say, and a run must not report a
+        degradation it did not measure (#70's rule, one field along) — so silence
+        is excluded from both sides. What is left is the three ways a call can end
+        with no review of record plus the one where no call was made, and a member
+        added later joins this side unless someone puts it on ``reviewed``, which
+        is the safe default for an enum whose new members are failure outcomes.
+
+        This is the **participation** axis, and the whole of what a vote may be
+        gated on. Three axes meet on a ``PersonaReport`` and #82's central warning
+        is that they get conflated, so they are named here once:
+
+        * **participation** — *did a review happen?* This enum (#30, #72).
+        * **grounding** — *was the review that happened worth anything?*
+          ``turns`` (#70), ``denied_tools`` (#67), a cancelled grant (#77).
+          Fields beside this status, never members of it.
+        * **quorum and coverage** — *did enough of the right lenses agree?* (#82),
+          and derivable from neither of the others.
+
+        A vote is a claim **about a review**. A persona that produced none made no
+        claim, so not counting it discards nothing. A persona that reviewed badly
+        made a claim, and dropping that would be the tool judging — which #24, #26
+        and #67 all refused. That is why this property is on the first axis alone.
+        """
+        return self is not PersonaStatus.UNREPORTED and not self.reviewed
+
 
 @dataclass
 class PersonaReport:

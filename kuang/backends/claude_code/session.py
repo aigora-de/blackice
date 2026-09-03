@@ -163,7 +163,14 @@ class PanelSession:
                   f"\n  prompt≈ {preview!r}")
             # Says so, rather than passing for a persona that reviewed and found
             # nothing (#30) — which is exactly what an absent status let it do.
-            return PersonaReport(persona=persona, verdict="YES",
+            # And casts NO VOTE (#72): this branch used to return a fabricated
+            # "YES", so the whole panel met unanimity on calls nobody made and the
+            # run halted `converged` — a good verdict for a review that never
+            # happened. A verdict is a claim about a review; there is no review
+            # here, so there is nothing to claim. Our own code must not invent a
+            # control value for a call it did not make, which is the same rule
+            # #67, #69, #70 and #71 each applied to a measurement not taken.
+            return PersonaReport(persona=persona, verdict=None,
                                  status=PersonaStatus.NOT_SPAWNED)
 
         call = self._run_claude(prompt, mandate, p.tools, model)

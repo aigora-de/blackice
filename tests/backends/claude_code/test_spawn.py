@@ -159,13 +159,23 @@ def test_raw_non_json_stdout_is_tolerated(session, monkeypatch):
 
 # --- the dry-run report -----------------------------------------------------
 
-def test_dry_run_spawns_nothing_and_votes_yes(session, captured, capsys):
+def test_dry_run_spawns_nothing_and_casts_no_vote(session, captured, capsys):
+    """REGRESSION for #72. This branch used to return a fabricated ``"YES"``.
+
+    Nothing was spawned, so there is no review and no verdict — and our own code
+    inventing an affirmative one for a call it did not make is the instrument
+    lying about what it did, at the source. The engine refuses such a vote
+    independently (``tests/engine/test_unreviewed_panel.py``), because a guarantee
+    of the engine's must not rest on a convention only this backend keeps; both
+    layers are tested, and this is the one that stops the value existing.
+    """
     session.dry_run = True
 
     report = session.spawn("p", "MANDATE", "SURFACE", 1)
 
     assert captured == [], "a dry run must not spawn a subprocess"
-    assert (report.persona, report.verdict, report.findings) == ("p", "YES", [])
+    assert (report.persona, report.verdict, report.findings) == ("p", None, [])
+    assert report.status is PersonaStatus.NOT_SPAWNED
 
 
 def test_the_dry_run_reports_the_argv_it_would_spawn(session, capsys):

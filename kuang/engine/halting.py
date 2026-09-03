@@ -30,6 +30,15 @@ class HaltReason(Enum):
     EPOCH = "epoch"                    # max epochs reached
     STALL = "stall"                    # no new material findings, blockers still open
     ABORTED = "aborted"                # human gate stopped the loop
+    NO_REVIEW = "no_review"            # no persona reviewed: there is no verdict to give
+
+    # NO_REVIEW is for a state the loop cannot usefully CONTINUE from, which is the
+    # rule that keeps this vocabulary from growing once per issue. Nothing was
+    # reviewed, so another epoch changes nothing and the run must stop and say so.
+    # A review that HAPPENED and was degenerate — one voice, or a voice that opened
+    # nothing (#82) — can continue, and #82 is explicit that the tool must not gate
+    # it: the tool informs, the human decides. That case is QUALIFIED beside the
+    # verdict, never halted, so this member is not a precedent for one naming it.
 
 
 @dataclass
@@ -58,23 +67,36 @@ def _evaluate_halt(
     elapsed_s: float,
     scope_complete: bool,
     quorum_met: bool,
+    no_persona_reviewed: bool,
 ) -> HaltReason | None:
     """Pure predicate: return a HaltReason if any halting condition is met.
 
     Order matters: the UGLY circuit-breaker is checked first and short-circuits
     even an unexhausted budget. CONVERGED requires no open ugly AND no open
-    blocker AND (optionally) scope complete AND quorum.
+    blocker AND (optionally) scope complete AND quorum — and every one of those
+    three conjuncts is satisfied by ABSENCE, which is why NO_REVIEW is evaluated
+    ahead of it (#72).
     """
     # 1. Circuit-breaker: a ruin-class finding halts and escalates immediately.
     if result.open_uglies > 0:
         return HaltReason.ESCALATE_UGLY
 
-    # 2. Convergence (good): nothing dangerous or blocking is open.
+    # 2. Nothing was reviewed (#72). An epoch in which the run KNOWS no persona
+    #    produced a review cannot converge, and repeating it cannot change that:
+    #    there is no new material, and no action at the human gate makes an
+    #    unspawned or failed call run. Ahead of CONVERGED because zero findings
+    #    from nobody is not a clean bill of health, and ahead of the ceilings so
+    #    the run reports the reason it actually stopped rather than the ceiling
+    #    it would have reached later. Behind the breaker, which is unconditional.
+    if no_persona_reviewed:
+        return HaltReason.NO_REVIEW
+
+    # 3. Convergence (good): nothing dangerous or blocking is open.
     scope_ok = scope_complete or not halting.require_scope_complete
     if result.open_blockers == 0 and scope_ok and quorum_met:
         return HaltReason.CONVERGED
 
-    # 3. Resource ceilings (partial halts — BADs may remain, but must be tracked).
+    # 4. Resource ceilings (partial halts — BADs may remain, but must be tracked).
     if halting.token_budget is not None and tokens_spent >= halting.token_budget:
         return HaltReason.BUDGET
     if halting.time_budget_s is not None and elapsed_s >= halting.time_budget_s:
@@ -82,7 +104,7 @@ def _evaluate_halt(
     if epochs_done >= halting.max_epochs:
         return HaltReason.EPOCH
 
-    # 4. Stall: no new material findings for K epochs while blockers persist.
+    # 5. Stall: no new material findings for K epochs while blockers persist.
     if stall_epochs >= halting.stall_patience and result.open_blockers > 0:
         return HaltReason.STALL
 

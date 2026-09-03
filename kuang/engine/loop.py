@@ -245,9 +245,26 @@ def run(
         # crash here would end the run (#25). A report with no verdict is not a
         # YES, which is what keeps a crashed or unreadable persona from helping
         # produce a CONVERGED verdict.
+        # A vote is also a claim ABOUT A REVIEW, so a persona the run knows produced
+        # no review does not cast one (#72): a dry run's whole panel returned a
+        # well-formed "YES" from a call nobody made, met unanimity, and halted on
+        # the good verdict. Keyed on the status, which is a categorical fact set at
+        # the source, and never on the verdict text. Nothing is discarded — the
+        # verdict stays on the report and in the run's output; it is not counted.
+        # Deliberately the PARTICIPATION axis only: a persona that reviewed badly
+        # made a claim, and dropping that would move quorum for a reason nobody can
+        # see and could silently unlatch the breaker (#24, #26, #67).
         yes_votes = sum(1 for r in reports
-                        if str(r.verdict or "").strip().upper() == AFFIRMATIVE_VERDICT)
+                        if not r.status.did_not_review
+                        and str(r.verdict or "").strip().upper() == AFFIRMATIVE_VERDICT)
         quorum_met = yes_votes >= quorum
+
+        # And if the run knows NOBODY reviewed, the rule above makes CONVERGED
+        # unreachable, so something must stop the loop or it spends its whole epoch
+        # budget re-printing wiring and stopping at the gate each time. An empty
+        # panel falls out of this as well: quorum over nobody is 0 >= 0, the same
+        # verdict from the same absence, reached by arithmetic instead.
+        no_persona_reviewed = all(r.status.did_not_review for r in reports)
 
         result.halt = _evaluate_halt(
             result, review_run, halting,
@@ -257,6 +274,7 @@ def run(
             elapsed_s=clock() - start,
             scope_complete=scope_complete(result),
             quorum_met=quorum_met,
+            no_persona_reviewed=no_persona_reviewed,
         )
         review_run.epochs.append(result)
         if checkpoint is not None:
