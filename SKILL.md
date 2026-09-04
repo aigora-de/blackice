@@ -117,6 +117,29 @@ human. You are the *synthesiser, not the judge* — the human decides.
   they are not the whole risk: **diff mode applies no cap at all**, so
   `bounded: false` in the artefact means nothing was checked there rather than
   that nothing was lost.
+- **Read what the good verdict RESTS ON, and read coverage apart from it.**
+  `converged` is satisfied by *absence* on every one of its conjuncts, so a run
+  states the agreement behind it: `verdict rests on: N of M persona(s) voting YES
+  (quorum Q)`, and how many of those votes opened the source. A verdict marked
+  `DEGENERATE VERDICT` rests on at most one voice the run knows looked — a panel of
+  one, or a panel of any size where every contributing voice called no tool. It is
+  a **qualifier, not a gate**: personas are a parameter and a deliberate
+  one-reviewer run is yours to make, so the run says what the verdict is worth and
+  leaves the decision with you. Treat a degenerate clean verdict as one opinion,
+  not as a panel agreeing.
+  **`panel coverage:` is a different fact and answers the prior question** — was
+  there a panel at all? Not a headcount: seven correctness lenses are not more
+  complete than three covering correctness, ruin and completeness. It names each
+  required lens, who covers it, and how. `injected` is exact — nothing matched, so
+  that persona *is* that lens. `KEYWORD MATCH` is a **heuristic**: a sourced
+  persona's name or grounding contained a capability keyword and suppressed the
+  default, which nobody checked and nothing can until a lens is declarable (#2).
+  A grounding mentioning cascading failures in passing suppresses the ruin lens
+  exactly as a real one does. A `WARNING` that the required lenses rest on fewer
+  personas than there are lenses means the panel has no independent lens — that is
+  how a panel of one happens without anyone doing anything unusual. A run can meet
+  quorum with no independent lens, or cover every lens and fail quorum; neither
+  number stands for the other.
 - **Between epochs / after halt: synthesise.** Present each persona's view
   *distinctly* (don't blend them); surface disagreement.
 - **Adjudicate BLOCKER/UGLY findings against source before relaying them.** A

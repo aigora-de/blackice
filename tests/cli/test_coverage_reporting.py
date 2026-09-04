@@ -79,6 +79,26 @@ Find what everyone else missed; assume shared blind spots.
 Hunt ruin-class hazards only.
 """
 
+# Exactly TWO experts, one matching each keyword set, so neither default is
+# injected and the panel is two. This is the boundary the rule turns on: two
+# grounded voices are the smallest real agreement, and one is an opinion. Without
+# a panel of exactly this size the ``< 2`` rule is unpinned at its upper end — a
+# mutation to ``< 3`` survived the six rows below until this was added, which is
+# how the gap was found rather than argued.
+_PAIR = """\
+# A repo
+
+# Resident Experts
+
+## Critic — Completeness
+
+Find what everyone else missed; assume shared blind spots.
+
+## Sentinel — Ruin
+
+Hunt ruin-class hazards only.
+"""
+
 # One expert matching neither keyword set, so BOTH defaults are injected: the
 # panel is three, and each required lens is covered by construction rather than by
 # a substring. The exact half of the claim, against ``_MATCHED``'s heuristic half.
@@ -100,6 +120,16 @@ _GROUNDED, _NO_TOOL, _UNREPORTED = 7, 1, 0
 # constant in ``personas.py`` and does not open "You are <name>", so a default is
 # addressed the way the replay harness addresses it.
 _SURVIVABILITY = "ruin-class hazards"
+
+
+# Which mandate substring addresses which persona, per panel. A sourced persona's
+# grounding opens "You are <name> — <role>."; an injected default's does not, so
+# the two are addressed differently and the table says which panel is which.
+_NEEDLES = {
+    _SOLE: ("You are Sole Reviewer",),
+    _PAIR: ("You are Critic", "You are Sentinel"),
+    _MATCHED: ("You are Analyst", "You are Critic", "You are Sentinel"),
+}
 
 
 def _contract(verdict="YES", findings=(), *, turns=_GROUNDED) -> CallResult:
@@ -192,12 +222,18 @@ def test_a_panel_of_one_that_opened_nothing_says_so_beside_the_verdict(
 @pytest.mark.parametrize("claude_md,turns,degenerate", [
     (_SOLE, (_NO_TOOL,), True),
     (_SOLE, (_GROUNDED,), True),
+    (_PAIR, (_GROUNDED, _NO_TOOL), True),
+    (_PAIR, (_GROUNDED, _GROUNDED), False),
+    (_PAIR, (_GROUNDED, _UNREPORTED), False),
     (_MATCHED, (_NO_TOOL, _NO_TOOL, _NO_TOOL), True),
     (_MATCHED, (_GROUNDED, _GROUNDED, _UNREPORTED), False),
     (_MATCHED, (_GROUNDED, _GROUNDED, _GROUNDED), False),
     (_MATCHED, (_UNREPORTED, _UNREPORTED, _UNREPORTED), False),
 ], ids=["one_voice_that_opened_nothing",
         "one_voice_that_looked",
+        "two_voices_only_one_of_which_looked",
+        "two_looked_the_smallest_real_agreement",
+        "one_looked_and_one_turn_count_unreported",
         "three_voices_none_of_which_looked",
         "two_looked_and_one_turn_count_unreported",
         "three_looked",
@@ -216,10 +252,14 @@ def test_the_degeneracy_rule_is_one_principle_over_what_the_run_knows(
     *agreement*, and one voice is an opinion. The last row is why the rule takes
     ``unreported`` on its side: three silent turn counts is a run that measured
     nothing, and it must read as neither health nor harm.
+
+    **Both ends are pinned, and by the smallest panel that can pin them.** The two
+    ``_PAIR`` rows straddle the boundary exactly — one grounded voice is degenerate,
+    two are not — so the rule cannot be loosened to ``< 3`` or tightened to ``< 1``
+    without a row going red. The three-persona rows alone left the upper end free.
     """
     repo = _repo(changed_repo, claude_md)
-    names = ["You are Sole Reviewer"] if claude_md is _SOLE else [
-        "You are Analyst", "You are Critic", "You are Sentinel"]
+    names = _NEEDLES[claude_md]
     _stub(monkeypatch, {n: _contract(turns=t) for n, t in zip(names, turns)})
     _run(repo)
     out = capsys.readouterr().out
