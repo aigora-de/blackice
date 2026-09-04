@@ -208,11 +208,19 @@ def _ensure_specialists(
     out = list(personas)
     coverage: list[LensCoverage] = []
     for lens, keys, default in REQUIRED_LENSES:
-        matched = next((p for p, text in zip(personas, texts)
-                        if any(k in text for k in keys)), None)
-        if matched is None:
+        matched = [p for p, text in zip(personas, texts)
+                   if any(k in text for k in keys)]
+        if not matched:
             out.append(default)
-        coverage.append(LensCoverage(
-            lens=lens, persona=(default if matched is None else matched).name,
-            injected=matched is None))
+            coverage.append(LensCoverage(lens, default.name, injected=True))
+            continue
+        # EVERY matcher, not the first. Which persona "is" the ruin lens is not a
+        # question the keyword rule can answer, so picking one would be the report
+        # judging: a panel whose Analyst says "cascading" in passing and whose
+        # Sentinel is a real ruin lens would have the lens reported against the
+        # Analyst, and a run in which the Analyst errored would say the ruin lens
+        # failed while the Sentinel reviewed it perfectly well. Over-reporting a
+        # degradation on a healthy panel is the mirror image of the defect #82 is
+        # about, so each matcher gets its own record and the reader sees the set.
+        coverage.extend(LensCoverage(lens, p.name, injected=False) for p in matched)
     return out, coverage

@@ -137,7 +137,8 @@ def _coverage_header(coverage: list[LensCoverage]) -> str:
     roster, so a present/absent column could only ever say yes. What varies, and
     what this section therefore reports, is HOW each lens came to be covered.
     """
-    return (f"panel coverage: {', '.join(c.lens for c in coverage)} — presence is "
+    lenses = list(dict.fromkeys(c.lens for c in coverage))
+    return (f"panel coverage: {', '.join(lenses)} — presence is "
             f"guaranteed at sourcing, provenance is not (#2)")
 
 
@@ -556,9 +557,13 @@ def main(argv: list[str] | None = None) -> int:
     # One persona suppressing every default is exactly how #82's panel of one
     # happens, and it is exactly knowable — unlike which lens that persona really
     # is. Said as counts so a third required lens needs no new wording.
+    # Over DISTINCT lenses and DISTINCT personas, since one lens may have several
+    # matchers and a record each: what makes a panel degenerate is lenses sharing
+    # a bearer, never a lens having more than one.
     lens_bearers = {c.persona for c in coverage}
-    if len(lens_bearers) < len(coverage):
-        print(f"  WARNING: {len(coverage)} required lens(es) rest on "
+    lenses = {c.lens for c in coverage}
+    if len(lens_bearers) < len(lenses):
+        print(f"  WARNING: {len(lenses)} required lens(es) rest on "
               f"{len(lens_bearers)} persona(s) — the panel has no lens "
               f"independent of any other")
     # What the panel could actually DO (#67). Two facts, and they are not one fact

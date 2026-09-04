@@ -112,6 +112,42 @@ _INJECTED = """\
 Does the change compute the right thing?
 """
 
+# TWO personas match the ruin keywords: the Sentinel, which is a real ruin lens,
+# and the Analyst, whose grounding says "cascading" in passing and means nothing of
+# the sort. Reachable without an operator doing anything unusual, and the case that
+# makes "which persona IS this lens" a question the keyword rule cannot answer.
+_TWO_RUIN = """\
+# A repo
+
+# Resident Experts
+
+## Analyst — Correctness
+
+Trace assumptions, and the cascading consequences of a wrong one.
+
+## Sentinel — Ruin
+
+Hunt ruin-class hazards only.
+"""
+
+# A panel of two where the Critic covers completeness AND matches a ruin keyword,
+# while the Sentinel is an independent ruin lens. Two lenses, two personas, three
+# coverage records — the shape that separates "lenses sharing a bearer", which is
+# degenerate, from "a lens having more than one bearer", which is not.
+_SHARED = """\
+# A repo
+
+# Resident Experts
+
+## Critic — Completeness
+
+Find what everyone else missed; assume shared blind spots, and cascading ones.
+
+## Sentinel — Ruin
+
+Hunt ruin-class hazards only.
+"""
+
 # The measured healthy range is 6-9 turns; the one-turn call is the defect, and 0
 # is the runtime declining to say (#70).
 _GROUNDED, _NO_TOOL, _UNREPORTED = 7, 1, 0
@@ -411,6 +447,64 @@ def test_an_injected_lens_is_exact_and_says_so(changed_repo, capsys, monkeypatch
         "the exact half must not carry the heuristic half's caveat; the header "
         "names #2 because provenance VARIES, and these two lines are the kind "
         "that does not")
+
+
+def test_every_persona_matching_a_lens_is_named_not_merely_the_first(
+        changed_repo, capsys, monkeypatch):
+    """A lens with two matchers must not be reported against an arbitrary one.
+
+    The keyword rule cannot say which persona *is* the ruin lens, so a report that
+    picks one is the tool judging on a substring. Measured: with an Analyst whose
+    grounding says "cascading" in passing and a Sentinel that is a real ruin lens,
+    naming only the first meant a run in which the Analyst errored reported the
+    ruin lens as failed while the Sentinel had reviewed it perfectly well —
+    over-reporting a degradation on a healthy panel, which is the mirror image of
+    the defect this issue is about.
+
+    So every matcher gets a record, and the reader sees the set. The single-matcher
+    case is unchanged, which is why no capture moved when this landed.
+    """
+    repo = _repo(changed_repo, _TWO_RUIN)
+    _stub(monkeypatch, {"You are Analyst": _contract(turns=_NO_TOOL)})
+    _run(repo)
+    out = capsys.readouterr().out
+    ruin = [ln for ln in _coverage_block(out) if ln.strip().startswith("ruin —")]
+
+    assert len(ruin) == 2, ruin
+    assert any("Analyst" in ln and "CALLED NO TOOL" in ln for ln in ruin), ruin
+    assert any("Sentinel" in ln and "CALLED NO TOOL" not in ln for ln in ruin), (
+        "the real ruin lens looked, and the report must not hide it behind the "
+        "first persona whose wording happened to match")
+    assert "WARNING" not in "\n".join(_coverage_block(out)), (
+        "three personas bear two lenses — nothing rests on a shared voice")
+    covered = [c for c in _artefact(out)["coverage"] if c["lens"] == "ruin"]
+    assert sorted(c["persona"] for c in covered) == ["Analyst", "Sentinel"]
+    assert sorted(c["opened_source"] for c in covered) == [False, True]
+
+
+def test_a_lens_with_two_bearers_is_not_a_panel_with_none(changed_repo, capsys,
+                                                          monkeypatch):
+    """The WARNING counts LENSES sharing a bearer, never records.
+
+    Two lenses, two personas, three records: the Critic covers completeness and
+    also matches a ruin keyword, and the Sentinel is an independent ruin lens.
+    Counting records instead of distinct lenses fires the warning here — telling an
+    operator the panel has no independent lens when it plainly does, which is the
+    mirror image of the defect and would make the mark worthless where it matters.
+    """
+    repo = _repo(changed_repo, _SHARED)
+    _stub(monkeypatch, {})
+    _run(repo)
+    block = "\n".join(_coverage_block(capsys.readouterr().out))
+
+    assert len([ln for ln in block.splitlines()
+                if ln.strip().startswith("ruin —")]) == 2, block
+    assert "WARNING" not in block, (
+        "the Sentinel is a ruin lens independent of the Critic; a lens with two "
+        "bearers is not a panel whose lenses share one")
+    assert block.splitlines()[0].count("ruin") == 1, (
+        "the header names the required lenses, not the records: a lens with two "
+        "bearers must not read as two requirements")
 
 
 def test_one_persona_covering_both_lenses_is_named(changed_repo, capsys,
