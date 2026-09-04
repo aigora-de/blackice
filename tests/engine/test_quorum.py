@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from kuang.engine import (HaltingSet, HaltReason, PanelConfig, PersonaReport,
-                          ReviewSpec, run)
+                          PersonaStatus, ReviewSpec, run)
 
 PANEL = PanelConfig(personas=[(n, "mandate") for n in ("correctness", "adversary")])
 
@@ -62,3 +62,61 @@ def test_convergence_stays_reachable_for_a_panel_that_voted(verdict):
     review_run = _run(verdict)
 
     assert review_run.halt_reason is HaltReason.CONVERGED
+
+
+# --- the quorum a run must be able to STATE, not merely apply (#82) ----------
+
+def test_effective_quorum_defaults_to_unanimity_among_the_roster():
+    """The number a run must print beside ``converged``, and where it comes from.
+
+    ``quorum`` is ``None`` on every CLI run today — there is no ``--quorum`` flag —
+    so the default is the whole answer, and the loop computed it in a local
+    variable nothing outside could see. It is a property so the CLI reads the same
+    rule the gate applies rather than restating it, which is #26's lesson about
+    ``AFFIRMATIVE_VERDICT`` one field along.
+    """
+    assert PanelConfig(personas=[("a", "m"), ("b", "m")]).effective_quorum == 2
+    assert PanelConfig(personas=[("a", "m")]).effective_quorum == 1
+
+
+def test_effective_quorum_honours_an_explicit_threshold():
+    """Personas are a parameter, and so is the agreement required of them."""
+    panel = PanelConfig(personas=[("a", "m"), ("b", "m"), ("c", "m")], quorum=2)
+
+    assert panel.effective_quorum == 2
+
+
+def test_effective_quorum_over_an_empty_panel_is_zero():
+    """``0 >= 0`` is the arithmetic behind #72's empty-panel case, stated once.
+
+    Not a rounded-up 1: the property reports what the gate uses, and softening it
+    here would make the printed number disagree with the applied one.
+    """
+    assert PanelConfig(personas=[]).effective_quorum == 0
+
+
+@pytest.mark.parametrize("verdict,status,counted", [
+    ("YES", PersonaStatus.CONTRIBUTED, True),
+    ("YES", PersonaStatus.FOUND_NOTHING, True),
+    ("YES", PersonaStatus.UNREPORTED, True),
+    ("YES", PersonaStatus.NOT_SPAWNED, False),
+    ("YES", PersonaStatus.AGENT_ERROR, False),
+    ("NO", PersonaStatus.CONTRIBUTED, False),
+    ("YES | NO", PersonaStatus.CONTRIBUTED, False),
+    (None, PersonaStatus.CONTRIBUTED, False),
+], ids=["contributed_yes", "found_nothing_yes", "unreported_yes",
+        "not_spawned_yes", "agent_error_yes", "contributed_no",
+        "the_contract_placeholder", "no_verdict_at_all"])
+def test_counted_vote_is_the_one_predicate_behind_the_tally(verdict, status,
+                                                            counted):
+    """The rule the loop applies, exposed so a reporter cannot restate it wrongly.
+
+    #82 has to report how many votes a verdict rests on and how many of those were
+    grounded, which needs the identity of the voters and not just their number. A
+    second copy of this predicate in the CLI would be a place for the printed
+    number and the gated one to drift apart — which is exactly what #72 found the
+    denominator had already done.
+    """
+    report = PersonaReport(persona="p", verdict=verdict, status=status)
+
+    assert report.counted_vote is counted

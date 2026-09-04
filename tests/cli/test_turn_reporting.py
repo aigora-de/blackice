@@ -204,7 +204,12 @@ def test_a_dry_run_reports_no_turn_degradation(sourced_repo, capsys, monkeypatch
     assert all(r["turns"] == 0 for r in payload["participation"])
     assert all(r["status"] == "not_spawned" for r in payload["participation"])
     assert "CALLED NO TOOL" not in out
-    assert "unreported" not in out, "a dry run suffered no degradation to report"
+    # Narrowed to the CONSOLE at #82, which added a ``turns_unreported`` count to
+    # the artefact. A count of zero reports no degradation — it is ``omitted: 0``
+    # one section along — and this assertion is about what a dry run SAYS, which
+    # is the half the docstring above is about.
+    assert "unreported" not in out.split("--- JSON ---")[0], (
+        "a dry run suffered no degradation to report")
 
 
 def test_an_errored_persona_is_not_also_reported_as_ungrounded(sourced_repo, capsys,

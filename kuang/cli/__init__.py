@@ -29,13 +29,14 @@ from collections import Counter
 from pathlib import Path
 
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
-                                          UNRESOLVED_SEVERITY, PanelSession,
-                                          ReduceState, SurfaceError,
-                                          SurfaceRecord, called_no_tool,
-                                          load_personas, load_prior_findings,
+                                          UNRESOLVED_SEVERITY, LensCoverage,
+                                          PanelSession, ReduceState,
+                                          SurfaceError, SurfaceRecord,
+                                          called_no_tool, load_personas,
+                                          load_prior_findings,
                                           unavailable_tools, ungrounded_keys)
-from kuang.engine import (HaltingSet, PanelConfig, PersonaReport, ReviewSpec,
-                          run)
+from kuang.engine import (HaltingSet, HaltReason, PanelConfig, PersonaReport,
+                          ReviewSpec, run)
 
 
 def _turn_note(report: PersonaReport) -> str:
@@ -57,6 +58,124 @@ def _turn_note(report: PersonaReport) -> str:
             note += " — CALLED NO TOOL"
         return note
     return ", turn count unreported" if report.status.reviewed else ""
+
+
+def _agreement(reports: list[PersonaReport]) -> dict[str, int]:
+    """The votes a verdict rests on, partitioned by what the run KNOWS (#82).
+
+    ``converged`` is the good verdict and the run printed it without ever saying
+    what agreement it represented. The votes counted are the engine's own
+    (``PersonaReport.counted_vote``, so the number reported and the number gated on
+    cannot drift), and they are then split by the three turn states #70 keeps
+    apart and never collapses: a count the runtime gave above 1, a count of exactly
+    1 — the reviewer answered from the prompt alone — and no count at all.
+
+    ``reviewed`` is over the whole panel rather than over the voters, deliberately:
+    it is the participation axis, it is not derived from the vote, and a reader
+    needs both to tell a panel that disagreed from one that did not turn up.
+    """
+    counted = [r for r in reports if r.counted_vote]
+    return {
+        "yes_votes": len(counted),
+        "reviewed": sum(1 for r in reports if r.status.reviewed),
+        "opened_source": sum(1 for r in counted
+                             if r.turns > 0 and not called_no_tool(r.turns)),
+        "called_no_tool": sum(1 for r in counted if called_no_tool(r.turns)),
+        "turns_unreported": sum(1 for r in counted if r.turns == 0),
+    }
+
+
+def _degenerate(agreement: dict[str, int]) -> bool:
+    """Whether the agreement behind a verdict is one voice or none (#82).
+
+    **One principle, and it is two-ended.** A verdict rests on the votes the run
+    cannot rule out as ungrounded; it is degenerate when it can name fewer than two
+    of them. Every case the issue lists falls out of that one number — a panel of
+    one whether or not it looked, and a panel of any size where every contributing
+    voice called no tool.
+
+    ``< 2`` is not a threshold anybody baselined, which #70 measured there is no
+    honest way to set: it is the definition of the word *agreement*, and one voice
+    is an opinion. Votes with **no** turn count are counted on the benefit of the
+    doubt, so a runtime that reported nothing has no degradation attributed to it —
+    #70's rule, one field along, and the end that stops this firing on silence.
+
+    This is the QUORUM half and only that half. Lens coverage is reported beside
+    it and never folded into it: a run can have full coverage and fail quorum, or
+    meet quorum with no independent lens at all, so no single number may stand for
+    both (#82's fourth acceptance criterion).
+    """
+    return agreement["opened_source"] + agreement["turns_unreported"] < 2
+
+
+def _verdict_line(agreement: dict[str, int], *, quorum: int, roster: int) -> str:
+    """What the good verdict rests on, in the slot #72 left free for it (#82).
+
+    Printed only where there IS a verdict. Under a ``no_review`` halt the halt line
+    already says nothing was reviewed, and "0 of 7" beneath it states one fact
+    twice — argued on the record at #72's close-out, and all 13 golden invocations
+    are dry runs, so it would also be a line of movement per invocation for nothing.
+
+    Each clause appears only when it has something to report, and each is a
+    separate source line, following ``_surface_note``.
+    """
+    clauses = [f"{agreement['opened_source']} opened the source"]
+    if agreement["called_no_tool"]:
+        clauses.append(f"{agreement['called_no_tool']} called no tool")
+    if agreement["turns_unreported"]:
+        clauses.append(f"{agreement['turns_unreported']} turn count(s) unreported")
+    return (f"verdict rests on: {agreement['yes_votes']} of {roster} persona(s) "
+            f"voting YES (quorum {quorum}) — {', '.join(clauses)}")
+
+
+def _coverage_header(coverage: list[LensCoverage]) -> str:
+    """The required lenses, and the boundary a measurement forced on the claim.
+
+    It says **presence** is guaranteed rather than reporting it, because measured,
+    ``_ensure_specialists`` appends the missing default on every branch
+    ``load_personas`` returns through: a required lens is never absent from a
+    roster, so a present/absent column could only ever say yes. What varies, and
+    what this section therefore reports, is HOW each lens came to be covered.
+    """
+    lenses = list(dict.fromkeys(c.lens for c in coverage))
+    return (f"panel coverage: {', '.join(lenses)} — presence is "
+            f"guaranteed at sourcing, provenance is not (#2)")
+
+
+def _coverage_line(rec: LensCoverage, report: PersonaReport | None) -> str:
+    """One required lens: who covers it, on what evidence, and what they did.
+
+    The exact half and the heuristic half must not read alike, which is this
+    issue's own promise. An **injected** default is exact — nothing matched, so the
+    lens is that persona by construction. A **keyword match** is a claim on the
+    strength of a substring over a sourced persona's name and grounding: it is how
+    a grounding that mentions cascading failures in passing suppresses the ruin
+    lens, and nothing checks it until a lens is declarable (#2), which is named on
+    the line rather than left for a reader to know.
+
+    What the covering persona then DID is rendered by ``_turn_note``, the same
+    renderer the participation line uses, so the two sections cannot disagree about
+    one persona — rostered is not reviewed, and reviewed is not grounded.
+    """
+    how = (f"injected ({rec.persona})" if rec.injected
+           else f"KEYWORD MATCH ({rec.persona}), not declared (#2)")
+    did = ("" if report is None
+           else f" — {report.status.value.replace('_', ' ')}{_turn_note(report)}")
+    return f"  {rec.lens} — {how}{did}"
+
+
+def _coverage_record(rec: LensCoverage, report: PersonaReport | None) -> dict:
+    """One lens for the artefact. ``opened_source`` is three-state, never two.
+
+    ``None`` is the runtime declining to say (#70), and writing it as ``False``
+    would report a degradation nobody measured.
+    """
+    opened = (None if report is None or report.turns == 0
+              else not called_no_tool(report.turns))
+    return {"lens": rec.lens, "persona": rec.persona,
+            "how": "injected" if rec.injected else "keyword",
+            "reviewed": report is not None and report.status.reviewed,
+            "opened_source": opened}
 
 
 def _surface_note(record: SurfaceRecord | None) -> str:
@@ -223,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
                          else "the pending diff")
 
     repo = Path(args.repo).resolve()
-    personas, source = load_personas(repo)
+    personas, source, coverage = load_personas(repo)
     if args.allow_tools:  # override the read-only default for ALL personas
         for p in personas:
             p.tools = list(args.allow_tools)
@@ -285,6 +404,33 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n=== HALT: {review_run.halt_reason.value} after {len(review_run.epochs)} epoch(s) ===")
     print(f"open uglies: {len(review_run.open_uglies)} | open blockers: {len(review_run.open_blockers)}"
           f" | tokens: {session.tokens}")
+    # What the good verdict rests on (#82). ``converged`` is satisfied by ABSENCE
+    # on every conjunct, and quorum is trivially met at n=1 — so a panel of one
+    # whose sole reviewer called no tool printed the good verdict with nothing
+    # beside it saying the agreement was one voice that did not look. Qualified,
+    # never gated: a halt reason is for a state the loop cannot usefully continue
+    # from, and a degenerate-but-real review can. Personas are a parameter, and a
+    # deliberate one-reviewer run is the operator's call — the tool informs.
+    # Attached to a verdict and only to a verdict; see ``_verdict_line``.
+    final = review_run.epochs[-1]
+    agreement = _agreement(final.reports)
+    converged = review_run.halt_reason is HaltReason.CONVERGED
+    # ``degenerate`` qualifies a VERDICT, so it is ``None`` where the run reached
+    # none — the third state ``opened_source`` takes for the same reason. The
+    # counts beside it are unconditional facts about the votes and stay; this one
+    # is an answer to "what does converged rest on here?", and on a dry run that
+    # question has no subject. Arithmetically it would read ``true`` on every dry
+    # run, and 11 of 13 golden invocations are dry runs — so an operator counting
+    # degenerate verdicts across an archive would count runs that never reached
+    # one. Saying nothing is the honest value; the console is silent for the same
+    # reason, and both come off this one variable so they cannot disagree.
+    degenerate = _degenerate(agreement) if converged else None
+    if converged:
+        print(_verdict_line(agreement, quorum=panel.effective_quorum,
+                            roster=len(personas)))
+        if degenerate:
+            print("  DEGENERATE VERDICT — at most one voice is known to have "
+                  "looked and agreed")
     for f in review_run.open_uglies + review_run.open_blockers:
         print(f"  [{f.severity.name}] ({f.persona}) {f.title} @ {f.file}:{f.line}")
     # Severities the panel emitted that did not resolve to a level (#24). Reported
@@ -386,6 +532,40 @@ def main(argv: list[str] | None = None) -> int:
             # with what "canonical issues" counts rather than quietly disagreeing.
             print(f"    [{r.status.value.replace('_', ' ')}] ({r.persona}) "
                   f"— {len(r.findings)} finding(s){_turn_note(r)}")
+    # What the panel COVERED (#82), and it is not what the panel agreed. A voting
+    # quorum is a threshold over the votes cast by whoever ran; coverage is the
+    # prior question of whether the right lenses were there at all, and it is not
+    # a headcount — seven correctness lenses are not more complete than three
+    # covering correctness, ruin and completeness. Neither is derived from the
+    # other and no single number may stand for both, so they are reported in two
+    # places under two names.
+    #
+    # Always on, for the reason the surface section is (#74): this is known before
+    # any subprocess exists, so it is reported in a dry run too, where pre-flight
+    # confirmation is the whole job — "your ruin lens is a substring match on one
+    # persona" is the most useful thing a dry run can say about a panel, and it is
+    # the last moment an operator can act on it without having paid.
+    #
+    # The run-time half describes the FINAL epoch, which is the one a verdict rests
+    # on. Per-epoch participation is one section up and is not repeated here.
+    final_reports = {r.persona: r for r in final.reports}
+    coverage_records = [_coverage_record(c, final_reports.get(c.persona))
+                        for c in coverage]
+    print(f"\n{_coverage_header(coverage)}")
+    for c in coverage:
+        print(_coverage_line(c, final_reports.get(c.persona)))
+    # One persona suppressing every default is exactly how #82's panel of one
+    # happens, and it is exactly knowable — unlike which lens that persona really
+    # is. Said as counts so a third required lens needs no new wording.
+    # Over DISTINCT lenses and DISTINCT personas, since one lens may have several
+    # matchers and a record each: what makes a panel degenerate is lenses sharing
+    # a bearer, never a lens having more than one.
+    lens_bearers = {c.persona for c in coverage}
+    lenses = {c.lens for c in coverage}
+    if len(lens_bearers) < len(lenses):
+        print(f"  WARNING: {len(lenses)} required lens(es) rest on "
+              f"{len(lens_bearers)} persona(s) — the panel has no lens "
+              f"independent of any other")
     # What the panel could actually DO (#67). Two facts, and they are not one fact
     # reported twice. A tool the panel granted AND deny-listed was never in the
     # reviewer's session — measured on agent CLI 2.1.246, the runtime removes it
@@ -489,12 +669,28 @@ def main(argv: list[str] | None = None) -> int:
         # NOT close #16: recording the label a sourcing step returned is not the
         # same as noticing that the step fell back.
         "panel": {"source": source, "personas": [p.name for p in personas]},
+        # Which required lens each persona covers, and on what evidence (#82).
+        # ``how`` is the exact/heuristic boundary: ``injected`` means nothing
+        # matched and the default IS that lens by construction, ``keyword`` means a
+        # sourced persona's wording suppressed it and nobody checked. Sourcing has
+        # always known this and never recorded it, so no artefact read back cold
+        # could say what its panel covered. ``opened_source`` is three-state —
+        # ``null`` is the runtime declining to say, never a measured ``false``.
+        "coverage": coverage_records,
         # Per persona, per epoch: whether it contributed, found nothing, or never
         # reviewed — and, if it did not, which channel failed (#30) — plus what the
         # review cost in turns, which is how a run says whether the reviewer opened
         # anything at all (#70). ``turns: 0`` means the runtime did not say; a
         # persona that was never spawned is at 0 and suffered nothing.
         "participation": participation,
+        # What agreement the verdict rests on, in the final epoch (#82): the
+        # threshold, the votes counted against it, and how many of those the run
+        # knows opened the source. Always present even where the run did not
+        # converge — an absent key makes no claim, and a reader coming to an
+        # artefact cold cannot otherwise tell a panel that agreed from one that
+        # never ran. Counts only: per-persona verdicts remain #33's.
+        "agreement": {"quorum": panel.effective_quorum, "roster": len(personas),
+                      **agreement, "degenerate": degenerate},
         # What the panel could DO: the policy the run actually used, the granted
         # tools the deny-list cancelled, and the calls the agent was refused (#67).
         # The policy is recorded beside the verdict because "unavailable: []" is a

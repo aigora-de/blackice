@@ -62,8 +62,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from .findings import (AFFIRMATIVE_VERDICT, EpochResult, Finding, PersonaReport,
-                       PersonaStatus, ReviewRun, Severity)
+from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
+                       ReviewRun, Severity)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -94,6 +94,23 @@ class PanelConfig:
 
     personas: list[tuple[str, str]]
     quorum: int | None = None         # min YES verdicts for convergence (default: all)
+
+    @property
+    def effective_quorum(self) -> int:
+        """The YES count convergence actually requires (default: unanimity).
+
+        The loop applied this rule in a local variable nothing outside could see,
+        so a run printed ``converged`` without ever stating the agreement behind it
+        (#82). It is a property, not a second copy in a reporter, for the reason
+        ``AFFIRMATIVE_VERDICT`` is a constant: the number a run *states* and the
+        number its gate *applies* must not be able to drift apart.
+
+        Zero over an empty panel, deliberately, rather than a softened 1 — that
+        ``0 >= 0`` is the arithmetic behind #72's empty-panel case, and reporting
+        anything else here would make the printed number disagree with the applied
+        one. What stops that run is ``NO_REVIEW``, which is a different rule.
+        """
+        return self.quorum if self.quorum is not None else len(self.personas)
 
 
 def _trust_all(finding: Finding, surface: ReviewSurface) -> bool:  # noqa: ARG001
@@ -148,7 +165,7 @@ def run(
         the halt reason.
     """
     review_run = ReviewRun()
-    quorum = panel.quorum if panel.quorum is not None else len(panel.personas)
+    quorum = panel.effective_quorum
     start = clock()
     stall_epochs = 0
 
@@ -235,28 +252,11 @@ def run(
         material_new = [c for c in new_clusters if c.severity >= Severity.BLOCKER]
         stall_epochs = 0 if material_new else stall_epochs + 1
 
-        # A vote is the word, or it is not a vote (#26). The count used to be a
-        # prefix match, so the contract's own placeholder "YES | NO" voted for
-        # convergence — and so would any hedge a persona chose to open with. This
-        # is the last line, not the only one: a backend normalises its own replies,
-        # but the engine takes any SpawnPersona and must not be talked into a good
-        # verdict by one. str() because a backend may hand back a non-string
-        # verdict and the quorum count sits outside the spawn seam's guard — a
-        # crash here would end the run (#25). A report with no verdict is not a
-        # YES, which is what keeps a crashed or unreadable persona from helping
-        # produce a CONVERGED verdict.
-        # A vote is also a claim ABOUT A REVIEW, so a persona the run knows produced
-        # no review does not cast one (#72): a dry run's whole panel returned a
-        # well-formed "YES" from a call nobody made, met unanimity, and halted on
-        # the good verdict. Keyed on the status, which is a categorical fact set at
-        # the source, and never on the verdict text. Nothing is discarded — the
-        # verdict stays on the report and in the run's output; it is not counted.
-        # Deliberately the PARTICIPATION axis only: a persona that reviewed badly
-        # made a claim, and dropping that would move quorum for a reason nobody can
-        # see and could silently unlatch the breaker (#24, #26, #67).
-        yes_votes = sum(1 for r in reports
-                        if not r.status.did_not_review
-                        and str(r.verdict or "").strip().upper() == AFFIRMATIVE_VERDICT)
+        # What counts as a vote is one predicate, and it lives on the report it is
+        # a fact about (#26, #72) — see ``PersonaReport.counted_vote``, which
+        # carries the whole rule and the reasons for it. The engine gates on it
+        # here; a reporter reads the same property rather than restating it (#82).
+        yes_votes = sum(1 for r in reports if r.counted_vote)
         quorum_met = yes_votes >= quorum
 
         # And if the run knows NOBODY reviewed, the rule above makes CONVERGED
