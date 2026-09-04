@@ -92,8 +92,16 @@ POLICY, not prompts.**
 
 **Roadmap for verification power, in order of preference:**
 1. **Scoped allow-list** — `--allow-tools "Bash(pytest:*)" "Bash(git diff:*)"
-   "Bash(rg:*)" "Bash(ruff:*)"`; everything else denied. Gives the empiricist real
-   test-running without a blanket shell. (Supported today via `--allow-tools`.)
+   "Bash(rg:*)" "Bash(ruff:*)"`. The *intent* is to give the empiricist real
+   test-running without a blanket shell. **It does not do that today (#96).**
+   Measured on agent CLI 2.1.259: with the default deny-list the grant is cancelled
+   and warned pre-flight (#67); with `Bash` removed from the deny-list and
+   `--permission-mode default` the agent's natural `python3 -m pytest` does not match
+   `pytest:*` and is refused; with `Bash` removed at the **default** `plan` mode the
+   scope is **not enforced at all** — `ls`, `git log -p`, an arbitrary Python heredoc
+   and two `rm -rf` ran, with `permission_denials` empty. Inert, ineffective, or
+   unbounded — never scoped. Item 2 below is what would make this real, and item 3
+   is what would make it safe.
 2. **Ship a `--settings` profile** so the skill enforces *its own* policy rather
    than inheriting the target repo's (which may be permissive).
 3. **Sandbox** (no internet, read-only FS bar a scratch dir) — even scoped `Bash`
@@ -139,7 +147,12 @@ Transferable lessons:
 - **Permissions cut hallucinations.** A scoped verification allow-list reduces
   wrong line numbers and false positives versus read-only, because personas
   *check* claims instead of speculating. Read-only stays the safe default;
-  permissioned is the "real run" mode.
+  permissioned is the "real run" mode. **Caveat, measured (#96):** the runs this
+  lesson came from were taken before agent CLI 2.1.259, and the scoped grant does
+  not currently bound what it names — so what those runs actually exercised may have
+  been a wider shell than intended. The lesson about *checking beats speculating*
+  stands; the claim that a **scoped** grant delivered it is unverified on the current
+  runtime.
 - **Retry-on-contract-miss matters.** A persona that reviews but omits the output
   contract would otherwise be discarded entirely; reformatting its raw reply
   recovers it.

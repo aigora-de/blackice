@@ -92,7 +92,11 @@ kuang --repo <root> --base <base> --head <head> --dry-run
 kuang --repo <root> --base <base> --head <head> \
   --why "why this matters" --what "what changed" --max-epochs 2
 
-# Permissioned: let reviewers verify against source / run the suite (scoped)
+# Permissioned: let reviewers verify against source / run the suite.
+# NOTE: the Bash(...) grants below do NOT bound what a reviewer may run (#96) —
+# with the default deny-list they are cancelled and warned; without it, and at the
+# default --permission-mode plan, they become an unrestricted shell. Treat this as
+# "a reviewer with a shell", not as scoped verification, until #96 lands.
 kuang --repo <root> --base <base> --head <head> \
   --allow-tools Read Grep Glob 'Bash(git:*)' 'Bash(pytest:*)' --permission-mode default
 
@@ -126,8 +130,9 @@ persona's role is its lens; we don't lead the witness). See [`SKILL.md`](SKILL.m
 **Deny-by-default, read-only** with respect to the repo (`Read`/`Grep`/`Glob`;
 no shell or edits) — because headless `claude -p` runs any *allowed* tool
 unsupervised, and HITL here is per-epoch, not per-command. Scoped verification
-(`Bash(pytest:*)`, `Bash(git diff:*)`) is opt-in via `--allow-tools`. Never bare
-`Bash`. **The deny-list bounds the tools it names and not the whole tool set** —
+(`Bash(pytest:*)`, `Bash(git diff:*)`) is opt-in via `--allow-tools` — but measured
+on agent CLI 2.1.259 the **scope is not enforced** under the default `plan` mode: such
+a grant runs arbitrary shell and records nothing (#96). Never bare `Bash`. **The deny-list bounds the tools it names and not the whole tool set** —
 `--allowedTools` marks tools as needing no approval rather than restricting what
 exists, so a reviewer can still reach tools on neither list (measured: network
 access). Tracked as issue #76; do not rely on this as a sandbox.
