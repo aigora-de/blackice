@@ -37,7 +37,8 @@ context.
 - **Backend-agnostic by construction.** The engine knows nothing about any specific
   agent runtime; runtimes are dependency-injected backends. Keep that seam clean.
 - **Deny-by-default on permissions.** Reviewers run read-only *with respect to the
-  repo* unless a scoped verification allow-list is explicitly opted in. Never grant a
+  repo* unless a verification allow-list is explicitly opted in — and that list is not
+  actually *scoped*: a `Bash(...)` grant does not bound what runs (#96). Never grant a
   blanket shell. The deny-list bounds the tools it **names**, not the whole tool set:
   `--allowedTools` marks tools as needing no approval rather than restricting what
   exists, so a reviewer can still reach tools on neither list (measured: network

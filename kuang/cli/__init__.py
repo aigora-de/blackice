@@ -189,7 +189,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default=None, help="default model for personas")
     ap.add_argument("--allow-tools", nargs="*", default=None, metavar="TOOL",
                     help="override allowed tools for ALL personas, e.g. --allow-tools "
-                         "Read Grep Glob 'Bash(git:*)' 'Bash(pytest:*)' 'Bash(poetry:*)'")
+                         "Read Grep Glob. A Bash(...) grant does NOT bound what is run "
+                         "(issue #96): it is cancelled by the default deny-list, or, "
+                         "with Bash removed from it, becomes an unrestricted shell.")
     ap.add_argument("--disallow-tools", nargs="*", default=None, metavar="TOOL",
                     help="override the disallowed-tools list (default: Edit Write NotebookEdit Bash)")
     ap.add_argument("--permission-mode", default="plan",

@@ -36,6 +36,16 @@ from __future__ import annotations
 # for a later version — e.g. --allowedTools "Bash(pytest:*)" "Bash(git diff:*)" —
 # ideally shipped via a `--settings` profile and sandboxed (no internet). Never
 # bare `Bash`. See NOTES.md.
+#
+# MEASURED, AND THE SCOPE IS NOT ENFORCED (#96). On agent CLI 2.1.259, a
+# `Bash(pytest:*)` grant with `Bash` off the deny-list, under the DEFAULT
+# `--permission-mode plan`, ran `ls`, `git log -p`, an arbitrary Python heredoc,
+# writes outside the repo and two `rm -rf` — with `permission_denials` EMPTY. Under
+# `--permission-mode default` the same grant was refused (the agent's `python3 -m
+# pytest` does not match `pytest:*`) and every refusal WAS recorded. So the scoped
+# add-on above is an INTENTION, not a shipped guarantee: today it is cancelled by
+# the deny-list, or refused, or unbounded. Do not describe it as bounding anything
+# until #96 lands, and do not add a `Bash(...)` grant to any default.
 DEFAULT_ALLOWED_TOOLS = ["Read", "Grep", "Glob"]
 DEFAULT_DISALLOWED_TOOLS = ["Edit", "Write", "NotebookEdit", "Bash"]
 
@@ -68,10 +78,16 @@ def unavailable_tools(granted: list[str], denied: list[str]) -> list[str]:
     degradation that did not happen, which is as bad as missing one that did.
 
     **Limit, stated rather than half-implemented:** ``--permission-mode`` also
-    removes tools — under ``plan`` the agent reports it cannot run ``Bash`` at all,
-    attempts no call, and again records no denial — and this check does not model
-    it. A mode-to-tool-class table would be runtime knowledge that drifts silently
-    as the runtime changes, which is the failure mode this whole issue is about.
+    decides what a grant is worth, and this check does not model it. A
+    mode-to-tool-class table would be runtime knowledge that drifts silently as the
+    runtime changes, which is the failure mode this whole issue is about — and the
+    drift is not hypothetical. This paragraph previously read that under ``plan``
+    the agent *"reports it cannot run Bash at all, attempts no call, and again
+    records no denial"*. That was measured on agent CLI 2.1.246 and was true then.
+    Re-measured on **2.1.259** it is **false in every clause**: the agent attempts,
+    the calls SUCCEED, and the scope is not enforced (#96). The envelope's shape did
+    not change between those versions, so nothing here could notice. The lesson is
+    written into #96's acceptance: pin the CLI version beside any claim about it.
     """
     deny = set(denied)
     return [t for t in granted if t in deny or _base_name(t) in deny]

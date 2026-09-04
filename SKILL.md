@@ -175,14 +175,19 @@ prompt), and HITL here is per-epoch, not per-command. That deny-list bounds the
 tools it **names**, not the whole tool set: a reviewer can still reach tools on
 neither list (measured: network access, issue #76), so treat "read-only" as a
 statement about the repo rather than a sandbox. Scoped verification tools
-(`Bash(pytest:*)`, `Bash(git diff:*)`) are **opt-in** via `--allow-tools` — the
-permissioned mode that lets the empiricist actually run the suite. A shipped
-`--settings` profile + sandbox are further hardening. Never bare `Bash`. See `NOTES.md`.
+(`Bash(pytest:*)`, `Bash(git diff:*)`) are **opt-in** via `--allow-tools`, and are
+**intended** to be the permissioned mode that lets the empiricist run the suite —
+but measured on agent CLI 2.1.259 the scope is not enforced under the default
+`plan` mode, and such a grant yields an unrestricted shell with nothing recorded
+(#96). Do not rely on it to bound a reviewer, and do not offer it to a user as a
+safe way to run tests. A shipped `--settings` profile + sandbox are what would make
+it real (#4). Never bare `Bash`. See `NOTES.md`.
 
 ## Status
 Experimental, but exercised end-to-end (dogfooded over a real diff — it found
 bugs a human-convened two-pass run missed). Implemented: read-only default +
-`--allow-tools` for scoped verification; retry-on-contract-miss; the UGLY
+`--allow-tools` for scoped verification (which does not bound scope today, #96);
+retry-on-contract-miss; the UGLY
 circuit-breaker; and an opt-in semantic **reduce** (`--semantic-dedup`) that
 clusters same-concept findings (UGLY-preserving, degrades to signature dedup on
 failure). Open work is in `NOTES.md` (notably a richer default persona set). The
