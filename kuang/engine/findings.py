@@ -307,6 +307,43 @@ class PersonaReport:
     denied_tools: list[str] = field(default_factory=list)
     turns: int = 0
 
+    @property
+    def counted_vote(self) -> bool:
+        """Whether this persona's verdict counts toward quorum.
+
+        **A vote is the word, or it is not a vote** (#26). The count used to be a
+        prefix match, so the contract's own placeholder ``"YES | NO"`` voted for
+        convergence — and so would any hedge a persona chose to open with. This is
+        the last line, not the only one: a backend normalises its own replies, but
+        the engine takes any ``SpawnPersona`` and must not be talked into a good
+        verdict by one. ``str()`` because a backend may hand back a non-string
+        verdict and the tally sits outside the spawn seam's guard, where a crash
+        would end the run (#25). A report with no verdict is not a YES, which is
+        what keeps a crashed or unreadable persona from helping produce a
+        ``CONVERGED`` verdict.
+
+        **A vote is also a claim ABOUT A REVIEW**, so a persona the run knows
+        produced no review does not cast one (#72): a dry run's whole panel
+        returned a well-formed ``"YES"`` from a call nobody made, met unanimity,
+        and halted on the good verdict. Keyed on the status — a categorical fact
+        set at the source — and never on the verdict text. Nothing is discarded:
+        the verdict stays on the report and in the run's output, it is not counted.
+
+        Deliberately the **participation** axis only. A persona that reviewed
+        *badly* made a claim, and dropping it would move quorum for a reason nobody
+        can see and could silently unlatch the breaker (#24, #26, #67). How well
+        that review was grounded is a separate axis, and #82 reports it *beside*
+        the verdict rather than gating it here.
+
+        A property rather than a line in the loop because #82 must report which
+        votes a verdict rests on and how many of those were grounded — which needs
+        the voters, not just the count. A second copy of this predicate in a
+        reporter would be somewhere for the printed number and the gated number to
+        drift apart, which is what #72 found the denominator had already done.
+        """
+        return (not self.status.did_not_review
+                and str(self.verdict or "").strip().upper() == AFFIRMATIVE_VERDICT)
+
 
 @dataclass
 class EpochResult:

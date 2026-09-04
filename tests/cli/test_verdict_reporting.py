@@ -83,7 +83,15 @@ def test_a_clean_run_says_nothing_about_unresolved_verdicts(changed_repo, capsys
     _run(changed_repo)
     out = capsys.readouterr().out
 
-    assert "verdict" not in out.split("--- JSON ---")[0].lower()
+    # An allow-list rather than a ban, since #82: a clean run now states what its
+    # good verdict RESTS ON, which is a line about the agreement and not about a
+    # verdict nobody could read. The claim is unchanged and still exact — the only
+    # thing this console says about verdicts is that one line — and it stays
+    # stronger than matching the section header alone, which a stray mention
+    # elsewhere would slip past.
+    console = out.split("--- JSON ---")[0].lower()
+    mentions = [ln for ln in console.splitlines() if "verdict" in ln]
+    assert all(ln.startswith("verdict rests on:") for ln in mentions), mentions
     assert _artefact(out)["unresolved_verdicts"] == []
 
 

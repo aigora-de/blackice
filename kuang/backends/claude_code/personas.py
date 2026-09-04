@@ -31,6 +31,39 @@ class Persona:
     model: str | None = None
 
 
+@dataclass(frozen=True)
+class LensCoverage:
+    """Which persona covers one required lens, and on what evidence (#82).
+
+    A record returned *beside* the roster, following ``surface``'s pattern (#69,
+    #74): sourcing already knew this and threw it away, so no artefact stated what
+    the panel covered and a ``converged`` verdict never said which lenses were
+    behind it.
+
+    ``injected`` is the whole of the exact/heuristic boundary, and it is why this
+    record says **how** a lens is covered rather than **whether**:
+
+    * ``True`` — nothing matched, so the default persona was appended. Exact: this
+      persona **is** that lens, by construction.
+    * ``False`` — a sourced persona's name or grounding contained a capability
+      keyword and suppressed the default. Heuristic: a claim on the strength of a
+      substring, which nothing checked and nothing can until a lens is
+      **declarable** (#2). A grounding that mentions cascading failures in passing
+      suppresses the ruin lens exactly as a real ruin lens does.
+
+    **Whether** is deliberately not modelled, because it was measured and is not a
+    question: ``_ensure_specialists`` appends the missing default on every branch
+    ``load_personas`` can return through, so a required lens is never absent from a
+    roster. A present/absent column could only ever say yes, and a rule that cannot
+    fire is decoration — #69's lesson, where an enum member was nearly added for a
+    state the code refuses to enter.
+    """
+
+    lens: str
+    persona: str
+    injected: bool
+
+
 # Distilled generic default panel — used only when a repo defines no experts.
 # The lenses are deliberately broad (adversarial, not box-ticking). Prior art
 # that informed these roles is credited in two-pass-adversarial-review-pattern.md
@@ -119,34 +152,67 @@ def _load_panel_file(repo_root: Path) -> list[Persona]:
     return []
 
 
-def load_personas(repo_root: Path) -> tuple[list[Persona], str]:
-    """Resolve the persona set by precedence. Returns (personas, source_label)."""
+# The lenses a panel must have, whatever it was sourced from: the lens name a run
+# reports, the capability keywords that let a sourced persona suppress the default,
+# and the default itself. One table rather than two near-identical blocks, so a
+# third lens is a row and not a fourth copy of the same three lines. The keyword
+# sets are unchanged — replacing them with a declarable ``role:`` tag is #2's, and
+# #82 must report what is true today rather than wait for it.
+REQUIRED_LENSES: tuple[tuple[str, tuple[str, ...], Persona], ...] = (
+    ("completeness",
+     ("completeness", "blind spot", "what everyone else"), COMPLETENESS_CRITIC),
+    ("ruin",
+     ("survivab", "ruin", "antifragil", "tail risk", "tail-risk", "cascading",
+      "fat-tail"), SURVIVABILITY),
+)
+
+
+def load_personas(repo_root: Path) -> tuple[list[Persona], str, list[LensCoverage]]:
+    """Resolve the persona set by precedence.
+
+    Returns ``(personas, source_label, coverage)`` — who sits on the panel, where
+    they came from, and which required lens each of them covers (#82). The third
+    element is a fact sourcing has always known and never told anyone, which is why
+    no run could state what its panel covered.
+    """
     claude_md = repo_root / "CLAUDE.md"
     if claude_md.exists():
         experts = parse_claude_md_experts(claude_md.read_text())
         if experts:
-            return _ensure_specialists(experts), "CLAUDE.md"
+            roster, coverage = _ensure_specialists(experts)
+            return roster, "CLAUDE.md", coverage
     panel = _load_panel_file(repo_root)
     if panel:
-        return _ensure_specialists(panel), "panel file"
-    return _ensure_specialists(list(DEFAULT_PERSONAS)), "default"
+        roster, coverage = _ensure_specialists(panel)
+        return roster, "panel file", coverage
+    roster, coverage = _ensure_specialists(list(DEFAULT_PERSONAS))
+    return roster, "default", coverage
 
 
-def _ensure_specialists(personas: list[Persona]) -> list[Persona]:
+def _ensure_specialists(
+        personas: list[Persona]) -> tuple[list[Persona], list[LensCoverage]]:
     """Guarantee a completeness-critic and a survivability (ruin) lens are present.
 
     A sourced persona already covering one of these roles suppresses the default,
     detected by capability keywords over each persona's **name + grounding** — not
     by any project's persona names (a per-persona capability tag would be more
-    robust; see NOTES.md).
+    robust; see #2).
+
+    Returns the roster **and** a ``LensCoverage`` per required lens, naming the
+    persona that covers it and whether the default was injected. The suppression
+    decision was always being made here; before #82 only its effect on the roster
+    survived, so a run could not say that one persona had suppressed both defaults
+    and left a panel of one — which is the state #82 was filed for.
     """
     texts = [(p.name + " " + p.grounding).lower() for p in personas]
     out = list(personas)
-    if not any(k in t for t in texts
-               for k in ("completeness", "blind spot", "what everyone else")):
-        out.append(COMPLETENESS_CRITIC)
-    _RUIN_KEYS = ("survivab", "ruin", "antifragil", "tail risk", "tail-risk",
-                  "cascading", "fat-tail")
-    if not any(k in t for t in texts for k in _RUIN_KEYS):
-        out.append(SURVIVABILITY)
-    return out
+    coverage: list[LensCoverage] = []
+    for lens, keys, default in REQUIRED_LENSES:
+        matched = next((p for p, text in zip(personas, texts)
+                        if any(k in text for k in keys)), None)
+        if matched is None:
+            out.append(default)
+        coverage.append(LensCoverage(
+            lens=lens, persona=(default if matched is None else matched).name,
+            injected=matched is None))
+    return out, coverage

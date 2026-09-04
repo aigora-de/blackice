@@ -26,8 +26,10 @@ one caller of a general rule.
 persona that produced no review made no claim, so nothing is discarded by not
 counting it. A persona that reviewed *badly* made a claim, and dropping that would
 be the tool judging — which #67 refused for a reviewer denied its tools, and which
-#77 and #82 both sit on the far side of. The tests named for those two issues are
-the reproductions of states this change deliberately leaves exactly as they are.
+#77 and #82 both sit on the far side of. The tests named for those two issues pin
+states this change deliberately leaves exactly as they are — and #82 has since
+landed without moving either of them, by QUALIFYING that verdict beside the halt
+line rather than gating it, so the boundary is now defended from both sides.
 
 Five of the ten tests here go red on ``main`` and are regressions; the five under
 the last two headings pass before this change and after it, and pin what must not
@@ -170,20 +172,32 @@ def test_the_breaker_still_outranks_no_review():
 # --- the boundary: what this change deliberately does NOT touch --------------
 
 def test_a_panel_of_one_that_opened_nothing_still_converges():
-    """#82's state, reproduced here so it stays open and stays visible.
+    """#82's state: QUALIFIED beside the verdict, and deliberately not gated.
 
     One persona, which reviewed and found nothing, having called no tool at all
-    (``turns == 1``, #70). Its agreement is worth very little and the run says so
-    on its participation line — but it *reviewed*, so it votes, and the run still
-    converges exactly as it does today. #82 is a good verdict for a review that
-    happened and was worth nothing; this issue is a good verdict for one that never
-    happened, and a fix for the second must not quietly take the first.
+    (``turns == 1``, #70). Its agreement is worth very little — #82 is a good
+    verdict for a review that happened and was worth nothing, where #72 is one for
+    a review that never happened — but it *reviewed*, so it votes, and the run
+    still converges exactly as it did before either landed. A halt reason is for a
+    state the loop cannot usefully CONTINUE from; a degenerate-but-real review can,
+    and personas are a parameter, so a deliberate one-reviewer run is the
+    operator's call. The tool informs; the human decides.
+
+    Put here at #72 so that fix could not take this one by accident, and this is
+    where #82 landed. What changed is the two assertions below the first: the
+    engine now RECORDS the agreement — the threshold, and which reports were
+    counted against it — so a reporter can state what a verdict rests on without
+    restating the tally rule and drifting from it.
+    ``tests/cli/test_coverage_reporting.py`` holds the report to that.
     """
+    panel = PanelConfig(personas=[("sole reviewer", "mandate")])
     review_run = _run(_every_persona(verdict="YES", turns=1,
                                      status=PersonaStatus.FOUND_NOTHING),
-                      panel=PanelConfig(personas=[("sole reviewer", "mandate")]))
+                      panel=panel)
 
-    assert review_run.halt_reason is HaltReason.CONVERGED
+    assert review_run.halt_reason is HaltReason.CONVERGED, "qualify, never gate"
+    assert panel.effective_quorum == 1
+    assert [r.counted_vote for r in review_run.epochs[0].reports] == [True]
 
 
 def test_a_persona_denied_its_tools_still_votes():
