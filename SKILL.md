@@ -182,11 +182,20 @@ human. You are the *synthesiser, not the judge* — the human decides.
 
 ## Personas (the "how")
 Resolved by precedence, all layers supported:
-1. **`CLAUDE.md` "Resident Experts"** — parsed into personas (their defined role
+1. **`--panel <path>`** — an explicit override. When given it is the only tier
+   consulted; a `.yaml`/`.yml` file is read as a panel definition and anything
+   else as a "Resident Experts" markdown document. A named panel that cannot be
+   used is an **error** before the run spends anything, never a silent fall back.
+2. **`CLAUDE.md` "Resident Experts"** — parsed into personas (their defined role
    *is* their lens; mandates stay open-ended so we don't lead the witness).
-2. **`panel.yaml` / `panel.md`** — an explicit panel definition.
-3. **Distilled default set** — correctness, adversary, constraints, engineer,
+3. **`panel.yaml` / `panel.md`** — an explicit panel definition.
+4. **Distilled default set** — correctness, adversary, constraints, engineer,
    empiricist.
+
+A declaration that was **reached and yielded no persona** is reported on the
+console before the spend and recorded in the artefact's `panel.discarded`, so a
+run whose declared panel was thrown away does not read like one that declared
+none. A repo that declared nothing is not warned at all.
 A **completeness-critic** and a **survivability (ruin) lens** are always ensured
 (the ruin lens is skipped only when the sourced set already has one, e.g. a
 tail-risk persona). Reviewers are **independent within an epoch**; epoch > 1
