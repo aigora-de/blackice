@@ -231,6 +231,30 @@ def test_the_missing_optional_extra_is_not_reported_as_a_malformed_file(
     assert "bad token" in broken.discarded[0].detail
 
 
+def test_a_panel_yaml_that_names_nobody_answers_its_tier(tmp_path, monkeypatch):
+    """The precedence #16 deliberately did NOT change, pinned so it cannot drift.
+
+    A ``panel.yaml`` that *parses* answers the panel-file tier even when it names
+    nobody; only one that could not be parsed at all falls through to
+    ``panel.md``. That is what ``main`` did before #16, and #16 is a reporting
+    issue — what a run *does* is untouched, and only what it *says* is new.
+
+    Reachable only with a YAML parser present (without one the branch is
+    ``unsupported``, which does fall through), so it is asserted with the stub
+    rather than against the ambient venv.
+    """
+    _stub_yaml(monkeypatch, {"personas": []})
+    repo = _repo(tmp_path, **{"panel.yaml": "personas: []\n",
+                              "panel.md": _GOOD_PANEL_MD})
+
+    personas, source, _ = load_personas(repo)
+
+    assert source.label == "default"
+    assert "Auditor" not in [p.name for p in personas]
+    assert tuple((d.origin, d.reason) for d in source.discarded) == (
+        ("panel.yaml", "empty"),)
+
+
 def test_the_yaml_stub_is_not_a_no_op(tmp_path, monkeypatch):
     """A 0-red mutation is a claim, not a result (#87) — and so is a stub.
 

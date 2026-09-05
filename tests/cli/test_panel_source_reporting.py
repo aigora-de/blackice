@@ -212,6 +212,52 @@ def test_the_missing_yaml_extra_names_the_extra(changed_repo, capsys, monkeypatc
     assert _artefact(out)["panel"]["discarded"][0]["reason"] == "unsupported"
 
 
+def test_every_discarded_declaration_is_counted_and_named(
+        changed_repo, capsys, monkeypatch):
+    """Two at once, because a denominator nobody pins is a denominator nobody checks.
+
+    A single-discard run cannot tell a real count from a hard-coded 1 — the gap a
+    mutation found here, and the same one #82 found in its own first matrix.
+    """
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    (changed_repo / "CLAUDE.md").write_text(_EXPERTS_THAT_PARSE_TO_ZERO)
+    (changed_repo / "panel.yaml").write_text("personas:\n  - name: A\n")
+
+    _run(changed_repo)
+    out = capsys.readouterr().out
+
+    assert "2 declared panel(s) DISCARDED" in out
+    assert "[panel]   CLAUDE.md:" in out
+    assert "[panel]   panel.yaml:" in out
+    assert [d["origin"] for d in _artefact(out)["panel"]["discarded"]] == [
+        "CLAUDE.md", "panel.yaml"]
+
+
+def test_the_runtime_own_words_reach_the_console_not_only_the_artefact(
+        changed_repo, capsys, monkeypatch):
+    """Record and report, never discard — including the diagnosis itself.
+
+    The detail is what the runtime actually said. Before #16 the only cause that
+    said anything said it on stderr; a fix that kept the categorical reason and
+    dropped the words would be the same loss in a new place.
+
+    The two streams are pinned to each other rather than to a literal message,
+    because the wording is the *runtime's* and can change under us — the decay
+    that killed #77's capture while its shape held.
+    """
+    import sys
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    (changed_repo / "panel.yaml").write_text("personas:\n  - name: A\n")
+
+    _run(changed_repo)
+    out = capsys.readouterr().out
+    detail = _artefact(out)["panel"]["discarded"][0]["detail"]
+
+    assert detail, "the runtime said something and the record must keep it"
+    assert f"— {detail}" in out
+
+
 def test_the_panel_path_is_null_when_the_operator_named_nothing(
         changed_repo, capsys):
     """Three-state, not two: ``null`` is "no file was named", a fact rather than
