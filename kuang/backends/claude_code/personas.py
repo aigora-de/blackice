@@ -14,7 +14,6 @@ would lead the witness.
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +63,97 @@ class LensCoverage:
     injected: bool
 
 
+# The origins a discarded declaration can have, and the reasons it can be
+# discarded. Closed sets, set where the failure happens and never derived from
+# prose: there is no model anywhere in this path, which makes it the easiest
+# place in the codebase to be exact and the least excusable place to be vague.
+DISCARD_ORIGINS: tuple[str, ...] = ("CLAUDE.md", "panel.yaml", "panel.md")
+DISCARD_REASONS: tuple[str, ...] = ("empty", "malformed", "unsupported")
+# Where a roster came from. ``--panel`` is the operator's own instruction;
+# ``panel file`` is deliberately unchanged from before #16 so an archived
+# artefact's vocabulary still reads.
+PANEL_LABELS: tuple[str, ...] = ("--panel", "CLAUDE.md", "panel file", "default")
+
+# What each reason means to a reader, and what it asks them to do. One sentence
+# per categorical value: rendering, not a rule. Shared by the console warning and
+# by ``PanelError`` so a run cannot describe one failure two ways.
+_REASON_NOTE: dict[str, str] = {
+    "empty": "it named no persona",
+    "malformed": "it could not be read or parsed",
+    "unsupported": ("reading a YAML panel needs the optional extra: "
+                    "pip install 'kuang[yaml]'"),
+}
+
+
+def discard_note(reason: str) -> str:
+    """The one sentence a reader gets for a categorical discard reason."""
+    return _REASON_NOTE[reason]
+
+
+class PanelError(Exception):
+    """An explicitly named panel could not be used.
+
+    Raised only for ``--panel``. The implicit tiers record a ``Discarded`` and
+    carry on; an explicit instruction is not silently overridden, because doing
+    so would be #16's own defect one tier up with the operator having been
+    maximally explicit. What the resulting exit code MEANS is #32's.
+    """
+
+
+@dataclass(frozen=True)
+class Discarded:
+    """A persona declaration that was reached and yielded nobody (#16).
+
+    ``origin`` is which declaration, ``reason`` is why it could not be used, and
+    ``detail`` is the runtime's own words where it had any — recorded rather than
+    discarded, and reported rather than printed to a stream the artefact never
+    sees. Before #16 the ``panel.yaml`` case went to stderr and the other three
+    went nowhere at all.
+    """
+
+    origin: str          # one of DISCARD_ORIGINS
+    reason: str          # one of DISCARD_REASONS
+    detail: str = ""     # the exception's own text, verbatim, or ""
+
+
+@dataclass(frozen=True)
+class PanelSource:
+    """Where the panel came from, and what was thrown away getting there (#16).
+
+    A record beside the roster, following ``SurfaceRecord`` (#69, #74) and
+    ``LensCoverage`` (#82). It replaces the bare source *string* rather than
+    joining it as a fourth tuple element: the label alone answered six distinct
+    causes with one word, and #30's own artefact comment named the gap when it
+    added that label — *recording the label a sourcing step returned is not the
+    same as noticing that the step fell back.*
+
+    The rule ``discarded`` is built from is one sentence: **a degradation is a
+    persona declaration that was reached and yielded no personas.** A
+    *declaration* is the thing whose sole purpose is to declare a panel —
+    ``--panel`` by construction, ``panel.yaml``/``panel.md`` by existing at all,
+    and inside ``CLAUDE.md`` (a file that exists for other reasons) the
+    ``Resident Experts`` heading.
+
+    Two consequences are deliberate, and both are boundaries rather than gaps:
+
+    * a repo with no ``CLAUDE.md``, and a ``CLAUDE.md`` with no experts heading,
+      declared nothing and read **clean** — a rule that fires on a healthy run is
+      the mirror image of the defect it reports;
+    * only tiers the precedence chain actually **reached** can be discarded, so a
+      good ``CLAUDE.md`` beside a broken ``panel.yaml`` is clean. Recording it
+      would be a claim about a file this run never opened.
+    """
+
+    label: str                                # one of PANEL_LABELS
+    path: str | None = None                   # --panel's argument, as given
+    discarded: tuple[Discarded, ...] = ()
+
+    @property
+    def degraded(self) -> bool:
+        """Whether anything this run asked for was thrown away."""
+        return bool(self.discarded)
+
+
 # Distilled generic default panel — used only when a repo defines no experts.
 # The lenses are deliberately broad (adversarial, not box-ticking). Prior art
 # that informed these roles is credited in two-pass-adversarial-review-pattern.md
@@ -97,6 +187,18 @@ SURVIVABILITY = Persona(
 )
 
 
+# The declaration marker inside CLAUDE.md. Named because #16 needs to ask
+# whether one was present, not only whether personas came out: a file with no
+# such heading declared nothing to us and must read clean, while a file carrying
+# one and yielding nobody is a declaration that was thrown away.
+_EXPERTS_HEADING = re.compile(r"(?im)^#+\s*Resident Experts\b.*?$")
+
+
+def _experts_section_present(text: str) -> bool:
+    """Whether ``text`` declares a Resident Experts section at all."""
+    return _EXPERTS_HEADING.search(text) is not None
+
+
 def parse_claude_md_experts(text: str) -> list[Persona]:
     """Extract personas from a ``CLAUDE.md`` "Resident Experts" section.
 
@@ -105,7 +207,7 @@ def parse_claude_md_experts(text: str) -> list[Persona]:
     grounding. Returns ``[]`` if no experts section/subsections are found.
     """
     # Isolate the Resident Experts region (from its heading to EOF or next H1).
-    m = re.search(r"(?im)^#+\s*Resident Experts\b.*?$", text)
+    m = _EXPERTS_HEADING.search(text)
     if not m:
         return []
     region = text[m.end():]
@@ -131,25 +233,72 @@ def parse_claude_md_experts(text: str) -> list[Persona]:
     return personas
 
 
-def _load_panel_file(repo_root: Path) -> list[Persona]:
-    """Load personas from ``panel.yaml`` or ``panel.md`` if present (best effort)."""
-    yml = repo_root / "panel.yaml"
-    if yml.exists():
+def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
+    """Load one declared panel file. Returns ``(personas, reason, detail)``.
+
+    ``reason`` is ``""`` where personas came out, and otherwise one of
+    ``DISCARD_REASONS``. Dispatch is by suffix over the two loaders that already
+    existed, so a file is read the same way whether the precedence chain found it
+    or ``--panel`` named it.
+
+    The ``import`` sits outside the parse's ``try`` on purpose. Before #16 both
+    landed in one ``except Exception``, so a missing optional extra and a broken
+    file were the same event — and they are not: one says *install the extra*, the
+    other says *fix the file*. Collapsing them is this issue's own conflation, one
+    field along.
+    """
+    if path.suffix.lower() in (".yaml", ".yml"):
         try:
-            import yaml  # optional dependency
-            data = yaml.safe_load(yml.read_text()) or {}
-            return [
+            import yaml  # optional dependency: the `yaml` extra
+        except ImportError as exc:
+            return [], "unsupported", str(exc)
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+            personas = [
                 Persona(name=p["name"], grounding=p.get("grounding", ""),
                         tools=p.get("tools", list(DEFAULT_ALLOWED_TOOLS)),
                         model=p.get("model"))
                 for p in data.get("personas", [])
             ]
         except Exception as exc:  # noqa: BLE001
-            print(f"[panel] failed to parse panel.yaml: {exc}", file=sys.stderr)
+            return [], "malformed", str(exc)
+    else:
+        try:
+            personas = parse_claude_md_experts(path.read_text())
+        except OSError as exc:
+            return [], "malformed", str(exc)
+    return (personas, "", "") if personas else ([], "empty", "")
+
+
+def _load_panel_file(repo_root: Path) -> tuple[list[Persona], tuple[Discarded, ...]]:
+    """Load personas from ``panel.yaml`` or ``panel.md``, recording what failed.
+
+    The precedence is **unchanged** from before #16, deliberately: a ``panel.yaml``
+    that parses answers this tier even when it names nobody, and only one that
+    could not be parsed falls through to ``panel.md``. #16 is a reporting issue,
+    so what a run *does* is untouched and only what it *says* is new.
+
+    Nothing is printed here any more. The stderr line the YAML branch used to emit
+    was the one signal any of these causes produced, and it went to a stream the
+    artefact never sees — so it moves into the record rather than being copied
+    into it. One degradation, marked once (#74's rule).
+    """
+    discarded: list[Discarded] = []
+    yml = repo_root / "panel.yaml"
+    if yml.exists():
+        personas, reason, detail = _load_declared(yml)
+        if personas:
+            return personas, ()
+        discarded.append(Discarded("panel.yaml", reason, detail))
+        if reason == "empty":
+            return [], tuple(discarded)
     md = repo_root / "panel.md"
     if md.exists():
-        return parse_claude_md_experts(md.read_text())
-    return []
+        personas, reason, detail = _load_declared(md)
+        if personas:
+            return personas, tuple(discarded)
+        discarded.append(Discarded("panel.md", reason, detail))
+    return [], tuple(discarded)
 
 
 # The lenses a panel must have, whatever it was sourced from: the lens name a run
@@ -167,26 +316,76 @@ REQUIRED_LENSES: tuple[tuple[str, tuple[str, ...], Persona], ...] = (
 )
 
 
-def load_personas(repo_root: Path) -> tuple[list[Persona], str, list[LensCoverage]]:
+def _load_explicit_panel(
+        path: Path) -> tuple[list[Persona], PanelSource, list[LensCoverage]]:
+    """Source the panel from ``--panel``, or refuse.
+
+    The asymmetry with the implicit tiers is the point. Those record a discard and
+    carry on, because the operator asked for nothing in particular and the tool
+    informs rather than decides. Here the operator named a file, so falling back
+    to a panel nobody asked for would silently override an explicit instruction —
+    which is precisely the defect #16 exists to remove, one tier up.
+
+    It refuses through the same operator-error path ``SurfaceError`` already uses,
+    before the first epoch and so before anything is spent, rather than inventing
+    a third behaviour for the class (#59). What the exit code MEANS stays #32's.
+    """
+    if not path.exists():
+        raise PanelError(f"--panel {path}: the file does not exist")
+    personas, reason, detail = _load_declared(path)
+    if not personas:
+        said = f" ({detail})" if detail else ""
+        raise PanelError(f"--panel {path}: {discard_note(reason)}{said}")
+    roster, coverage = _ensure_specialists(personas)
+    return roster, PanelSource("--panel", path=str(path)), coverage
+
+
+def load_personas(
+        repo_root: Path, panel_path: Path | None = None,
+) -> tuple[list[Persona], PanelSource, list[LensCoverage]]:
     """Resolve the persona set by precedence.
 
-    Returns ``(personas, source_label, coverage)`` — who sits on the panel, where
-    they came from, and which required lens each of them covers (#82). The third
-    element is a fact sourcing has always known and never told anyone, which is why
-    no run could state what its panel covered.
+    Returns ``(personas, source, coverage)`` — who sits on the panel, a record of
+    where they came from and what was thrown away getting there (#16), and which
+    required lens each of them covers (#82).
+
+    ``panel_path`` is ``--panel``: an explicit override ahead of every other tier,
+    which when given is the only thing consulted. It raises ``PanelError`` rather
+    than falling back; see ``_load_explicit_panel``.
+
+    The middle element became a **record** rather than gaining a fourth tuple
+    element, so ``load_personas(repo)[0]`` keeps working and an archived
+    artefact's ``source`` vocabulary is unchanged. Before #16 it was the bare
+    label, which answered six distinct causes — three of them byte-identical in
+    stdout and artefact — with the single word ``"default"``.
     """
+    if panel_path is not None:
+        return _load_explicit_panel(Path(panel_path))
+
+    discarded: list[Discarded] = []
     claude_md = repo_root / "CLAUDE.md"
     if claude_md.exists():
-        experts = parse_claude_md_experts(claude_md.read_text())
+        text = claude_md.read_text()
+        experts = parse_claude_md_experts(text)
         if experts:
             roster, coverage = _ensure_specialists(experts)
-            return roster, "CLAUDE.md", coverage
-    panel = _load_panel_file(repo_root)
+            return roster, PanelSource("CLAUDE.md"), coverage
+        # A CLAUDE.md is a project-instructions file that exists for other
+        # reasons, and we read one section out of it. So the DECLARATION is the
+        # heading, not the file: with no heading nothing was declared to us and
+        # the run is clean, and with a heading yielding nobody a declaration was
+        # thrown away. Two plausible slips reach the second state — `###` instead
+        # of `##`, and a colon instead of ` — `.
+        if _experts_section_present(text):
+            discarded.append(Discarded("CLAUDE.md", "empty"))
+
+    panel, panel_discards = _load_panel_file(repo_root)
+    discarded.extend(panel_discards)
     if panel:
         roster, coverage = _ensure_specialists(panel)
-        return roster, "panel file", coverage
+        return roster, PanelSource("panel file", discarded=tuple(discarded)), coverage
     roster, coverage = _ensure_specialists(list(DEFAULT_PERSONAS))
-    return roster, "default", coverage
+    return roster, PanelSource("default", discarded=tuple(discarded)), coverage
 
 
 def _ensure_specialists(
