@@ -121,10 +121,16 @@ kuang --repo <root> --paths src/pkg/ \
 Exactly one mode per run: `--base/--head` (diff) **or** `--paths` (whole-file).
 
 ## Personas
-Sourced by precedence: a repo's **`CLAUDE.md` "Resident Experts"** →
-**`panel.yaml`/`panel.md`** → a **distilled default set**. A completeness-critic
-and a survivability (ruin) lens are always ensured. Mandates stay open-ended (the
-persona's role is its lens; we don't lead the witness). See [`SKILL.md`](SKILL.md).
+Sourced by precedence: **`--panel <path>`** → a repo's **`CLAUDE.md`
+"Resident Experts"** → **`panel.yaml`/`panel.md`** → a **distilled default set**. A
+completeness-critic and a survivability (ruin) lens are always ensured. Mandates stay
+open-ended (the persona's role is its lens; we don't lead the witness).
+
+A panel that was **declared and could not be used** — an experts heading yielding no
+persona, a `panel.md` naming nobody, a `panel.yaml` needing the optional `yaml` extra
+— is reported before the run spends anything and recorded in the artefact, rather than
+falling back to the default set in silence. A panel named with `--panel` is never
+substituted at all: it is an error. See [`SKILL.md`](SKILL.md).
 
 ## Permission model
 **Deny-by-default, read-only** with respect to the repo (`Read`/`Grep`/`Glob`;

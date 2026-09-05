@@ -30,9 +30,10 @@ from pathlib import Path
 
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, LensCoverage,
-                                          PanelSession, ReduceState,
-                                          SurfaceError, SurfaceRecord,
-                                          called_no_tool, load_personas,
+                                          PanelError, PanelSession, PanelSource,
+                                          ReduceState, SurfaceError,
+                                          SurfaceRecord, called_no_tool,
+                                          discard_note, load_personas,
                                           load_prior_findings,
                                           unavailable_tools, ungrounded_keys)
 from kuang.engine import (HaltingSet, HaltReason, PanelConfig, PersonaReport,
@@ -126,6 +127,38 @@ def _verdict_line(agreement: dict[str, int], *, quorum: int, roster: int) -> str
         clauses.append(f"{agreement['turns_unreported']} turn count(s) unreported")
     return (f"verdict rests on: {agreement['yes_votes']} of {roster} persona(s) "
             f"voting YES (quorum {quorum}) — {', '.join(clauses)}")
+
+
+def _panel_origin(source: PanelSource) -> str:
+    """Where the roster came from, for the pre-spend echo.
+
+    ``--panel`` names the file beside the label because the label alone would be
+    the argument's own flag repeated back, which tells an operator nothing they
+    did not type. Every other tier is the label alone: the file it means is fixed.
+    """
+    return f"{source.label} {source.path}" if source.path else source.label
+
+
+def _discard_lines(source: PanelSource) -> list[str]:
+    """What was declared and could not be used, or nothing at all (#16).
+
+    Empty on a healthy run, and that is the rule rather than a nicety: a repo
+    that declared no panel asked for nothing, so a line here would report a
+    degradation on a run that suffered none.
+
+    The header does not claim the roster IS the fallback, because it need not be:
+    a discarded CLAUDE.md beside a working panel.md leaves both facts true at
+    once. What it claims is exactly what is known — the roster is not the one
+    those declarations named.
+    """
+    if not source.degraded:
+        return []
+    lines = [f"[panel] WARNING: {len(source.discarded)} declared panel(s) "
+             f"DISCARDED — the roster above is not the one they declared"]
+    for d in source.discarded:
+        said = f" — {d.detail}" if d.detail else ""
+        lines.append(f"[panel]   {d.origin}: {discard_note(d.reason)}{said}")
+    return lines
 
 
 def _coverage_header(coverage: list[LensCoverage]) -> str:
@@ -321,6 +354,13 @@ def main(argv: list[str] | None = None) -> int:
                          "signature dedup only, no extra call)")
     ap.add_argument("--cluster-model", default=None,
                     help="model for the --semantic-dedup clusterer (default: --model)")
+    ap.add_argument("--panel", default=None, metavar="PATH",
+                    help="source the panel from this file (issue #16), ahead of the "
+                         "repo's CLAUDE.md, panel.yaml and panel.md, none of which "
+                         "are then consulted. A .yaml/.yml file is read as a panel "
+                         "definition, anything else as a 'Resident Experts' "
+                         "markdown document. A named panel that cannot be used is "
+                         "an error, never a silent fall back to the default set")
     ap.add_argument("--prior-findings", default=None, metavar="PATH",
                     help="seed the panel with an earlier run's findings (issue #13): a "
                          "saved findings.json, a run's JSON output, or a raw run.log "
@@ -342,12 +382,30 @@ def main(argv: list[str] | None = None) -> int:
                          else "the pending diff")
 
     repo = Path(args.repo).resolve()
-    personas, source, coverage = load_personas(repo)
+    # A panel named on the command line that cannot be used is refused here,
+    # before the first epoch and so before anything is spent, through the same
+    # operator-error path SurfaceError already uses rather than a third behaviour
+    # for the class (#59). The implicit tiers never reach this: they record what
+    # they discarded and carry on.
+    try:
+        personas, source, coverage = load_personas(
+            repo, Path(args.panel) if args.panel else None)
+    except PanelError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if args.allow_tools:  # override the read-only default for ALL personas
         for p in personas:
             p.tools = list(args.allow_tools)
-    print(f"[panel] {len(personas)} personas from {source}: "
+    print(f"[panel] {len(personas)} personas from {_panel_origin(source)}: "
           f"{', '.join(p.name for p in personas)}")
+    # A declared panel that was thrown away, said BEFORE the spend — the one
+    # moment an operator can still abort (#16). Silent when nothing was declared:
+    # a repo that asked for nothing must read clean, because a rule that fires on
+    # a healthy run is the mirror image of the defect it reports. The artefact
+    # carries the same fact unconditionally, which is where a run read back cold
+    # tells "no panel was declared" from "the declared panel was discarded".
+    for line in _discard_lines(source):
+        print(line)
     print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
     disallowed = (list(args.disallow_tools) if args.disallow_tools is not None
                   else list(DEFAULT_DISALLOWED_TOOLS))
@@ -663,12 +721,20 @@ def main(argv: list[str] | None = None) -> int:
         # declined to count as votes (#26).
         "unresolved_severities": unresolved,
         "unresolved_verdicts": unread_verdicts,
-        # Who was ASKED, and from where. Participation below says who took part;
-        # without the roster an artefact read back cold cannot tell a seven-persona
-        # panel with five silent from a two-persona panel that ran in full. It does
-        # NOT close #16: recording the label a sourcing step returned is not the
-        # same as noticing that the step fell back.
-        "panel": {"source": source, "personas": [p.name for p in personas]},
+        # Who was ASKED, from where, and what was thrown away getting there.
+        # Participation below says who took part; without the roster an artefact
+        # read back cold cannot tell a seven-persona panel with five silent from a
+        # two-persona panel that ran in full. ``discarded`` is always present and
+        # is #16: the source label alone answered six distinct causes with one
+        # word, three of them byte-identical here, so an operator whose declared
+        # panel was thrown away read exactly like one who declared none. ``path``
+        # is --panel's argument as the operator gave it, ``null`` where they named
+        # nothing — the same rule SurfaceRecord.paths follows, and it widens #28's
+        # consequence by one field.
+        "panel": {"source": source.label, "path": source.path,
+                  "personas": [p.name for p in personas],
+                  "discarded": [{"origin": d.origin, "reason": d.reason,
+                                 "detail": d.detail} for d in source.discarded]},
         # Which required lens each persona covers, and on what evidence (#82).
         # ``how`` is the exact/heuristic boundary: ``injected`` means nothing
         # matched and the default IS that lens by construction, ``keyword`` means a

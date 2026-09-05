@@ -13,8 +13,10 @@ from .contract import UNRESOLVED_SEVERITY
 from .memory import load_prior_findings, ungrounded_keys
 from .permissions import (DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS,
                           unavailable_tools)
-from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, REQUIRED_LENSES,
-                       SURVIVABILITY, LensCoverage, Persona, load_personas,
+from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, DISCARD_ORIGINS,
+                       DISCARD_REASONS, PANEL_LABELS, REQUIRED_LENSES,
+                       SURVIVABILITY, Discarded, LensCoverage, PanelError,
+                       PanelSource, Persona, discard_note, load_personas,
                        parse_claude_md_experts)
 from .session import PanelSession
 from .spawn import called_no_tool
@@ -23,10 +25,12 @@ from .surface import (SurfaceError, SurfaceRecord, build_path_surface,
 
 __all__ = [
     "COMPLETENESS_CRITIC", "DEFAULT_ALLOWED_TOOLS", "DEFAULT_DISALLOWED_TOOLS",
-    "DEFAULT_PERSONAS", "LensCoverage", "PanelSession", "Persona", "ReduceState",
+    "DEFAULT_PERSONAS", "DISCARD_ORIGINS", "DISCARD_REASONS", "Discarded",
+    "LensCoverage", "PANEL_LABELS", "PanelError", "PanelSession", "PanelSource",
+    "Persona", "ReduceState",
     "REQUIRED_LENSES", "SURVIVABILITY", "SurfaceError", "SurfaceRecord",
     "UNRESOLVED_SEVERITY", "build_path_surface", "called_no_tool",
-    "gather_diff",
+    "discard_note", "gather_diff",
     "load_personas", "load_prior_findings", "parse_claude_md_experts",
     "unavailable_tools", "ungrounded_keys",
 ]
