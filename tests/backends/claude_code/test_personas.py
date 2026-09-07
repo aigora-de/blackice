@@ -228,7 +228,10 @@ def test_the_missing_optional_extra_is_not_reported_as_a_malformed_file(
 
     assert absent.discarded[0].reason == "unsupported"
     assert broken.discarded[0].reason == "malformed"
-    assert "bad token" in broken.discarded[0].detail
+    # The exception's TYPE, not its rendering: the rendering can quote the file
+    # and this record is published (#105). The distinction the reasons draw is
+    # unaffected, which is what this test is actually about.
+    assert broken.discarded[0].detail == "ValueError"
 
 
 def test_a_panel_yaml_that_names_nobody_answers_its_tier(tmp_path, monkeypatch):
@@ -253,6 +256,79 @@ def test_a_panel_yaml_that_names_nobody_answers_its_tier(tmp_path, monkeypatch):
     assert "Auditor" not in [p.name for p in personas]
     assert tuple((d.origin, d.reason) for d in source.discarded) == (
         ("panel.yaml", "empty"),)
+
+
+def test_a_parse_failure_does_not_quote_the_file_it_failed_on(
+        tmp_path, monkeypatch):
+    """#105: the artefact must not carry the target repository's content.
+
+    ``pyyaml``'s ``MarkedYAMLError`` renders as source lines — ``Mark.__str__``
+    calls ``get_snippet()`` — and this string reaches the run artefact and any
+    archived ``run.log``, both of which get pasted into a public repo's issues.
+    The boundary is #69's, stated there for the surface: a record carries names
+    and coordinates, never the content they point at.
+
+    Hermetic, so it runs where ``pyyaml`` is absent — which is this venv and,
+    until #105, every CI job. The stub raises an exception that renders like a
+    real one, so what is asserted is **our** rule (we never record the
+    rendering) rather than any particular library's wording.
+    """
+    secret = "INTERNAL-ONLY acme-billing reconciliation, ticket PROJ-4471"
+
+    class _Mark:
+        line, column = 2, 10
+
+    class _MarkedError(Exception):
+        problem_mark = _Mark()
+
+        def __str__(self):
+            return f"while scanning\n  in \"<unicode string>\":\n    {secret}\n    ^"
+
+    stub = types.ModuleType("yaml")
+    stub.safe_load = lambda _t: (_ for _ in ()).throw(_MarkedError())
+    monkeypatch.setitem(sys.modules, "yaml", stub)
+
+    _, source, _ = load_personas(_repo(tmp_path, **{"panel.yaml": secret}))
+    detail = source.discarded[0].detail
+
+    assert secret not in detail
+    assert "_MarkedError" in detail, "the type is ours to name and stays"
+    assert "line 3, column 11" in detail, "a coordinate, so the operator can look"
+
+
+def test_a_diagnosis_is_recorded_even_with_no_location_to_give(
+        tmp_path, monkeypatch):
+    """The pair to the test above: narrowing must not become saying nothing.
+
+    An exception carrying no mark still has a type, and a run that records an
+    empty string has discarded the diagnosis rather than narrowed it — which is
+    the doctrine's own failure mode, not a fix for it.
+    """
+    stub = types.ModuleType("yaml")
+    stub.safe_load = lambda _t: (_ for _ in ()).throw(ValueError("boom"))
+    monkeypatch.setitem(sys.modules, "yaml", stub)
+
+    _, source, _ = load_personas(_repo(tmp_path, **{"panel.yaml": "x\n"}))
+
+    assert source.discarded[0].detail == "ValueError"
+
+
+def test_a_real_pyyaml_parse_error_does_not_quote_the_file(tmp_path):
+    """The same rule against the real library, where the hazard actually lives.
+
+    Skipped where the optional extra is absent. The hermetic pair above is what
+    guards this on a default install; this one is what would have caught #105,
+    and is the reason CI now runs one job with ``[yaml]`` installed.
+    """
+    pytest.importorskip("yaml")
+    secret = "INTERNAL-ONLY acme-billing reconciliation, ticket PROJ-4471"
+
+    _, source, _ = load_personas(_repo(tmp_path, **{
+        "panel.yaml": f'personas:\n  - name: "Auditor\n    grounding: {secret}\n'}))
+
+    assert source.discarded[0].reason == "malformed"
+    assert secret not in source.discarded[0].detail
+    assert "Auditor" not in source.discarded[0].detail
 
 
 def test_the_yaml_stub_is_not_a_no_op(tmp_path, monkeypatch):

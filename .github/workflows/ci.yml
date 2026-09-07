@@ -28,6 +28,36 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The optional `yaml` extra, on one version. Not a matrix dimension: what this
+  # covers is a BRANCH, not a Python difference, so three copies of it would buy
+  # nothing.
+  #
+  # Why it exists at all (#105): `pyyaml` is optional, so until now no job had it
+  # and the entire real-YAML path in `personas._load_declared` was exercised
+  # nowhere. The fast suite covers that branch with a `sys.modules` stub, which by
+  # construction cannot raise the library's own marked errors — and a defect that
+  # only those errors produce shipped, having survived a 30-mutation matrix,
+  # because every test that could have seen it was skipped.
+  yaml-extra:
+    name: python 3.12 + [yaml]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the package with BOTH extras
+        run: python -m pip install --upgrade pip && python -m pip install '.[test,yaml]'
+
+      - name: Confirm the extra is actually present
+        # Otherwise this job is the `test` job again and silently proves nothing —
+        # the failure mode it exists to prevent.
+        run: python -c "import yaml; print('pyyaml', yaml.__version__)"
+
+      - name: Run the suite
+        run: python -m pytest -q
+
   test:
     name: python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

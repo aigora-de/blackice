@@ -105,15 +105,20 @@ class Discarded:
     """A persona declaration that was reached and yielded nobody (#16).
 
     ``origin`` is which declaration, ``reason`` is why it could not be used, and
-    ``detail`` is the runtime's own words where it had any — recorded rather than
+    ``detail`` is what we can say about the failure — recorded rather than
     discarded, and reported rather than printed to a stream the artefact never
     sees. Before #16 the ``panel.yaml`` case went to stderr and the other three
     went nowhere at all.
+
+    ``detail`` is **built by** ``_diagnosis``, never taken from the exception's
+    own rendering: that rendering can quote the file, and this record is
+    published (#105). It names the exception type and a line/column where there
+    is one, which is a name and a coordinate rather than content.
     """
 
     origin: str          # one of DISCARD_ORIGINS
     reason: str          # one of DISCARD_REASONS
-    detail: str = ""     # the exception's own text, verbatim, or ""
+    detail: str = ""     # from _diagnosis: a type and a coordinate, never content
 
 
 @dataclass(frozen=True)
@@ -233,6 +238,40 @@ def parse_claude_md_experts(text: str) -> list[Persona]:
     return personas
 
 
+def _diagnosis(exc: Exception) -> str:
+    """What we can say about a failure without quoting the file it came from (#105).
+
+    The exception's own **rendering** is deliberately not recorded. ``pyyaml``'s
+    ``MarkedYAMLError`` embeds source lines — ``Mark.__str__`` calls
+    ``get_snippet()`` — and whatever goes in a ``Discarded`` reaches the run
+    artefact *and* any archived ``run.log``, both of which get pasted into a
+    public repo's issues and the latter of which ``load_prior_findings`` reads
+    back. #16 moved this text out of stderr for good reasons; carrying the raw
+    rendering with it was the defect.
+
+    The boundary is #69's, stated there for the surface and applying unchanged
+    here: a record carries **names and coordinates, never the content they point
+    at**. The type is ours to name and a line/column is a coordinate, so both
+    stay; the parser's rendering is the file's own text and goes.
+
+    One rule for every exception, not a table per library — including the
+    ``OSError`` and ``ImportError`` cases, whose renderings are in fact harmless.
+    Narrowing only where a leak is known would be a claim about every parser we
+    do not use yet, and the same rule applied everywhere costs those two cases an
+    errno string that the recorded path and the categorical reason already say.
+
+    What it under-reports, plainly: the parser's own description of the grammar
+    failure, which is often the useful half of it. The sibling mechanism is the
+    coordinate — an operator opens their own file at the right line, which they
+    can do and a reader of the artefact cannot.
+    """
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    line, column = getattr(mark, "line", None), getattr(mark, "column", None)
+    where = (f" at line {line + 1}, column {column + 1}"
+             if line is not None and column is not None else "")
+    return f"{type(exc).__name__}{where}"
+
+
 def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
     """Load one declared panel file. Returns ``(personas, reason, detail)``.
 
@@ -251,7 +290,7 @@ def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
         try:
             import yaml  # optional dependency: the `yaml` extra
         except ImportError as exc:
-            return [], "unsupported", str(exc)
+            return [], "unsupported", _diagnosis(exc)
         try:
             data = yaml.safe_load(path.read_text()) or {}
             personas = [
@@ -261,12 +300,12 @@ def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
                 for p in data.get("personas", [])
             ]
         except Exception as exc:  # noqa: BLE001
-            return [], "malformed", str(exc)
+            return [], "malformed", _diagnosis(exc)
     else:
         try:
             personas = parse_claude_md_experts(path.read_text())
         except OSError as exc:
-            return [], "malformed", str(exc)
+            return [], "malformed", _diagnosis(exc)
     return (personas, "", "") if personas else ([], "empty", "")
 
 
