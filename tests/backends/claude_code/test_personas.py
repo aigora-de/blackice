@@ -443,6 +443,48 @@ def test_panel_path_accepts_yaml(tmp_path, monkeypatch):
     assert "Named" in [p.name for p in personas]
 
 
+@pytest.mark.parametrize("given", ["", "   ", "\t\n"],
+                         ids=["empty", "spaces", "whitespace"])
+def test_an_empty_panel_argument_refuses_rather_than_falling_back(tmp_path, given):
+    """#106: the guard is ``is not None``, never truthiness.
+
+    Nobody types ``--panel ""``. Shells produce it constantly — ``--panel
+    "$PANEL"`` with the variable unset — and before this the flag collapsed to
+    "no override" and the run proceeded on a different panel saying nothing.
+    That is the failure #16 exists to remove, reintroduced in the flag #16 added
+    to remove it, and in the one case where the operator has least reason to
+    check: they wrote the flag, so they believe the panel is named.
+
+    ``Path("")`` is ``PosixPath('.')``, so the emptiness has to be caught on the
+    raw argument before a path is built from it — which is why sourcing takes the
+    operator's string rather than a ``Path``.
+    """
+    with pytest.raises(PanelError) as exc:
+        load_personas(tmp_path, panel_path=given)
+
+    assert "--panel" in str(exc.value)
+    assert "no path was given" in str(exc.value)
+    # Distinct from a named file that is not there: different operator mistakes,
+    # different causes, different fixes — #16's own unsupported/malformed split
+    # is the precedent for keeping two remedies apart.
+    assert "does not exist" not in str(exc.value)
+
+
+def test_a_path_object_is_still_accepted(tmp_path):
+    """Sourcing takes the operator's raw string now; a ``Path`` must still work.
+
+    ``probe.py`` and every caller that already had a ``Path`` should not have to
+    care, and an argument type is a contract like the tuple arity is.
+    """
+    named = tmp_path / "panel.md"
+    named.write_text(_GOOD_PANEL_MD)
+
+    personas, source, _ = load_personas(tmp_path, panel_path=named)
+
+    assert source.label == "--panel"
+    assert "Auditor" in [p.name for p in personas]
+
+
 @pytest.mark.parametrize(("filename", "text", "yaml_state", "expected"), [
     ("missing.md", None, None, "does not exist"),
     ("empty.md", "# Notes\n\nNothing here.\n", None, "no persona"),

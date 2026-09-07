@@ -388,8 +388,12 @@ def main(argv: list[str] | None = None) -> int:
     # for the class (#59). The implicit tiers never reach this: they record what
     # they discarded and carry on.
     try:
-        personas, source, coverage = load_personas(
-            repo, Path(args.panel) if args.panel else None)
+        # `is not None`, never truthiness: `--panel ""` is an operator who named
+        # a panel and got nothing, which shells produce constantly from an unset
+        # variable. Treating it as "no flag given" is this issue's own defect
+        # inside the flag that fixes it (#106). Sourcing takes the raw argument,
+        # because `Path("")` is an existing directory and loses the fact.
+        personas, source, coverage = load_personas(repo, args.panel)
     except PanelError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

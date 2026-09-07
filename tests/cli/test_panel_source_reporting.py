@@ -193,6 +193,23 @@ def test_an_explicit_panel_that_cannot_be_used_refuses_without_a_traceback(
     assert "[panel]" not in captured.out
 
 
+def test_an_empty_panel_argument_is_not_silently_ignored(changed_repo, capsys):
+    """#106, end to end: `--panel "$PANEL"` with the variable unset.
+
+    The realistic shape of this defect, and the one the operator is least likely
+    to catch: they wrote the flag, so they believe the panel is named. Before the
+    fix this printed the default seven and reviewed on, saying nothing.
+    """
+    assert _run(changed_repo, "--panel", "") == 2
+    captured = capsys.readouterr()
+
+    assert captured.err.startswith("error: --panel")
+    assert "no path was given" in captured.err
+    assert "Traceback" not in captured.err
+    assert "--- JSON ---" not in captured.out
+    assert "[panel]" not in captured.out
+
+
 def test_the_missing_yaml_extra_names_the_extra(changed_repo, capsys, monkeypatch):
     """The sharpest cause: a VALID panel silently ignored on a default install.
 
