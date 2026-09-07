@@ -296,6 +296,34 @@ def test_a_parse_failure_does_not_quote_the_file_it_failed_on(
     assert "line 3, column 11" in detail, "a coordinate, so the operator can look"
 
 
+@pytest.mark.parametrize(("files", "yaml_absent", "expected"), [
+    ({"panel.yaml": "personas:\n  - name: A\n"}, True, "ModuleNotFoundError"),
+    ({}, False, "IsADirectoryError"),
+], ids=["the-missing-optional-extra", "a-markdown-file-that-is-a-directory"])
+def test_every_call_site_narrows_not_only_the_dangerous_one(
+        tmp_path, monkeypatch, files, yaml_absent, expected):
+    """The rule is uniform, and uniformity is the thing worth testing.
+
+    Neither of these renderings can leak file content — an ``ImportError`` is
+    about our environment and an ``OSError`` names the path, which #69 already
+    holds to be a name rather than content. They are narrowed anyway, because
+    narrowing only where a leak is *known* is a claim about every parser we do
+    not use yet, and a table per exception type is what the doctrine forbids.
+
+    Found by mutation: both call sites survived the first matrix, because every
+    assertion about ``detail`` was aimed at the YAML branch where the hazard is.
+    """
+    if yaml_absent:
+        _no_pyyaml(monkeypatch)
+    repo = _repo(tmp_path, **files)
+    if not yaml_absent:
+        (repo / "panel.md").mkdir()
+
+    _, source, _ = load_personas(repo)
+
+    assert source.discarded[0].detail == expected
+
+
 def test_a_diagnosis_is_recorded_even_with_no_location_to_give(
         tmp_path, monkeypatch):
     """The pair to the test above: narrowing must not become saying nothing.

@@ -264,8 +264,16 @@ def _diagnosis(exc: Exception) -> str:
     failure, which is often the useful half of it. The sibling mechanism is the
     coordinate — an operator opens their own file at the right line, which they
     can do and a reader of the artefact cannot.
+
+    Only ``problem_mark`` is read. A ``context_mark`` fallback was written and
+    then **deleted**: measured across eight ``pyyaml`` failure shapes, every one
+    either carried ``problem_mark`` or carried neither mark, so the fallback
+    could not fire. A rule that cannot fire is decoration — #69's lesson, where
+    an enum member was nearly added for a state the code refuses to enter. An
+    exception with no mark degrades to its type alone, which is still a
+    diagnosis.
     """
-    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    mark = getattr(exc, "problem_mark", None)
     line, column = getattr(mark, "line", None), getattr(mark, "column", None)
     where = (f" at line {line + 1}, column {column + 1}"
              if line is not None and column is not None else "")
