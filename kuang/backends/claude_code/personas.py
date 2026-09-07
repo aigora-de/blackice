@@ -364,7 +364,7 @@ REQUIRED_LENSES: tuple[tuple[str, tuple[str, ...], Persona], ...] = (
 
 
 def _load_explicit_panel(
-        path: Path) -> tuple[list[Persona], PanelSource, list[LensCoverage]]:
+        given: str | Path) -> tuple[list[Persona], PanelSource, list[LensCoverage]]:
     """Source the panel from ``--panel``, or refuse.
 
     The asymmetry with the implicit tiers is the point. Those record a discard and
@@ -376,7 +376,22 @@ def _load_explicit_panel(
     It refuses through the same operator-error path ``SurfaceError`` already uses,
     before the first epoch and so before anything is spent, rather than inventing
     a third behaviour for the class (#59). What the exit code MEANS stays #32's.
+
+    It takes the operator's argument **as given**, not a ``Path``, because
+    ``Path("")`` is ``PosixPath('.')`` — a valid, existing directory — so building
+    the path first destroys the one fact an empty argument carries (#106). An
+    empty argument is its own refusal with its own message: "you named nothing"
+    and "you named something that is not there" are different mistakes with
+    different causes, and telling them apart is the same rule that separates
+    ``unsupported`` from ``malformed``.
     """
+    text = str(given)
+    if not text.strip():
+        raise PanelError(
+            "--panel: no path was given — an empty argument is usually an unset "
+            "shell variable, and a panel that cannot be named is not silently "
+            "replaced with the default one")
+    path = Path(text)
     if not path.exists():
         raise PanelError(f"--panel {path}: the file does not exist")
     personas, reason, detail = _load_declared(path)
@@ -388,7 +403,7 @@ def _load_explicit_panel(
 
 
 def load_personas(
-        repo_root: Path, panel_path: Path | None = None,
+        repo_root: Path, panel_path: str | Path | None = None,
 ) -> tuple[list[Persona], PanelSource, list[LensCoverage]]:
     """Resolve the persona set by precedence.
 
@@ -400,6 +415,10 @@ def load_personas(
     which when given is the only thing consulted. It raises ``PanelError`` rather
     than falling back; see ``_load_explicit_panel``.
 
+    It is tested against ``None``, never truthiness, and takes the operator's raw
+    argument so that an **empty** one is refused rather than treated as absent
+    (#106). A ``Path`` is still accepted, for callers that already have one.
+
     The middle element became a **record** rather than gaining a fourth tuple
     element, so ``load_personas(repo)[0]`` keeps working and an archived
     artefact's ``source`` vocabulary is unchanged. Before #16 it was the bare
@@ -407,7 +426,7 @@ def load_personas(
     stdout and artefact — with the single word ``"default"``.
     """
     if panel_path is not None:
-        return _load_explicit_panel(Path(panel_path))
+        return _load_explicit_panel(panel_path)
 
     discarded: list[Discarded] = []
     claude_md = repo_root / "CLAUDE.md"
