@@ -57,6 +57,13 @@ human. You are the *synthesiser, not the judge* — the human decides.
    (continue/stop) between epochs, and finally emits a `--- JSON ---` block for
    you to consume (with a `clusters` array alongside the raw `findings`). Exit
    code `3` means an UGLY circuit-break.
+   - The surface is re-assembled at the **start of every epoch**, so a fix applied
+     at the gate can remove it — a named path deleted or renamed, a base ref that
+     stops resolving. The run then halts **`surface_lost`**, still reports every
+     epoch that completed (findings, participation, coverage, permissions, surface
+     and the artefact), names the epoch it could not reassemble, and exits `2`. The
+     first epoch is different: with nothing reviewed there is nothing to report, so
+     it stays an operator error on stderr with no halt line.
    - **`--semantic-dedup`** (opt-in) folds the same concern raised by multiple
      personas — differently worded, at different lines, or across files — into one
      **canonical cluster**, so stall/convergence and your synthesis count *issues*,

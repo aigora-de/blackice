@@ -466,6 +466,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n=== HALT: {review_run.halt_reason.value} after {len(review_run.epochs)} epoch(s) ===")
     print(f"open uglies: {len(review_run.open_uglies)} | open blockers: {len(review_run.open_blockers)}"
           f" | tokens: {session.tokens}")
+    # Why there are no more epochs (#85). Above the findings, because why a run
+    # stopped is read before what it found, and it names the epoch because the halt
+    # line cannot: that counts the epochs that COMPLETED, so a run that lost its
+    # surface on epoch 2 reports "after 1 epoch(s)". The backend's own message rides
+    # along — it names the paths or carries git's stderr, which is what an operator
+    # needs to correct and what the engine could never produce (#18).
+    if review_run.surface_failure is not None:
+        print(f"surface lost: epoch {review_run.surface_failure.epoch} could not be "
+              f"reassembled — {review_run.surface_failure.detail}")
     # What the good verdict rests on (#82). ``converged`` is satisfied by ABSENCE
     # on every conjunct, and quorum is trivially met at n=1 — so a panel of one
     # whose sole reviewer called no tool printed the good verdict with nothing
@@ -775,6 +784,16 @@ def main(argv: list[str] | None = None) -> int:
         # to this mode at all (#27), which is what this record does NOT check.
         # What the surface WAS, rather than how it fell short, is #74.
         "surface": surface_epochs,
+        # Why the run has no more epochs than it does (#85): the epoch whose surface
+        # could not be assembled, and the backend's own diagnosis of it. Always
+        # present and ``null`` where nothing was lost, for the reason ``agreement``
+        # and ``panel.discarded`` are: an absent key makes no claim, and a reader
+        # coming to an artefact cold cannot otherwise tell a run that kept its
+        # surface from one written before this field existed. ``epochs`` above
+        # counts the epochs that COMPLETED and so cannot carry this.
+        "surface_lost": (None if review_run.surface_failure is None else
+                         {"epoch": review_run.surface_failure.epoch,
+                          "detail": review_run.surface_failure.detail}),
         # Whether the reduce step ran, was not asked for, had nothing to fold, or
         # degraded — and on which epoch (#30).
         "reduce": {"requested": bool(args.semantic_dedup), "epochs": reduce_epochs},
@@ -807,4 +826,13 @@ def main(argv: list[str] | None = None) -> int:
                          for m in c.members]}
             for c in review_run.clusters],
     }, indent=2))
+    # #32 owns what an exit code MEANS and this does not pre-empt it: a run whose
+    # surface was lost returns the 2 this path has always returned, now with the
+    # report beside it. Doing nothing would not be neutral — the run would fall
+    # through to 0 and be read as a success by any caller, including a shell ``&&``,
+    # which is the defect #32 exists to settle rather than one to add to it. An UGLY
+    # cannot reach here: the breaker is checked first and unconditionally, so an open
+    # UGLY halts the epoch it appears in and no later epoch exists to lose a surface.
+    if review_run.halt_reason is HaltReason.SURFACE_LOST:
+        return 2
     return 3 if review_run.halt_reason.value == "escalate_ugly" else 0

@@ -31,6 +31,7 @@ class HaltReason(Enum):
     STALL = "stall"                    # no new material findings, blockers still open
     ABORTED = "aborted"                # human gate stopped the loop
     NO_REVIEW = "no_review"            # no persona reviewed: there is no verdict
+    SURFACE_LOST = "surface_lost"      # the surface could not be re-assembled
 
     # NO_REVIEW is for a state the loop cannot usefully CONTINUE from, which is the
     # rule that keeps this vocabulary from growing once per issue. Nothing was
@@ -39,6 +40,19 @@ class HaltReason(Enum):
     # nothing (#82) — can continue, and #82 is explicit that the tool must not gate
     # it: the tool informs, the human decides. That case is QUALIFIED beside the
     # verdict, never halted, so this member is not a precedent for one naming it.
+    #
+    # SURFACE_LOST passes that rule on its own merits rather than by citing it (#85).
+    # The surface is the INPUT to every epoch: without one there is nothing to hand
+    # any persona, and no action at the human gate can produce one, because the loop
+    # is already past the gate when the next epoch's gather fails. The operator's
+    # next move is a new run against corrected scope, which is a different run.
+    #
+    # It is a seventh member rather than a reuse because every existing one would be
+    # a lie: ABORTED means the human stopped it and nobody did, BUDGET/EPOCH/STALL
+    # name ceilings that were not reached, and NO_REVIEW is a claim about PERSONAS —
+    # here they reviewed, and their findings print two lines below the halt line.
+    # Which channel failed is the distinction #30 drew between SPAWN_FAILED and
+    # AGENT_ERROR, and folding the two together would lose it.
 
 
 @dataclass

@@ -358,6 +358,28 @@ class EpochResult:
     halt: HaltReason | None = None
 
 
+@dataclass(frozen=True)
+class SurfaceFailure:
+    """Why an epoch never began: the surface could not be assembled for it (#85).
+
+    A field on the run rather than a ``Finding``, though #25's precedent — a failed
+    ``spawn`` recorded as a meta finding — invites the other choice. No persona
+    produced this, so there is no author to attribute it to; it is not a claim about
+    the change under review; and putting it in the ledger would add an entry to
+    #73's ``issues_about_run`` count for something ``halt_reason`` already states.
+    What the halt reason CANNOT state is which epoch, because the run reports the
+    epochs that completed and this one did not — hence ``epoch``.
+
+    ``detail`` is the exception's type and message, and it is bounded where it is
+    built (``loop.run``): a backend's exception text carries git's stderr or a list
+    of paths and has no length contract, and this string is both printed and written
+    into an artefact meant to be shared.
+    """
+
+    epoch: int
+    detail: str
+
+
 @dataclass
 class ReviewRun:
     """The full record of a review loop."""
@@ -366,6 +388,7 @@ class ReviewRun:
     ledger: dict[str, Finding] = field(default_factory=dict)  # key -> first sighting
     clusters: list[Cluster] = field(default_factory=list)     # latest epoch's reduce
     halt_reason: HaltReason | None = None
+    surface_failure: SurfaceFailure | None = None             # #85: why there is no more
 
     @property
     def converged(self) -> bool:

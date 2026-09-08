@@ -11,7 +11,8 @@ asserted-in-prose — see ``tests/engine/test_backend_agnostic.py``.
 """
 
 from .findings import (AFFIRMATIVE_VERDICT, Cluster, EpochResult, Finding,
-                       PersonaReport, PersonaStatus, ReviewRun, Severity)
+                       PersonaReport, PersonaStatus, ReviewRun, Severity,
+                       SurfaceFailure)
 from .halting import HaltingSet, HaltReason
 from .loop import PanelConfig, ReviewSpec, run
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
@@ -22,5 +23,5 @@ __all__ = [
     "GateDecision", "GatherSurface", "HaltReason", "HaltingSet", "HumanGate",
     "PanelConfig", "PersonaReport", "PersonaStatus", "Reduce", "ReviewRun",
     "ReviewSpec",
-    "ReviewSurface", "Severity", "SpawnPersona", "run",
+    "ReviewSurface", "Severity", "SpawnPersona", "SurfaceFailure", "run",
 ]

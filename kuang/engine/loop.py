@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
-                       ReviewRun, Severity)
+                       ReviewRun, Severity, SurfaceFailure)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -149,7 +149,11 @@ def run(
         panel: The reviewer ensemble (personas + mandates).
         spawn: Runs one persona subagent over the surface. May raise; an
             exception is contained as a meta finding on that persona's report.
-        gather: Produces the review surface for each epoch.
+        gather: Produces the review surface for each epoch. May raise; a failure
+            after at least one epoch has completed halts the run as
+            ``SURFACE_LOST`` and returns what those epochs produced, and a failure
+            with no completed epoch propagates (there is nothing to report, and a
+            surface that cannot be built is an operator error, never a review).
         adjudicate: Verifies a finding against source; False refutes/drops it.
         reduce: Folds the deduped ledger into canonical clusters (semantic dedup);
             defaults to identity (one cluster per signature). Feeds stall/
@@ -172,7 +176,38 @@ def run(
     epoch = 0
     while True:
         epoch += 1
-        surface = gather(epoch)
+        try:
+            surface = gather(epoch)
+        except Exception as exc:  # noqa: BLE001
+            # The other fallible seam, guarded the way ``spawn`` is below (#85, #25).
+            # ``gather`` is called once per EPOCH, so a fix applied at the human gate
+            # that removes a named file — or a base ref that stops resolving — used to
+            # propagate out of ``run`` and take the whole ``ReviewRun`` with it: every
+            # finding, participation record and token count from the epochs that DID
+            # complete, for a panel already spawned and paid for.
+            #
+            # ``Exception`` because the engine may not name a backend's exception class
+            # (``tests/engine/test_backend_agnostic.py``), and deliberately not
+            # ``BaseException`` — a human's Ctrl-C still stops the loop.
+            #
+            # The predicate is that NO EPOCH HAS COMPLETED, not that the counter is at
+            # one. They coincide, but only this one states the rule: with nothing to
+            # report there is no run to hand back, so the operator error propagates and
+            # #18's doctrine is untouched — a surface that cannot be built is an
+            # operator error, never a review with no findings. It is load-bearing as
+            # well as honest: a reporter reaching for ``epochs[-1]`` would fail on a
+            # run halted with none.
+            if not review_run.epochs:
+                raise
+            # Collapsed to one line, then bounded, and both in the ENGINE so the
+            # console and the artefact cannot disagree about the same string. Not
+            # cosmetic: a real diff-mode failure carries git's stderr, measured at
+            # three lines, and the continuation lines would print unprefixed between
+            # the halt line and the findings, reading as sections of the report.
+            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:400]
+            review_run.surface_failure = SurfaceFailure(epoch=epoch, detail=detail)
+            review_run.halt_reason = HaltReason.SURFACE_LOST
+            break
 
         # Fan out: one persona per subagent. Real backends spawn a subprocess
         # per persona, so run them concurrently (subprocess calls release the
