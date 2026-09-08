@@ -571,6 +571,29 @@ def test_an_injected_specialist_is_never_mandateless(tmp_path, monkeypatch):
     assert mandateless(personas) == ("A", "B")
 
 
+def test_a_real_pyyaml_null_grounding_is_no_mandate(tmp_path):
+    """The same rule against the real library, where the shape comes from.
+
+    Every test above reaches ``None`` through a stub, and a stub asserting a shape
+    nobody measured tests the stub. ``grounding:`` with nothing after it really is
+    ``None`` to pyyaml — confirmed against 6.0.3 — and on main that did not degrade
+    silently but raised an unhandled ``TypeError`` out of ``_ensure_specialists``.
+
+    Skipped where the optional extra is absent, which is this repo's venv; run by
+    the CI job that installs ``[yaml]``, the job #105 exists because of.
+    """
+    pytest.importorskip("yaml")
+
+    personas, source, _ = load_personas(_repo(tmp_path, **{
+        "panel.yaml": "personas:\n"
+                      "  - name: A\n    grounding:\n"
+                      "  - name: B\n    grounding: Hunt ruin-class hazards.\n"}))
+
+    assert source.label == "panel file"
+    assert [p.name for p in personas][:2] == ["A", "B"]
+    assert mandateless(personas) == ("A",)
+
+
 def test_no_default_or_parsed_panel_can_be_mandateless(tmp_path):
     """The two tiers that cannot reach this state, asserted rather than assumed.
 

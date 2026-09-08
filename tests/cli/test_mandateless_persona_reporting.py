@@ -303,6 +303,37 @@ def test_a_one_word_mandate_is_not_reported(changed_repo, capsys, monkeypatch):
     assert _artefact(out)["panel"]["no_mandate"] == []
 
 
+def test_a_mandateless_persona_can_still_suppress_a_default_lens(
+        changed_repo, capsys, monkeypatch):
+    """The compound case, reported as two facts rather than modelled as one.
+
+    ``_ensure_specialists`` matches capability keywords over a persona's **name +
+    grounding**, so a persona named ``ruin-hunter`` with no brief at all suppresses
+    the survivability default: the run then states that the ruin lens is covered by
+    a reviewer holding nothing. Both halves are printed — ``coverage`` says the lens
+    rests on a KEYWORD MATCH and names the persona, this section says that persona
+    has no mandate — and **joining them is left to the reader**, deliberately.
+    Folding it into ``coverage`` would be #82's object answering a different
+    question (which lens is covered, not whether a persona has a brief), and #82's
+    own record already says the keyword rule is a claim nothing checks until a lens
+    is declarable (#2).
+
+    It is also why ``check_invariants.py``'s new rule forbids only an **injected**
+    lens from being reported mandate-less. A keyword-matched one may be, and a rule
+    that forbade it would fire on this run, which is not a defect but a fact.
+    """
+    _panel(monkeypatch, changed_repo,
+           [{"name": "ruin-hunter"},
+            {"name": "analyst", "grounding": "Check every arithmetic boundary."}])
+    _run(changed_repo)
+    out = capsys.readouterr().out
+
+    assert "survivability" not in _artefact(out)["panel"]["personas"]
+    assert "  ruin — KEYWORD MATCH (ruin-hunter), not declared (#2)" in out
+    assert _artefact(out)["panel"]["no_mandate"] == ["ruin-hunter"]
+    assert _warning(out).endswith(": ruin-hunter")
+
+
 # --- --panel: report, and do not refuse --------------------------------------
 
 def test_an_explicit_panel_with_a_mandateless_persona_reports_and_continues(

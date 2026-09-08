@@ -203,6 +203,13 @@ A declaration that was **reached and yielded no persona** is reported on the
 console before the spend and recorded in the artefact's `panel.discarded`, so a
 run whose declared panel was thrown away does not read like one that declared
 none. A repo that declared nothing is not warned at all.
+A persona that was convened with **no mandate at all** — a `panel.yaml` entry
+whose `grounding` is absent, null or empty — is reported the same way, in
+`panel.no_mandate`. It is a *different* fact from a discard: the declaration
+yielded somebody, with nothing in them, and a persona's mandate is its whole
+identity at the call. It is reported and the run continues, on every tier
+including `--panel`, because the file was carried out exactly as written.
+Whether a mandate that exists is any **good** is not checked (issues #2/#34).
 A **completeness-critic** and a **survivability (ruin) lens** are always ensured
 (the ruin lens is skipped only when the sourced set already has one, e.g. a
 tail-risk persona). Reviewers are **independent within an epoch**; epoch > 1
