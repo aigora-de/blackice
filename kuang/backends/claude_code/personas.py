@@ -280,6 +280,33 @@ def _diagnosis(exc: Exception) -> str:
     return f"{type(exc).__name__}{where}"
 
 
+def _declared_persona(entry: dict) -> Persona:
+    """Build one persona from a ``panel.yaml`` entry.
+
+    **Absent and null are one statement** — the operator wrote no mandate — so
+    both become ``""`` here and are reported by ``mandateless`` rather than
+    convened silently (#103). ``entry.get("grounding", "")`` alone does not do
+    it: a ``dict`` default fires only for an absent *key*, so ``grounding:``
+    with nothing after it kept ``pyyaml``'s ``None``, survived ``_load_declared``'s
+    ``try``, and died in ``_ensure_specialists`` outside it with an unhandled
+    ``TypeError``.
+
+    A ``grounding`` that is present and of the **wrong type** — an int, a list —
+    still does, as does a null ``name``. That is a different defect — an operator
+    input fault that tracebacks rather than refusing, #59's class — filed as #115
+    rather than fixed here by an ``or ""``, which would swallow the list and miss
+    the int: a patched table where one rule is wanted.
+
+    ``name`` stays required. A missing one raises ``KeyError`` inside the
+    caller's ``try`` and is reported ``malformed``, which is #16's and unchanged.
+    """
+    grounding = entry.get("grounding")
+    return Persona(name=entry["name"],
+                   grounding="" if grounding is None else grounding,
+                   tools=entry.get("tools", list(DEFAULT_ALLOWED_TOOLS)),
+                   model=entry.get("model"))
+
+
 def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
     """Load one declared panel file. Returns ``(personas, reason, detail)``.
 
@@ -301,12 +328,7 @@ def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
             return [], "unsupported", _diagnosis(exc)
         try:
             data = yaml.safe_load(path.read_text()) or {}
-            personas = [
-                Persona(name=p["name"], grounding=p.get("grounding", ""),
-                        tools=p.get("tools", list(DEFAULT_ALLOWED_TOOLS)),
-                        model=p.get("model"))
-                for p in data.get("personas", [])
-            ]
+            personas = [_declared_persona(p) for p in data.get("personas", [])]
         except Exception as exc:  # noqa: BLE001
             return [], "malformed", _diagnosis(exc)
     else:
@@ -489,3 +511,48 @@ def _ensure_specialists(
         # about, so each matcher gets its own record and the reader sees the set.
         coverage.extend(LensCoverage(lens, p.name, injected=False) for p in matched)
     return out, coverage
+
+
+def mandateless(personas: list[Persona]) -> tuple[str, ...]:
+    """The convened personas whose mandate is absent or empty (#103).
+
+    A persona's *identity is its lens*, and the grounding **is** the lens: at the
+    subprocess boundary a persona is nothing but ``--append-system-prompt
+    <grounding>``, and its name never reaches the call at all. So two personas
+    with no mandate do not merely review under-briefed — they spawn a
+    **byte-identical** argv, and the unanimity behind a ``converged`` verdict
+    counts one voice twice.
+
+    Measured, no existing field could carry that: two runs differing only in
+    whether half the panel had a brief were byte-identical in their whole output,
+    console and artefact alike. ``coverage`` (#82) cannot be asked to — it varies
+    with how many personas match a lens *keyword*, which is a property of a
+    mandate's wording rather than of whether one exists, so an empty mandate and a
+    real mandate that mentions neither completeness nor ruin produce identical
+    rows.
+
+    **A function, not a field, and this is the line.** ``LensCoverage`` and
+    ``PanelSource`` are records because sourcing knew something the roster did not
+    keep — the suppression decision, the discarded declaration — and a fact thrown
+    away cannot be reported. This one is *derivable from the roster itself*, so
+    storing a copy beside it would be a second source of truth that can disagree
+    with the first, for nothing.
+
+    The rule is **absent, null, or empty after strip**, which is exactly knowable
+    and needs no baseline. What it under-reports, plainly: a mandate that exists
+    and is useless — ``grounding: TODO``, a single word, a line of boilerplate — is
+    not caught. Whether a brief is any GOOD is persona quality, which is #2/#34's,
+    and a minimum length here would be a threshold on a value nobody has measured
+    (``SurfaceRecord``'s own docstring records where that goes wrong).
+
+    Read over the **final roster**, so the two specialists ``_ensure_specialists``
+    appends are covered by the same rule as everyone else — and pass it, because
+    they carry a mandate by construction. Only the YAML tier can reach the
+    reported state: ``parse_claude_md_experts`` builds a grounding from the
+    subsection body and an empty body still yields ``"You are <name> — <role>."``,
+    and the default set is briefed here in this file. The rule is stated over the
+    roster rather than over that one tier all the same, because who ends up with
+    no lens is the fact an operator needs, and guarding three tiers would imply
+    all three were at risk.
+    """
+    return tuple(p.name for p in personas if not p.grounding.strip())

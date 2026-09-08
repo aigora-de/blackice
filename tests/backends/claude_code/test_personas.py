@@ -31,9 +31,10 @@ import types
 
 import pytest
 
-from kuang.backends.claude_code.personas import (DISCARD_ORIGINS,
+from kuang.backends.claude_code.personas import (DEFAULT_PERSONAS,
+                                                 DISCARD_ORIGINS,
                                                  DISCARD_REASONS, PanelError,
-                                                 load_personas)
+                                                 load_personas, mandateless)
 
 # A Resident Experts heading the parser commits to, with subsections it cannot
 # read: ``###`` instead of ``##``, and a colon instead of the " — " separator.
@@ -514,3 +515,99 @@ def test_an_explicit_panel_that_cannot_be_used_refuses(
 
     assert filename in str(exc.value)
     assert expected in str(exc.value)
+
+
+# --- a persona convened with no mandate (#103) --------------------------------
+#
+# The same module's next defect, and the opposite failure to the six above: not a
+# declaration that yielded nobody, but one that yielded somebody with nothing in
+# them. #16's rule deliberately and correctly does not fire on it — the file
+# parsed and named personas, so nothing was discarded.
+#
+# The rule is **absent, null, or empty after strip**, and it is exactly knowable.
+# What it under-reports is stated rather than hidden: a mandate that exists and is
+# useless (``TODO``) is persona QUALITY, which is #2/#34's, and a length threshold
+# here would be a threshold on a value nobody has baselined.
+
+@pytest.mark.parametrize(("grounding", "expected"), [
+    ({}, ("A",)),
+    ({"grounding": None}, ("A",)),
+    ({"grounding": ""}, ("A",)),
+    ({"grounding": "   \n\t "}, ("A",)),
+    ({"grounding": "TODO"}, ()),
+    ({"grounding": "Check every arithmetic boundary."}, ()),
+], ids=["absent", "null", "empty", "whitespace-only", "one-word", "a-real-brief"])
+def test_what_counts_as_no_mandate(tmp_path, monkeypatch, grounding, expected):
+    """The boundary, at the seam, for every shape the real parser produces.
+
+    ``null`` is here because ``grounding:`` with nothing after it is what pyyaml
+    returns for a key an operator opened and did not fill (measured, 6.0.3), and
+    because ``.get("grounding", "")`` does not catch it: the default fires only
+    for an ABSENT key. On main it did not degrade silently but crashed, in
+    ``_ensure_specialists`` and outside ``_load_declared``'s ``try``.
+    """
+    _stub_yaml(monkeypatch, {"personas": [{"name": "A", **grounding}]})
+    repo = _repo(tmp_path, **{"panel.yaml": "personas: …\n"})
+
+    personas, _, _ = load_personas(repo)
+
+    assert mandateless(personas) == expected
+
+
+def test_an_injected_specialist_is_never_mandateless(tmp_path, monkeypatch):
+    """The mirror image, at the seam.
+
+    The two personas the tool appends itself carry a brief by construction, so a
+    rule that reported them would over-report a degradation on every panel that
+    declared neither lens — which is most of them.
+    """
+    _stub_yaml(monkeypatch, {"personas": [{"name": "A"}, {"name": "B"}]})
+    repo = _repo(tmp_path, **{"panel.yaml": "personas: …\n"})
+
+    personas, _, _ = load_personas(repo)
+
+    assert [p.name for p in personas] == ["A", "B", "completeness-critic",
+                                          "survivability"]
+    assert mandateless(personas) == ("A", "B")
+
+
+def test_a_real_pyyaml_null_grounding_is_no_mandate(tmp_path):
+    """The same rule against the real library, where the shape comes from.
+
+    Every test above reaches ``None`` through a stub, and a stub asserting a shape
+    nobody measured tests the stub. ``grounding:`` with nothing after it really is
+    ``None`` to pyyaml — confirmed against 6.0.3 — and on main that did not degrade
+    silently but raised an unhandled ``TypeError`` out of ``_ensure_specialists``.
+
+    Skipped where the optional extra is absent, which is this repo's venv; run by
+    the CI job that installs ``[yaml]``, the job #105 exists because of.
+    """
+    pytest.importorskip("yaml")
+
+    personas, source, _ = load_personas(_repo(tmp_path, **{
+        "panel.yaml": "personas:\n"
+                      "  - name: A\n    grounding:\n"
+                      "  - name: B\n    grounding: Hunt ruin-class hazards.\n"}))
+
+    assert source.label == "panel file"
+    assert [p.name for p in personas][:2] == ["A", "B"]
+    assert mandateless(personas) == ("A",)
+
+
+def test_no_default_or_parsed_panel_can_be_mandateless(tmp_path):
+    """The two tiers that cannot reach this state, asserted rather than assumed.
+
+    ``parse_claude_md_experts`` builds a grounding from the subsection body, and
+    an empty body still yields ``"You are <name> — <role>."`` — so ``CLAUDE.md``
+    and ``panel.md`` cannot produce a mandate-less persona, and neither can the
+    distilled default set. The YAML tier is the only route, which is why the fix
+    normalises there and reports over the roster rather than guarding three tiers
+    and implying all three were at risk.
+    """
+    assert mandateless(DEFAULT_PERSONAS) == ()
+
+    repo = _repo(tmp_path, **{"panel.md": "# Resident Experts\n\n## A — Role\n"})
+    personas, source, _ = load_personas(repo)
+
+    assert source.label == "panel file"
+    assert mandateless(personas) == ()
