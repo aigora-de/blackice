@@ -87,6 +87,18 @@ def _artefact(out: str) -> dict:
     return json.loads(out.split("--- JSON ---")[-1])
 
 
+def _warning(out: str) -> str:
+    """The mandate-less warning LINE, or "" if the run printed none.
+
+    Anchored to the line rather than searched for in the whole output, because
+    the roster line two lines above it prints the same names in the same
+    comma-joined form — measured: a mutation dropping the names from the warning
+    entirely was killed by NOTHING, because ``"reviewer_1, reviewer_2" in out``
+    was satisfied by the roster. An assertion a defect cannot break is decoration.
+    """
+    return next((ln for ln in out.splitlines() if "NO MANDATE" in ln), "")
+
+
 # The A/B pair the issue's decisive measurement used: identical but for whether
 # two of the personas carry a brief. B's mandates deliberately match no lens
 # keyword, so `coverage` cannot tell the two apart and is not asked to (#82 asks
@@ -134,9 +146,10 @@ def test_the_report_reaches_both_the_console_and_the_artefact(
     _run(changed_repo)
     out = capsys.readouterr().out
 
-    assert "2 of 4 persona(s) were convened with NO MANDATE" in out
-    assert "personas sharing one spawn an identical call" in out
-    assert "reviewer_1, reviewer_2" in out
+    warning = _warning(out)
+    assert "2 of 4 persona(s) were convened with NO MANDATE" in warning
+    assert "personas sharing one spawn an identical call" in warning
+    assert warning.endswith(": reviewer_1, reviewer_2")
     assert _artefact(out)["panel"]["no_mandate"] == ["reviewer_1", "reviewer_2"]
 
 
@@ -168,7 +181,9 @@ def test_every_mandateless_persona_is_counted_and_named(
     _run(changed_repo)
     out = capsys.readouterr().out
 
-    assert "3 of 5 persona(s) were convened with NO MANDATE" in out
+    warning = _warning(out)
+    assert "3 of 5 persona(s) were convened with NO MANDATE" in warning
+    assert warning.endswith(": one, two, three")
     assert _artefact(out)["panel"]["no_mandate"] == ["one", "two", "three"]
 
 
@@ -213,7 +228,9 @@ def test_the_injected_specialists_are_never_reported(
     assert payload["personas"] == ["one", "two",
                                    "completeness-critic", "survivability"]
     assert payload["no_mandate"] == ["one", "two"]
-    assert "2 of 4 persona(s) were convened with NO MANDATE" in out
+    assert _warning(out).endswith("2 of 4 persona(s) were convened with NO MANDATE "
+                                  "— an empty brief is not a lens and personas "
+                                  "sharing one spawn an identical call: one, two")
 
 
 # --- what counts as no mandate, and what deliberately does not ---------------
@@ -242,11 +259,13 @@ def test_a_grounding_key_with_no_value_is_reported_rather_than_crashing(
     assert _run(changed_repo) == 0
     out = capsys.readouterr().out
 
+    warning = _warning(out)
     assert "Traceback" not in out
-    assert "1 of 3 persona(s) were convened with NO MANDATE" in out
+    assert "1 of 3 persona(s) were convened with NO MANDATE" in warning
     # One persona shares an empty brief with nobody, so the duplicate-call clause
     # must not appear: a warning that is false in a case is the defect it reports.
-    assert "identical call" not in out
+    assert "identical call" not in warning
+    assert warning.endswith(": reviewer_1")
     assert _artefact(out)["panel"]["no_mandate"] == ["reviewer_1"]
 
 
@@ -310,7 +329,9 @@ def test_an_explicit_panel_with_a_mandateless_persona_reports_and_continues(
     captured = capsys.readouterr()
 
     assert "error:" not in captured.err
-    assert "2 of 4 persona(s) were convened with NO MANDATE" in captured.out
+    warning = _warning(captured.out)
+    assert "2 of 4 persona(s) were convened with NO MANDATE" in warning
+    assert warning.endswith(": reviewer_1, reviewer_2")
     payload = _artefact(captured.out)["panel"]
     assert payload["source"] == "--panel"
     assert payload["no_mandate"] == ["reviewer_1", "reviewer_2"]
