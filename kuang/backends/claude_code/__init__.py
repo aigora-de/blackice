@@ -17,7 +17,7 @@ from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, DISCARD_ORIGINS,
                        DISCARD_REASONS, PANEL_LABELS, REQUIRED_LENSES,
                        SURVIVABILITY, Discarded, LensCoverage, PanelError,
                        PanelSource, Persona, discard_note, load_personas,
-                       parse_claude_md_experts)
+                       mandateless, parse_claude_md_experts)
 from .session import PanelSession
 from .spawn import called_no_tool
 from .surface import (SurfaceError, SurfaceRecord, build_path_surface,
@@ -31,6 +31,7 @@ __all__ = [
     "REQUIRED_LENSES", "SURVIVABILITY", "SurfaceError", "SurfaceRecord",
     "UNRESOLVED_SEVERITY", "build_path_surface", "called_no_tool",
     "discard_note", "gather_diff",
-    "load_personas", "load_prior_findings", "parse_claude_md_experts",
+    "load_personas", "load_prior_findings", "mandateless",
+    "parse_claude_md_experts",
     "unavailable_tools", "ungrounded_keys",
 ]

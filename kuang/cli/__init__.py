@@ -34,7 +34,7 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           ReduceState, SurfaceError,
                                           SurfaceRecord, called_no_tool,
                                           discard_note, load_personas,
-                                          load_prior_findings,
+                                          load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
 from kuang.engine import (HaltingSet, HaltReason, PanelConfig, PersonaReport,
                           ReviewSpec, run)
@@ -410,6 +410,25 @@ def main(argv: list[str] | None = None) -> int:
     # tells "no panel was declared" from "the declared panel was discarded".
     for line in _discard_lines(source):
         print(line)
+    # A persona convened with NO MANDATE (#103), said in the same breath and for
+    # the same reason: this is the moment an operator can still abort. It is a
+    # different fact from a discard, not a second rendering of one — a discard is
+    # a declaration that yielded NOBODY, this is a declaration that yielded
+    # somebody with nothing in them, and #16's rule correctly does not fire on it.
+    # Measured, no existing field carried it: two runs differing only in whether
+    # half the panel had a brief were byte-identical, console and artefact alike.
+    # Silent on a healthy run, like every warning above it.
+    no_mandate = mandateless(personas)
+    if no_mandate:
+        # The duplicate-call clause is conditional for the reason ``_verdict_line``'s
+        # clauses are: it is a CLAIM, and with one mandate-less persona there is
+        # nothing to share it with. A warning about illegible output that is itself
+        # false in a case would be this issue committed inside its own fix.
+        shared = (" and personas sharing one spawn an identical call"
+                  if len(no_mandate) > 1 else "")
+        print(f"[panel] WARNING: {len(no_mandate)} of {len(personas)} persona(s) "
+              f"were convened with NO MANDATE — an empty brief is not a lens"
+              f"{shared}: {', '.join(no_mandate)}")
     print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
     disallowed = (list(args.disallow_tools) if args.disallow_tools is not None
                   else list(DEFAULT_DISALLOWED_TOOLS))
@@ -744,8 +763,16 @@ def main(argv: list[str] | None = None) -> int:
         # is --panel's argument as the operator gave it, ``null`` where they named
         # nothing — the same rule SurfaceRecord.paths follows, and it widens #28's
         # consequence by one field.
+        # ``no_mandate`` is the roster's own half of the same question (#103):
+        # ``discarded`` says which declaration yielded nobody, this says which
+        # personas came out of one with no lens. Unconditional for the reason
+        # ``discarded`` is — a run read back cold cannot otherwise tell a panel
+        # that was briefed from one that was not, and on main it could not: the
+        # two artefacts were byte-identical. The two specialists the tool appends
+        # itself can never appear here; they carry a mandate by construction.
         "panel": {"source": source.label, "path": source.path,
                   "personas": [p.name for p in personas],
+                  "no_mandate": list(no_mandate),
                   "discarded": [{"origin": d.origin, "reason": d.reason,
                                  "detail": d.detail} for d in source.discarded]},
         # Which required lens each persona covers, and on what evidence (#82).
