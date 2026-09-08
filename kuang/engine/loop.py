@@ -63,7 +63,8 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
-                       ReviewRun, Severity, SurfaceFailure)
+                       ReviewRun, Severity, SurfaceFailure,
+                       bounded_diagnosis)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -204,8 +205,16 @@ def run(
             # cosmetic: a real diff-mode failure carries git's stderr, measured at
             # three lines, and the continuation lines would print unprefixed between
             # the halt line and the findings, reading as sections of the report.
-            detail = " ".join(f"{type(exc).__name__}: {exc}".split())[:400]
-            review_run.surface_failure = SurfaceFailure(epoch=epoch, detail=detail)
+            #
+            # Collapse, then measure, then bound and mark (#111). The length is
+            # taken from the COLLAPSED string because that is the diagnosis an
+            # operator was ever going to be shown; measuring the raw exception
+            # would report whitespace as loss. ``bounded_diagnosis`` carries the
+            # marker doctrine and its citation.
+            collapsed = " ".join(f"{type(exc).__name__}: {exc}".split())
+            review_run.surface_failure = SurfaceFailure(
+                epoch=epoch, detail=bounded_diagnosis(collapsed),
+                detail_chars=len(collapsed))
             review_run.halt_reason = HaltReason.SURFACE_LOST
             break
 
@@ -230,7 +239,8 @@ def run(
                     status=PersonaStatus.SPAWN_FAILED,
                     findings=[
                         Finding(pm[0], f"persona failed: {type(exc).__name__}: {exc}",
-                                Severity.NOTE, "meta", evidence=repr(exc)[:400],
+                                Severity.NOTE, "meta",
+                                evidence=bounded_diagnosis(repr(exc)),
                                 about_run=True)])
 
         if parallel and len(panel.personas) > 1:

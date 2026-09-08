@@ -10,18 +10,20 @@ through the ``Protocol`` seams in ``protocols``. That is asserted, not merely
 asserted-in-prose — see ``tests/engine/test_backend_agnostic.py``.
 """
 
-from .findings import (AFFIRMATIVE_VERDICT, Cluster, EpochResult, Finding,
-                       PersonaReport, PersonaStatus, ReviewRun, Severity,
-                       SurfaceFailure)
+from .findings import (AFFIRMATIVE_VERDICT, DIAGNOSIS_BOUND, Cluster,
+                       EpochResult, Finding, PersonaReport, PersonaStatus,
+                       ReviewRun, Severity, SurfaceFailure, bounded_diagnosis)
 from .halting import HaltingSet, HaltReason
 from .loop import PanelConfig, ReviewSpec, run
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
 
 __all__ = [
-    "AFFIRMATIVE_VERDICT", "Adjudicate", "Cluster", "EpochResult", "Finding",
+    "AFFIRMATIVE_VERDICT", "Adjudicate", "Cluster", "DIAGNOSIS_BOUND",
+    "EpochResult", "Finding",
     "GateDecision", "GatherSurface", "HaltReason", "HaltingSet", "HumanGate",
     "PanelConfig", "PersonaReport", "PersonaStatus", "Reduce", "ReviewRun",
     "ReviewSpec",
-    "ReviewSurface", "Severity", "SpawnPersona", "SurfaceFailure", "run",
+    "ReviewSurface", "Severity", "SpawnPersona", "SurfaceFailure",
+    "bounded_diagnosis", "run",
 ]

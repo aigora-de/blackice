@@ -20,7 +20,8 @@ epoch has completed", not "the counter is above one": the two coincide, but only
 the first states the rule the reporter depends on.
 
 **Which of these are regressions, said plainly, and measured rather than assumed.**
-Run against ``main`` with this file in place, seven of the nine go red. Six are the
+Of #85's nine tests — the two #111 added are labelled on themselves — seven go red
+run against the ``main`` that preceded them, with this file in place. Six are the
 defect: everything under "the defect", plus ``test_an_epoch_that_never_began_leaves_
 no_record`` and ``test_a_lost_surface_pre_empts_the_epoch_ceiling``, both of which
 raise today rather than halting. The seventh,
@@ -149,9 +150,71 @@ def test_an_unbounded_message_is_bounded_after_it_is_collapsed():
     review_run = _run(_fails_on(2, _BackendSurfaceError("a" + " " * 500 + "b" * 500)))
 
     detail = review_run.surface_failure.detail
-    assert len(detail) == 400
-    assert detail.startswith("_BackendSurfaceError: a b"), "one space, not five hundred"
-    assert detail.endswith("b"), "the bound spent on diagnosis, not on whitespace"
+    kept, marker = detail.split("…", 1)
+    assert len(kept) == 400
+    assert marker.startswith(" [truncated:"), "the cut says so (#111)"
+    assert kept.startswith("_BackendSurfaceError: a b"), "one space, not five hundred"
+    assert kept.endswith("b"), "the bound spent on diagnosis, not on whitespace"
+
+
+def test_a_cut_diagnosis_says_it_was_cut_and_records_what_it_was():
+    """REGRESSION for #111, and the half a reader can see.
+
+    ``surface_lost.detail`` is on the console and in the run artefact, and before
+    this it was cut at 400 with nothing to say so. Measured, an ordinary path-mode
+    refusal is cut at around ten unresolved paths and the cut lands **mid-path**,
+    so the record ended on something that reads exactly like a path the tool failed
+    to resolve.
+
+    Two halves, deliberately. The marker is for the person reading it; nothing may
+    read it back. ``detail_chars`` is the structural fact — the length of the
+    collapsed diagnosis **before** bounding — so "was it cut" is ``detail_chars >
+    400``, exactly knowable and immune to any rewording of the marker. That is the
+    shape ``build_path_surface`` already uses one module over, where
+    ``SurfaceRecord.truncated_file`` is returned rather than matched out of
+    ``--- OMITTED ---``.
+    """
+    paths = ", ".join(f"src/module_{i}/component_handler_{i}.py" for i in range(1, 21))
+    message = (f"no reviewable files in the requested paths: {paths}. Check they "
+               "exist, are tracked by git, and are not gitignored.")
+    review_run = _run(_fails_on(2, _BackendSurfaceError(message)))
+
+    failure = review_run.surface_failure
+    assert failure.detail_chars == len(f"_BackendSurfaceError: {message}"), (
+        "the length of what there was to say, not of what was kept")
+    assert failure.detail_chars > 400
+    assert "truncated" in failure.detail
+    assert not failure.detail.endswith(".py"), (
+        "the record must not end on a path-shaped fragment an operator would read "
+        "as a path that failed to resolve")
+
+
+def test_a_short_diagnosis_carries_no_marker_and_says_its_own_length():
+    """The MIRROR IMAGE, and the half that stops the guard passing vacuously.
+
+    "A cut diagnosis says it was cut" is satisfied by marking every diagnosis,
+    which would be this defect inverted — the record claiming a loss that never
+    happened. So the pair: an uncut ``detail`` is byte-identical to the message,
+    and ``detail_chars`` agrees with it rather than being a constant.
+
+    ``detail_chars`` is present either way. An absent key makes no claim, and a
+    reader coming to an artefact cold could not otherwise tell a diagnosis that
+    fitted from one written before the field existed — the rule ``surface_lost``
+    itself follows.
+
+    **Red on main, but not a regression, and the distinction is the honest label.**
+    It fails there only on the missing attribute: the first assertion — that a short
+    diagnosis is byte-identical to the message — passes before and after, because
+    nothing ever truncated it. What it PINS does not move. It is here as the mirror
+    image of the test above, and it is killed by the vacuity mutation.
+    """
+    review_run = _run(_fails_on(2))
+
+    failure = review_run.surface_failure
+    expected = ("_BackendSurfaceError: no reviewable files in the requested "
+                "paths: a.py")
+    assert failure.detail == expected, "unchanged, not merely unmarked"
+    assert failure.detail_chars == len(expected) <= 400
 
 
 # --- the boundary: what this change deliberately does NOT touch ----------------

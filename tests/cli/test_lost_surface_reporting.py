@@ -17,8 +17,9 @@ the halt line, the exit code and the artefact are the real ones. The trigger is 
 real one too: the gate deletes the file, which is what an operator applying a fix
 does.
 
-**Which are regressions, said plainly, and measured rather than assumed.** Run
-against ``main`` with this file in place, five of the eight go red: the four under
+**Which are regressions, said plainly, and measured rather than assumed.** Of #85's
+eight tests — the one #111 added is labelled on itself — five go red run against the
+``main`` that preceded them, with this file in place: the four under
 "the defect" that assert on output, because nothing is printed at all, and
 ``test_a_healthy_run_says_so_in_the_artefact``, because the key does not exist yet —
 that last one is a guard, not a regression, and what it pins does not move.
@@ -170,10 +171,83 @@ def test_the_output_says_which_epoch_could_not_be_reassembled(sourced_repo, caps
     assert payload["halt_reason"] == "surface_lost"
     assert payload["surface_lost"]["epoch"] == 2
     assert "no reviewable files" in payload["surface_lost"]["detail"]
+    # The structural half of the truncation marker (#111). Present whenever the
+    # block is, and here it says the diagnosis fitted: a reader asks
+    # ``detail_chars > 400`` rather than searching the prose for a notice, which
+    # is the fact-off-wording defect ``SurfaceRecord`` exists to avoid.
+    assert (payload["surface_lost"]["detail_chars"]
+            == len(payload["surface_lost"]["detail"]) <= 400)
     report = out.split("=== HALT:")[-1]
     assert report.index("surface lost:") < report.index("[BLOCKER]"), (
         "within the final report — the epoch-1 synthesis at the gate prints "
         "findings of its own, long before the run knows the surface is gone")
+
+
+def test_a_cut_diagnosis_reaches_the_OPERATOR_marked(git_repo, commit_all, capsys,
+                                                     monkeypatch):
+    """REGRESSION for #111, through the real CLI, on the shape the issue measured.
+
+    Twenty ordinary paths, all removed at the gate — which is what applying a fix
+    there does. The backend's refusal names every one of them, so the diagnosis
+    runs to ~900 characters and is cut at 400. Measured on ``main``, the console
+    line then ended:
+
+        … handler_7.py, src/module_8/component_handler_8.py, src/modul
+
+    ``src/modul`` reads exactly like a twenty-first path that failed to resolve. It
+    is not one; it is half of the ninth. The record did not merely omit — it
+    presented a plausible-looking value that was never real, which is why the
+    marker's job is the BOUNDARY and not merely a notice that a cut occurred.
+
+    Driven end to end rather than against the helper because this is the one of the
+    seven sites an operator can actually observe, and the console is one of its two
+    channels. A mutation dropping the marker on its way to the terminal survived
+    every other test in this change (measured: 0 red) — the helper was pinned, the
+    artefact was pinned, and what a person reads was not.
+    """
+    paths = [f"src/module_{i}/component_handler_{i}.py" for i in range(1, 21)]
+    for rel in paths:
+        target = git_repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def f():\n    return 1\n")
+    (git_repo / "CLAUDE.md").write_text(_CLAUDE_MD)
+    commit_all(git_repo, "init")
+
+    epochs = {"n": 0}
+    real_gather = session_module.PanelSession.gather
+    real_gate = session_module.PanelSession.interactive_gate
+
+    def _gate(self, result, run):  # noqa: ANN001
+        decision = real_gate(self, result, run)
+        subprocess.run(["git", "-C", str(git_repo), "rm", "-q", "-f", *paths],
+                       check=True, capture_output=True, text=True)
+        return decision
+
+    def _gather(self, epoch: int) -> str:
+        epochs["n"] = epoch
+        return real_gather(self, epoch)
+
+    monkeypatch.setattr(session_module.PanelSession, "_run_claude",
+                        lambda self, prompt, mandate, tools, model: _contract(epochs["n"]))
+    monkeypatch.setattr(session_module.PanelSession, "interactive_gate", _gate)
+    monkeypatch.setattr(session_module.PanelSession, "gather", _gather)
+
+    main(["--repo", str(git_repo), "--paths", *paths, "--max-epochs", "3",
+          "--no-parallel"])
+    out = capsys.readouterr().out
+    console = [ln for ln in out.splitlines() if ln.startswith("surface lost:")]
+
+    assert len(console) == 1
+    assert "truncated" in console[0], (
+        "the operator reads the console, not the artefact — the marker has to "
+        "survive the whole way to the terminal")
+    assert not console[0].endswith(".py"), (
+        "the line must not end on a path-shaped fragment")
+
+    lost = _artefact(out)["surface_lost"]
+    assert lost["detail_chars"] > 400, "the fixture must straddle the bound"
+    assert lost["detail"] == console[0].split(" — ", 1)[1], (
+        "one string, bounded in the engine, so the two channels cannot disagree")
 
 
 def test_a_lost_surface_keeps_the_exit_code_it_has_today(sourced_repo, capsys,

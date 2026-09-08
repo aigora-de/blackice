@@ -14,7 +14,8 @@ import json
 import re
 
 from kuang.engine import (AFFIRMATIVE_VERDICT, Finding, PersonaReport,
-                          PersonaStatus, ReviewSpec, Severity)
+                          PersonaStatus, ReviewSpec, Severity,
+                          bounded_diagnosis)
 
 
 _SEV = "NOTE | NON_BLOCKING | BLOCKER | UGLY"
@@ -234,7 +235,8 @@ def _contract_violation(persona: str, what: str, evidence: str) -> PersonaReport
     return PersonaReport(persona=persona, verdict=None,
                          status=PersonaStatus.UNREADABLE, findings=[
         Finding(persona, f"findings contract violated: {what}",
-                Severity.NOTE, "meta", evidence=evidence[:400], about_run=True)])
+                Severity.NOTE, "meta", about_run=True,
+                evidence=bounded_diagnosis(evidence))])
 
 
 def build_prompt(spec: ReviewSpec, surface: str, epoch: int, prior: str,
@@ -359,7 +361,7 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         return PersonaReport(persona=persona, verdict=None,
                              status=PersonaStatus.UNREADABLE, findings=[
             Finding(persona, "no structured output (parse failure)",
-                    Severity.NOTE, "meta", evidence=result_text[:400],
+                    Severity.NOTE, "meta", evidence=bounded_diagnosis(result_text),
                     about_run=True)])
     # Scan back from the end, past our own template. Only echoes actually skipped
     # are counted, so a reply whose last block is real reports nothing.
@@ -384,7 +386,8 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         return PersonaReport(persona=persona, verdict=None,
                              status=PersonaStatus.UNREADABLE, findings=[
             Finding(persona, f"unparseable JSON findings: {exc}",
-                    Severity.NOTE, "meta", evidence=block[:400], about_run=True)])
+                    Severity.NOTE, "meta", about_run=True,
+                    evidence=bounded_diagnosis(block))])
     if not isinstance(data, dict):
         return _contract_violation(
             persona, f"the payload was a {type(data).__name__}, not an object", block)
@@ -442,7 +445,7 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         entries = "entry" if dropped == 1 else "entries"
         findings.append(Finding(
             persona, f"{dropped} malformed finding {entries} discarded (not objects)",
-            Severity.NOTE, "meta", evidence=str(raw_findings)[:400],
+            Severity.NOTE, "meta", evidence=bounded_diagnosis(str(raw_findings)),
             about_run=True))
     if echoes:
         # Recorded, not retried: the review itself was recovered, so a second paid
@@ -452,7 +455,12 @@ def parse_findings(persona: str, result_text: str) -> PersonaReport:
         blocks_word = "block" if echoes == 1 else "blocks"
         findings.append(Finding(
             persona, f"output contract echoed: {echoes} template {blocks_word} ignored",
-            Severity.NOTE, "meta", evidence=_TEMPLATE_BLOCK[:400], about_run=True))
+            Severity.NOTE, "meta", about_run=True,
+            # Our own constant, and measured at 233 characters: this site cannot
+            # be cut today. It goes through the helper anyway so the rule has no
+            # exceptions to copy from, and it is the mirror-image probe a
+            # "mark everything" implementation fails (see the contract tests).
+            evidence=bounded_diagnosis(_TEMPLATE_BLOCK)))
     # Absent or null is the default below and records nothing: a persona that
     # claimed no verdict is not one whose verdict we misread (#26), exactly as an
     # absent severity is not a level we got wrong.

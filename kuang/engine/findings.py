@@ -7,6 +7,12 @@ ladder; ``Finding`` is one persona's claim in one epoch; ``Cluster`` is a *view*
 over findings a reduce step judged the same concept; ``ReviewRun`` accumulates
 the whole loop. Nothing here decides anything — the halting predicate lives in
 ``halting.py`` and the loop in ``loop.py``.
+
+``bounded_diagnosis`` sits here with them rather than in a module of its own: it
+is the one place the bound on a diagnostic string is applied, and the two fields
+it protects — ``Finding.evidence`` and ``SurfaceFailure.detail`` — are both
+defined below. The engine holds it because a backend may import the engine and
+never the reverse (``tests/engine/test_backend_agnostic.py``).
 """
 
 from __future__ import annotations
@@ -27,6 +33,57 @@ from .halting import HaltReason
 # Defined here, in the vocabulary, so a backend normalising a persona's reply and
 # the loop counting the result cannot drift apart.
 AFFIRMATIVE_VERDICT = "YES"
+
+
+# The bound every diagnostic string in this codebase is cut at, and the one place
+# it is applied. Deliberately unchanged by #111 and deliberately not baselined —
+# see ``bounded_diagnosis``, which says what it costs.
+DIAGNOSIS_BOUND = 400
+
+
+def bounded_diagnosis(text: str, limit: int = DIAGNOSIS_BOUND) -> str:
+    """Bound a diagnostic string, and say so when it was cut (#111).
+
+    ``surface.py``'s ``build_path_surface`` already states the rule this codebase
+    works to, and implements it:
+
+        once the cap is reached, remaining files are dropped and named in an
+        explicit OMITTED notice — never a silent truncation. A lone file that by
+        itself exceeds the cap is truncated in place with a marker
+
+    Seven ``[:400]`` sites broke it. The harm is not that a string was shortened:
+    measured, the cut lands **mid-token**, so a path-mode refusal over twelve
+    unresolved paths ends on ``src/modul`` and an operator cannot tell a path that
+    failed to resolve from a fragment of one. The record does not merely omit — it
+    presents a plausible-looking value that was never real. Hence a marker whose
+    job is to make the **boundary** unmistakable rather than merely to note that a
+    cut happened: the ``…`` attaches to the fragment, so what is read last is the
+    notice and never the fragment.
+
+    **The marker rides on top of the bound**, following ``surface.py:219`` and the
+    rule ``SurfaceRecord``'s docstring states for the same reason — "the cap bounds
+    the rendered file content, and the assembler's own OMITTED and missing-path
+    notices ride on top of it". Paying for the marker out of the bound would make
+    ``limit`` mean two things and would silently couple how much diagnosis survives
+    to how this notice is worded.
+
+    **Nothing reads this string back, and nothing may.** Recovering "was this cut?"
+    by matching the wording is the defect ``build_path_surface`` rejects one
+    function up, where ``SurfaceRecord.truncated_file`` is returned rather than
+    matched out of ``--- OMITTED ---``. The structural half here is
+    ``SurfaceFailure.detail_chars``, and it exists for that reason.
+
+    **What the bound under-reports, stated rather than left to be found.** 400 has
+    never been baselined, and #111 deliberately does not change it: measured, an
+    ordinary path-mode refusal is cut at around **ten** unresolved paths, and a
+    twelve-path refusal loses more than half its names. What changes is that the
+    loss is now reported — the marker names the true length — instead of being
+    swallowed. A caller needing a different bound passes ``limit``; nobody should
+    write a second literal.
+    """
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}… [truncated: {limit} of {len(text)} characters]"
 
 
 class Severity(IntEnum):
@@ -374,10 +431,31 @@ class SurfaceFailure:
     built (``loop.run``): a backend's exception text carries git's stderr or a list
     of paths and has no length contract, and this string is both printed and written
     into an artefact meant to be shared.
+
+    ``detail_chars`` is how long that diagnosis was **before** the bound, so the
+    record says what it could not keep (#111). It is the structural half of the
+    truncation marker and exists so that nothing has to read the marker back:
+    "was this cut" is ``detail_chars > DIAGNOSIS_BOUND``, exactly knowable and
+    unaffected by any rewording of the notice. Recovering the fact by matching the
+    wording instead is the defect ``build_path_surface`` rejects one layer down,
+    where ``SurfaceRecord.truncated_file`` is returned rather than matched out of
+    ``--- OMITTED ---``.
+
+    It is measured on the **collapsed** string, not the raw exception: the collapse
+    is what an operator was always going to be shown, so counting the whitespace
+    that was never going to be printed would report a loss nobody suffered. Always
+    present, never optional — an absent value makes no claim, and a reader coming to
+    an artefact cold could not otherwise tell a diagnosis that fitted from one
+    written before this field existed.
+
+    ``Finding.evidence`` gets the marker and no such field, because it reaches no
+    artefact at all: a truncation flag cannot be emitted for a field that is not
+    emitted. That asymmetry is #112, not an oversight here.
     """
 
     epoch: int
     detail: str
+    detail_chars: int
 
 
 @dataclass
