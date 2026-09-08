@@ -142,9 +142,19 @@ def test_no_fenced_block_yields_the_meta_sentinel():
 
 
 def test_the_sentinel_evidence_is_capped_at_400_characters():
+    """The bound is unchanged; what it costs is now said aloud (#111).
+
+    400 characters of diagnosis, with the marker riding on top rather than eaten
+    out of them — ``surface.py``'s precedent, and the rule ``SurfaceRecord``'s
+    docstring states. Paying for the notice out of the bound would make 400 mean
+    two things and would couple how much of the reply survives to how the notice
+    happens to be worded.
+    """
     report = parse_findings("p", "x" * 1000)
 
-    assert len(report.findings[0].evidence) == 400
+    kept, marker = report.findings[0].evidence.split("…", 1)
+    assert len(kept) == 400
+    assert marker == " [truncated: 400 of 1000 characters]"
 
 
 def test_unparseable_json_yields_a_distinct_sentinel():
@@ -658,3 +668,64 @@ def test_who_a_finding_is_about_is_set_where_it_is_built(reply, title_starts,
 
     assert match, [f.title for f in report.findings]
     assert match[0].about_run is about_run
+
+
+# --- a cut diagnosis says it was cut (#111) ------------------------------------
+
+@pytest.mark.parametrize("reply", [
+    pytest.param("z" * 900, id="no-fenced-block"),
+    pytest.param(_reply("{" + "z" * 900), id="unparseable-json"),
+    pytest.param(_reply(json.dumps({"findings": ["z" * 900]})),
+                 id="malformed-entries-dropped"),
+    pytest.param(_reply(json.dumps({"findings": "z" * 900})),
+                 id="findings-not-a-list"),
+    pytest.param(_reply(json.dumps("z" * 900)), id="payload-not-an-object"),
+])
+def test_every_cut_evidence_string_says_it_was_cut(reply):
+    r"""All five parser paths that bound a diagnosis, not just the one with a test.
+
+    Every one of these is a model-produced string with no length contract, and
+    every one of them was cut at 400 in silence. They are marked through one
+    helper rather than five call sites, so the next path added cannot quietly
+    reintroduce the defect by copying the commoner spelling.
+
+    Deliberately **not** asserted here: that an operator can read any of this.
+    ``Finding.evidence`` reaches no artefact, no ledger line and no console line —
+    measured, ``grep -rn "\.evidence" kuang/`` returns nothing outside the
+    assignments. That is #112, and it is why this fix is demonstrated by tests
+    rather than by a run. Saying so is the honest label; fixing it here would be
+    one PR closing two issues.
+    """
+    evidence = parse_findings("p", reply).findings[0].evidence
+
+    assert "truncated" in evidence
+    assert evidence[:400] == evidence.split("…", 1)[0], "the marker rides on top"
+    assert len(evidence) > 400
+
+
+def test_the_echoed_template_evidence_is_not_marked():
+    """The MIRROR IMAGE, at a real call site rather than a contrived one.
+
+    ``_TEMPLATE_BLOCK`` is our own constant and measures 233 characters, so this
+    site cannot be cut at today's contract and its evidence must come back
+    untouched. A rule that fires on a healthy value is this defect inverted, and
+    this is the one of the seven sites where the healthy value is guaranteed —
+    which makes it the probe that a "mark everything" implementation cannot pass.
+
+    It also fails loudly if the contract grows past the bound: then this site
+    starts truncating for real, and the assertion below is the place that says so.
+    """
+    assert len(_TEMPLATE_BLOCK) < 400, (
+        "the shipped contract now exceeds the diagnosis bound — this site has "
+        "begun truncating, and the marker is no longer the only thing to decide")
+
+    real = _reply(json.dumps(
+        {"verdict": "NO",
+         "findings": [{"title": "a real one", "severity": "NOTE",
+                       "claim_class": "logic"}]}))
+
+    report = parse_findings("p", real + _reply(_TEMPLATE_BLOCK))
+
+    echo = [f for f in report.findings if "contract echoed" in f.title]
+    assert len(echo) == 1
+    assert echo[0].evidence == _TEMPLATE_BLOCK, "unchanged, not merely unmarked"

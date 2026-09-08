@@ -791,9 +791,16 @@ def main(argv: list[str] | None = None) -> int:
         # coming to an artefact cold cannot otherwise tell a run that kept its
         # surface from one written before this field existed. ``epochs`` above
         # counts the epochs that COMPLETED and so cannot carry this.
+        # ``detail_chars`` is how long that diagnosis was BEFORE the 400-character
+        # bound (#111), so a record read back cold says what it could not keep. It
+        # is the structural half of the marker the string now carries: "was this
+        # cut" is ``detail_chars > 400``, exactly knowable and unaffected by any
+        # rewording of the notice. Recovering it by matching the prose instead is
+        # the fact-off-wording defect ``SurfaceRecord`` is built to avoid.
         "surface_lost": (None if review_run.surface_failure is None else
                          {"epoch": review_run.surface_failure.epoch,
-                          "detail": review_run.surface_failure.detail}),
+                          "detail": review_run.surface_failure.detail,
+                          "detail_chars": review_run.surface_failure.detail_chars}),
         # Whether the reduce step ran, was not asked for, had nothing to fold, or
         # degraded — and on which epoch (#30).
         "reduce": {"requested": bool(args.semantic_dedup), "epochs": reduce_epochs},

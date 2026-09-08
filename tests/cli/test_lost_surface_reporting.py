@@ -170,6 +170,12 @@ def test_the_output_says_which_epoch_could_not_be_reassembled(sourced_repo, caps
     assert payload["halt_reason"] == "surface_lost"
     assert payload["surface_lost"]["epoch"] == 2
     assert "no reviewable files" in payload["surface_lost"]["detail"]
+    # The structural half of the truncation marker (#111). Present whenever the
+    # block is, and here it says the diagnosis fitted: a reader asks
+    # ``detail_chars > 400`` rather than searching the prose for a notice, which
+    # is the fact-off-wording defect ``SurfaceRecord`` exists to avoid.
+    assert (payload["surface_lost"]["detail_chars"]
+            == len(payload["surface_lost"]["detail"]) <= 400)
     report = out.split("=== HALT:")[-1]
     assert report.index("surface lost:") < report.index("[BLOCKER]"), (
         "within the final report — the epoch-1 synthesis at the gate prints "
