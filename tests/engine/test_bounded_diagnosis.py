@@ -35,7 +35,16 @@ are the guards that keep it honest, and they are the point of the exercise:
 **The fixture straddles the bound deliberately** (#87). This whole change is about
 a string boundary, so an input that does not cross it tests nothing: an ordering
 mutation survived #85's matrix for exactly that reason. ``limit``, ``limit + 1``
-and a realistic over-long message are all exercised.
+and a realistic over-long message are all exercised — and the over-long one is the
+message the issue measured, whose 400th character falls inside a path name rather
+than between two of them. A fixture that cut cleanly at a comma would pass every
+test here and demonstrate nothing.
+
+**Red on main:** the whole file, as a collection error — ``bounded_diagnosis`` does
+not exist. Nine tests, none of which can pass before the change, which is a weaker
+statement than it looks: a file that cannot import is not evidence that its
+assertions are load-bearing. The mutation matrix in the PR is, and every test here
+is killed by at least one mutation of the shipped helper.
 """
 
 from __future__ import annotations
@@ -85,6 +94,12 @@ def test_the_marker_is_unmistakable_at_the_boundary():
     assert not out.endswith(".py"), "the record must not end on a path-shaped fragment"
     assert out.endswith("]"), "the marker is what the string ends on"
     assert out.startswith(_REFUSAL[:DIAGNOSIS_BOUND]), "the diagnosis is kept, not moved"
+    # The sentinel is the boundary, and it is asserted here rather than left to the
+    # ``split("…")`` calls elsewhere that would catch its loss only by accident. A
+    # marker separated from the fragment by an ordinary space puts the notice and
+    # the content in the same typographic register, which is the ambiguity this
+    # whole test is named for.
+    assert out[DIAGNOSIS_BOUND] == "…", "the sentinel abuts the fragment it cuts"
 
 
 # --- the mirror image: a rule that fires on a healthy value --------------------

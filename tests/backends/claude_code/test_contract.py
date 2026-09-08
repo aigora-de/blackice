@@ -714,6 +714,13 @@ def test_the_echoed_template_evidence_is_not_marked():
 
     It also fails loudly if the contract grows past the bound: then this site
     starts truncating for real, and the assertion below is the place that says so.
+
+    **This test passes on main**, and says so rather than being counted as a
+    regression. It passes there for the SAME reason it passes here — a 233-character
+    value is under any bound, so ``[:400]`` and ``bounded_diagnosis`` both return it
+    untouched. It is not evidence that the fix works; it is evidence that the fix
+    did not overreach, and it is killed by exactly one mutation (marking every
+    string, cut or not). That mutation passes every regression test in this change.
     """
     assert len(_TEMPLATE_BLOCK) < 400, (
         "the shipped contract now exceeds the diagnosis bound — this site has "

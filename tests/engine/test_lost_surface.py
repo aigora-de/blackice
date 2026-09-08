@@ -20,7 +20,8 @@ epoch has completed", not "the counter is above one": the two coincide, but only
 the first states the rule the reporter depends on.
 
 **Which of these are regressions, said plainly, and measured rather than assumed.**
-Run against ``main`` with this file in place, seven of the nine go red. Six are the
+Of #85's nine tests — the two #111 added are labelled on themselves — seven go red
+run against the ``main`` that preceded them, with this file in place. Six are the
 defect: everything under "the defect", plus ``test_an_epoch_that_never_began_leaves_
 no_record`` and ``test_a_lost_surface_pre_empts_the_epoch_ceiling``, both of which
 raise today rather than halting. The seventh,
@@ -200,6 +201,12 @@ def test_a_short_diagnosis_carries_no_marker_and_says_its_own_length():
     reader coming to an artefact cold could not otherwise tell a diagnosis that
     fitted from one written before the field existed — the rule ``surface_lost``
     itself follows.
+
+    **Red on main, but not a regression, and the distinction is the honest label.**
+    It fails there only on the missing attribute: the first assertion — that a short
+    diagnosis is byte-identical to the message — passes before and after, because
+    nothing ever truncated it. What it PINS does not move. It is here as the mirror
+    image of the test above, and it is killed by the vacuity mutation.
     """
     review_run = _run(_fails_on(2))
 
