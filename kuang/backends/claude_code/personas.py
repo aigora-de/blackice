@@ -292,10 +292,10 @@ def _declared_persona(entry: dict) -> Persona:
     ``TypeError``.
 
     A ``grounding`` that is present and of the **wrong type** — an int, a list —
-    still does, as does a null ``name``. That is a different defect (an operator
-    input fault that tracebacks rather than refusing, #59's class) and it is
-    filed rather than fixed here by an ``or ""``, which would swallow the list
-    and miss the int: a patched table where one rule is wanted.
+    still does, as does a null ``name``. That is a different defect — an operator
+    input fault that tracebacks rather than refusing, #59's class — filed as #115
+    rather than fixed here by an ``or ""``, which would swallow the list and miss
+    the int: a patched table where one rule is wanted.
 
     ``name`` stays required. A missing one raises ``KeyError`` inside the
     caller's ``try`` and is reported ``malformed``, which is #16's and unchanged.

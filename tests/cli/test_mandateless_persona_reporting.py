@@ -248,9 +248,9 @@ def test_a_grounding_key_with_no_value_is_reported_rather_than_crashing(
     Absent and null are one statement — the operator wrote no mandate — and are
     normalised together at the boundary. A ``grounding`` that is present and of
     the WRONG TYPE (an int, a list) still crashes there, along with a null
-    ``name``; that is a different defect (an operator input fault that tracebacks
-    rather than refusing, #59's class) and it is filed separately rather than
-    fixed here by an ``or`` that would catch the list and miss the int.
+    ``name``; that is a different defect — an operator input fault that tracebacks
+    rather than refusing, #59's class — filed as #115 rather than fixed here by an
+    ``or`` that would catch the list and miss the int.
     """
     _panel(monkeypatch, changed_repo,
            [{"name": "reviewer_1", "grounding": None},
