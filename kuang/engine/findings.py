@@ -7,6 +7,12 @@ ladder; ``Finding`` is one persona's claim in one epoch; ``Cluster`` is a *view*
 over findings a reduce step judged the same concept; ``ReviewRun`` accumulates
 the whole loop. Nothing here decides anything — the halting predicate lives in
 ``halting.py`` and the loop in ``loop.py``.
+
+``bounded_diagnosis`` sits here with them rather than in a module of its own: it
+is the one place the bound on a diagnostic string is applied, and the two fields
+it protects — ``Finding.evidence`` and ``SurfaceFailure.detail`` — are both
+defined below. The engine holds it because a backend may import the engine and
+never the reverse (``tests/engine/test_backend_agnostic.py``).
 """
 
 from __future__ import annotations

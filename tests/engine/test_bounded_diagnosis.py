@@ -51,7 +51,9 @@ from __future__ import annotations
 
 import pytest
 
-from kuang.engine import DIAGNOSIS_BOUND, bounded_diagnosis
+from kuang.engine import (DIAGNOSIS_BOUND, HaltingSet, PanelConfig,
+                          PersonaReport, PersonaStatus, ReviewSpec,
+                          bounded_diagnosis, run)
 
 # The shape the issue measured: an ordinary path list, long enough that the 400
 # bound lands inside a path name rather than between two of them.
@@ -167,3 +169,42 @@ def test_the_bound_is_a_parameter_and_the_rule_holds_at_every_size(limit):
     out = bounded_diagnosis("x" * (limit + 1), limit)
     assert out.startswith("x" * limit)
     assert str(limit) in out and str(limit + 1) in out
+
+
+# --- the seventh site, which the helper's own tests could not reach -------------
+
+def test_a_spawn_failure_records_a_marked_diagnosis():
+    """The one engine site that is neither ``detail`` nor a contract parse (#25).
+
+    A persona is a fallible black box: when OUR code raises, ``run`` records the
+    exception as a meta finding's ``evidence`` rather than letting it end a paid-for
+    panel. That string is a ``repr`` of an arbitrary exception and has no length
+    contract at all — a backend error carrying a subprocess argv, a path list or a
+    reply is ordinary — so it is bounded, and so it must say when it was cut.
+
+    **This test exists because a mutation survived.** Reverting this one site to
+    ``repr(exc)[:400]`` went 0-red across the whole suite: the helper was pinned,
+    the five contract sites were pinned, the artefact was pinned, and this was not.
+    ``test_seam_isolation.py`` does drive this path and does read ``evidence``, but
+    its exception message is ~120 characters — the fixture cannot straddle the
+    bound, so the axis was invisible to it, which is #87's lesson exactly. That
+    file is #25's contract and stays unmodified; the coverage it cannot carry
+    lives here, with the rule it is coverage of.
+    """
+    message = "z" * 900
+
+    def _raises(persona, mandate, surface, epoch):  # noqa: ANN001, ARG001
+        raise RuntimeError(message)
+
+    review_run = run(ReviewSpec(why="mission-critical", what="the diff"),
+                     HaltingSet(max_epochs=1),
+                     PanelConfig(personas=[("correctness", "mandate")]),
+                     spawn=_raises, gather=lambda epoch: "def f(): pass",
+                     parallel=False)
+
+    report, = review_run.epochs[0].reports
+    assert report.status is PersonaStatus.SPAWN_FAILED
+    evidence = report.findings[0].evidence
+    assert evidence[:DIAGNOSIS_BOUND] == repr(RuntimeError(message))[:DIAGNOSIS_BOUND]
+    assert evidence[DIAGNOSIS_BOUND] == "…"
+    assert evidence.endswith(f"of {len(repr(RuntimeError(message)))} characters]")
