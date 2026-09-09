@@ -261,8 +261,17 @@ def test_the_agreement_count_is_reconstructable_from_the_verdicts(
 
 def test_the_artefact_records_what_each_epoch_raised(
         sourced_repo, monkeypatch, capsys):
-    """The three counts, and the threshold the last of them is read against."""
-    _stub(monkeypatch, {"Analyst": [_contract("NO", [_finding("correctness")])]})
+    """The three counts, and the threshold the last of them is read against.
+
+    The fixture makes all three numbers DIFFERENT in one epoch, which is the only
+    way a record carrying three counts can be shown to carry three: a BLOCKER and
+    a NOTE at distinct signatures give two new findings, two new clusters, and one
+    of them material. A fixture where they coincide cannot express the axis — a
+    mutation reporting ``new_clusters`` as the material count survived it.
+    """
+    _stub(monkeypatch, {"Analyst": [_contract("NO", [
+        _finding("correctness", line=10),
+        _finding("style", line=50, severity="NOTE", title="a passing remark")])]})
     _run(sourced_repo)
     payload = _artefact(capsys.readouterr().out)
     raised = payload["raised"]
@@ -270,8 +279,9 @@ def test_the_artefact_records_what_each_epoch_raised(
     assert raised["stall_patience"] == 1, "the threshold the count is read against"
     assert len(raised["epochs"]) == payload["epochs"]
     (first,) = raised["epochs"]
-    assert first == {"epoch": 1, "new_findings": 1, "new_clusters": 1,
-                     "material_new_clusters": 1}
+    assert first == {"epoch": 1, "new_findings": 2, "new_clusters": 2,
+                     "material_new_clusters": 1}, \
+        "the three counts are not three separately-computed numbers"
 
 
 def test_the_gate_prints_the_acted_on_count_beside_the_raw_one(
@@ -313,6 +323,13 @@ def test_a_divergent_epoch_prints_both_numbers(sourced_repo, monkeypatch, capsys
     assert len(lines) >= 2, f"epoch 2 printed no synthesis: {lines!r}"
     assert lines[1].startswith("new findings: 1 | new material issues: 0 | "), \
         f"the epoch-2 gate line hides the number acted on: {lines[1]!r}"
-    raised = _artefact(out)["raised"]["epochs"][1]
+    payload = _artefact(out)
+    raised = payload["raised"]["epochs"][1]
     assert (raised["new_findings"], raised["material_new_clusters"]) == (1, 0), \
         "the artefact does not carry the divergence the console now shows"
+    # The threshold this run was actually given, not the default. #82's precedent:
+    # a run that publishes the value a gate reads publishes what it is read
+    # against — and a patience reported as a constant survives every fixture that
+    # only ever runs at the default one.
+    assert payload["raised"]["stall_patience"] == 2, \
+        "the artefact reports a patience the run was not given"
