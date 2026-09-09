@@ -101,7 +101,8 @@ file, `SKILL.md`, backend names like `backends/claude_code/`) are content and st
 
 # PUBLIC REPO — NO SENSITIVE OR PROPRIETARY REFERENCES
 
-This is a **public** repository. Nothing committed here may contain:
+This is a **public** repository. Nothing **published** here — commits, issue and PR
+bodies, comments, and anything pasted into them — may contain:
 - **living persons' names** (including as persona names) or personal data
   (emails, handles) — commit as the non-personal Git identity;
 - references, literal **or semantic**, to any private/proprietary project this tool
@@ -110,6 +111,23 @@ This is a **public** repository. Nothing committed here may contain:
 - secrets, tokens, or internal URLs.
 Keep examples generic (money movement, migrations, auth, data integrity). When in
 doubt, genericise.
+
+**A run artefact is not publishable by default.** The `--- JSON ---` block and the
+console report carry unbounded model-authored strings written *after reading the
+review surface* — `title`, `claim_class` (#33), and `evidence` if #112 publishes it —
+and the output contract asks each persona for "what you checked and found", which
+invites quoting the source. An artefact therefore inherits the trust level of the
+surface it reviewed:
+- an artefact from a **probe fixture** (`ledger-repo`, `golden-repo`, `sole-repo`,
+  the synthetic corpus) may be quoted freely — those surfaces are generic by
+  construction, which is what the fixtures are for;
+- an artefact from a **live run against a real repository** may **not** be pasted
+  into an issue, a PR, or any third-party site. Quote a fixture capture that makes
+  the same point, or genericise by hand.
+
+A **practice, not a control**: nothing in the tool enforces this and it must never be
+written as though something does — that is #79's defect one document along. What the
+artefact may carry at all is #112 and #118; the standing question is #121.
 
 # IMPLEMENTATION REQUIREMENTS
 
