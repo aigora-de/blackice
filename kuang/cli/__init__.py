@@ -915,6 +915,9 @@ def main(argv: list[str] | None = None) -> int:
         # the reduce PROMPT and never the artefact, so an archived run could not be
         # asked why two findings merged. With it, file + line-bucket + claim_class +
         # severity make the signature exactly recomputable from this array alone.
+        # Exactly, including where today's signature is WRONG: the components are
+        # published as they are hashed, so an artefact reproduces a collision
+        # rather than papering over one (#119).
         #
         # Published, never READ BACK by our own code. #73 measured what happens
         # otherwise: excluding ``claim_class == "meta"`` from the ledger turned a run

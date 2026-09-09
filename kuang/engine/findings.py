@@ -438,6 +438,16 @@ class EpochResult:
         over-merging clusterer indistinguishable from a panel raising nothing that
         matters, and only one of those is a defect in the instrument — which is
         why the run publishes all three counts rather than the two that differ.
+
+        ``severity`` and not ``open_severity``, which preserves exactly what the
+        loop computed — and the two cannot differ here anyway. Verified by
+        execution rather than assumed: ``loop.run`` filters on ``counts_open``
+        *before* the ledger insert, so a refuted finding never becomes a cluster
+        member, and every member of a loop-built cluster is open. ``open_severity``
+        earns its keep on ``ReviewRun``'s gate lists, where a cluster assembled by
+        hand can hold a withdrawn UGLY; here it would be a distinction without a
+        reachable case. Recorded so the difference is not later read as an
+        oversight and "corrected" into a behaviour change.
         """
         return [c for c in self.new_clusters if c.severity >= Severity.BLOCKER]
 
