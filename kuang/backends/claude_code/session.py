@@ -286,7 +286,27 @@ class PanelSession:
     # --- gate: the HITL touchpoint between epochs ---
     def interactive_gate(self, result: EpochResult, run: ReviewRun) -> GateDecision:
         print(f"\n=== epoch {result.index} synthesis ===")
-        print(f"new findings: {len(result.new_findings)} | open blockers: "
+        # BOTH numbers, never one instead of the other (#33, #73's precedent): the
+        # count printed here is of new FINDINGS and the loop halts on the count of
+        # MATERIAL NEW CLUSTERS, which differ whenever the reduce folds a re-worded
+        # finding into a concept already seen — and the gap widens as the clusterer
+        # improves. Replacing one with the other would trade a contradiction for a
+        # different blind spot; the two differing is the fact an operator needs.
+        #
+        # Read off ``EpochResult.material_new_clusters`` rather than recomputed,
+        # so the number printed and the number gated on cannot drift apart.
+        #
+        # What this line CANNOT say, stated because the omission is easy to read as
+        # a bug in the halting logic: this gate runs only BETWEEN epochs —
+        # ``loop.run`` breaks before it when an epoch halts — so the epoch a run
+        # STOPS on gets no synthesis at all, and under the default
+        # ``--stall-patience 1`` that is exactly the epoch whose two counts
+        # diverge. The record is complete where the console is not: the artefact's
+        # ``raised`` block carries every epoch, the halting one included. The
+        # console half is #117, which owns this channel; making a halting epoch
+        # print is a change to the loop's shape and is not smuggled in here.
+        print(f"new findings: {len(result.new_findings)} | new material issues: "
+              f"{len(result.material_new_clusters)} | open blockers: "
               f"{result.open_blockers} | open uglies: {result.open_uglies} | "
               f"tokens: {self.tokens}")
         for f in result.new_findings:

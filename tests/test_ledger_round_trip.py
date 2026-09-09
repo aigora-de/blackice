@@ -38,12 +38,15 @@ def _cli_json(findings, ungrounded=()):
     Kept faithful deliberately. It carried neither ``about_run`` (added by #73) nor
     ``ungrounded`` (#71) while claiming to mirror the record, which is the shape
     #87 was filed for — a fixture that claims a fidelity it does not have. The
-    round trip cannot prove agreement about a key the fixture omits.
+    round trip cannot prove agreement about a key the fixture omits, and it cannot
+    prove a key is IGNORED unless the fixture carries it either — which is what
+    ``claim_class`` (#33) is doing here.
     """
     return {"findings": [
         {"persona": f.persona, "severity": f.severity.name, "title": f.title,
          "file": f.file, "line": f.line, "open": f.counts_open,
-         "about_run": f.about_run, "ungrounded": f.key in set(ungrounded)}
+         "about_run": f.about_run, "ungrounded": f.key in set(ungrounded),
+         "claim_class": f.claim_class}
         for f in findings]}
 
 
@@ -112,6 +115,42 @@ def test_a_resolved_finding_reads_as_resolved_on_both_sides(tmp_path):
 
     assert epoch_memory == "- [BLOCKER/resolved] (P2) fixed since @ a.py:3"
     assert seeded_memory == epoch_memory
+
+
+def test_the_dedup_category_reaches_the_artefact_and_not_the_line(tmp_path):
+    """#33 publishes ``claim_class``; the seed line is deliberately unchanged.
+
+    The two ends of the round trip are asked different questions, and this is where
+    the difference is asserted rather than assumed. The ARTEFACT must carry the
+    category, because the dedup signature has to be reconstructable from an
+    archived run. The LINE must not, because the seed is **prose fed to a model**,
+    not data: a seeded finding never enters ``review_run.ledger``, so a tag here
+    could not make dedup carry across runs — it would only look as though it did,
+    while spending prompt budget and moving a byte-for-byte contract.
+
+    The tag slot is also not free for it. ``ledger_line``'s tags are facts OUR CODE
+    sets — ``[about the run]`` (#73), ``[ungrounded]`` (#70) — and #73 measured what
+    putting a model-authored value where our own flags live costs. #63's marker for
+    a retry-originated finding is the natural next occupant.
+
+    MUTATION: render ``claim_class`` into ``ledger_line`` -> this and
+    ``test_the_line_still_looks_like_this`` both go red.
+    """
+    # A category that appears nowhere in the rendered line, so "did it leak?" is a
+    # question the fixture can actually answer: the obvious ``"retry"`` is a
+    # substring of the title above it, and searching for it would be killed by
+    # nothing (#87, and #103's console assertion one layer along).
+    finding = Finding("P1", "unbounded retry loop", Severity.BLOCKER,
+                      "resource-exhaustion", "runner.py", 120)
+    payload = _cli_json([finding])
+    epoch_memory, seeded_memory = _round_trip(tmp_path, [finding])
+
+    assert payload["findings"][0]["claim_class"] == "resource-exhaustion", \
+        "the artefact cannot rebuild the dedup signature without the category"
+    assert epoch_memory == "- [BLOCKER/open] (P1) unbounded retry loop @ runner.py:120", \
+        "the category leaked into the line the next panel reads"
+    assert epoch_memory == seeded_memory, \
+        "a key the artefact carries and the line ignores broke the round trip"
 
 
 def test_a_seed_whose_finding_has_no_line_key_still_loads(tmp_path):

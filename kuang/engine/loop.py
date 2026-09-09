@@ -294,8 +294,10 @@ def run(
         )
 
         # Stall accounting: only *material* (blocker/ugly) new clusters reset it.
-        material_new = [c for c in new_clusters if c.severity >= Severity.BLOCKER]
-        stall_epochs = 0 if material_new else stall_epochs + 1
+        # The predicate lives on the result the reporters also read (#33), so the
+        # number a run states and the number this gate applies cannot drift apart
+        # — ``EpochResult.material_new_clusters`` carries the rule and the reasons.
+        stall_epochs = 0 if result.material_new_clusters else stall_epochs + 1
 
         # What counts as a vote is one predicate, and it lives on the report it is
         # a fact about (#26, #72) — see ``PersonaReport.counted_vote``, which

@@ -414,6 +414,33 @@ class EpochResult:
     new_clusters: list[Cluster] = field(default_factory=list)  # new canonical issues
     halt: HaltReason | None = None
 
+    @property
+    def material_new_clusters(self) -> list[Cluster]:
+        """The new clusters the stall counter is taken on: BLOCKER or above (#33).
+
+        The loop applied this rule in a local variable nothing outside could see,
+        and ``new_clusters`` — the list it is taken from — was written here and
+        read by nothing in the package. So the number an epoch was HALTED on was
+        reported by no channel, while the epoch synthesis printed the count of new
+        *findings* beside it. Those are different numbers whenever the reduce
+        merges a re-worded finding into a concept already seen, and the gap
+        **widens as the clusterer improves**.
+
+        A property, not a second copy in a reporter, for the reason
+        ``PanelConfig.effective_quorum`` and ``PersonaReport.counted_vote`` are:
+        the number a run *states* and the number its gate *applies* must not be
+        able to drift apart. The loop reads it for the stall counter and a
+        reporter reads the same property rather than restating the threshold.
+
+        Two mechanisms separate this from ``len(new_findings)`` and they are not
+        one mechanism: the reduce folding a new signature into a seen cluster, and
+        this severity filter. A record reporting only the endpoints would make an
+        over-merging clusterer indistinguishable from a panel raising nothing that
+        matters, and only one of those is a defect in the instrument — which is
+        why the run publishes all three counts rather than the two that differ.
+        """
+        return [c for c in self.new_clusters if c.severity >= Severity.BLOCKER]
+
 
 @dataclass(frozen=True)
 class SurfaceFailure:

@@ -561,10 +561,67 @@ def main(argv: list[str] | None = None) -> int:
     # panel ran" is, without a further block on every run. Measured on agent CLI
     # 2.1.246, ONE turn means the reviewer answered from the prompt alone: see
     # ``spawn.called_no_tool`` for the rule and why nothing finer is claimed.
+    # ``verdict`` rides on the same records, for the reason ``turns`` does (#33).
+    # Quorum is a conjunct of CONVERGED, so the artefact recorded the verdicts it
+    # REFUSED to read (#26) and nothing about the ones it read: an archived run
+    # could not be asked who voted YES. It belongs here rather than in a block
+    # beside ``unresolved_verdicts`` because a vote's meaning DEPENDS on the status
+    # printed next to it — ``PersonaReport.counted_vote`` is "not did_not_review
+    # AND the word" — so the two facts a reader must join are in one record, and a
+    # second per-persona-per-epoch array would be two sections about one thing.
+    #
+    # The NORMALISED vote, never the prose: ``normalise_verdict`` resolves exactly
+    # YES and NO (#26), so this is a closed vocabulary and ``null`` is the whole of
+    # the rest. That ``null`` means THREE different things, and this field does not
+    # collapse them — which of the three is read from the siblings, never from
+    # here: a status the run knows produced no review; a status that reviewed WITH
+    # a row in ``unresolved_verdicts``, i.e. the persona wrote something that was
+    # not a vote; or a status that reviewed with no such row, i.e. it claimed no
+    # verdict at all. Recovering a categorical fact by matching prose is what #24,
+    # #26 and #30 each refused one field along.
+    #
+    # ``counted_vote`` itself is NOT emitted: it is exactly ``verdict == "YES"``
+    # over a status that reviewed, so a reader holding this record already has it.
+    # Ship the fact, not the derivation.
+    #
+    # Appended rather than inserted beside ``status``, following the surface
+    # record's rule (#74): every key an earlier artefact carried stays in the same
+    # place, so an archive diffs purely additively.
     participation = [
         {"epoch": e.index, "persona": r.persona, "status": r.status.value,
-         "findings": len(r.findings), "turns": r.turns}
+         "findings": len(r.findings), "turns": r.turns, "verdict": r.verdict}
         for e in review_run.epochs for r in e.reports]
+    # What each epoch RAISED, and the threshold the last of the three counts is
+    # read against (#33, folded #114). The stall counter is taken on the number of
+    # MATERIAL new clusters, and no channel reported it: ``EpochResult.new_clusters``
+    # was written and read by nothing, while the epoch synthesis printed the count
+    # of new FINDINGS beside it. Under the default ``--stall-patience 1`` the epoch
+    # whose two counts diverge is the halting epoch, whose synthesis never prints at
+    # all (#117) — so this record is the only account it gets.
+    #
+    # All THREE counts, not the two that differ. Two mechanisms separate the printed
+    # number from the acted-on one — the reduce folding a new signature into a seen
+    # cluster, and the severity filter — and a record carrying only the endpoints
+    # would make an over-merging clusterer indistinguishable from a panel raising
+    # nothing that matters. Only one of those is a defect in the instrument.
+    #
+    # ``stall_patience`` rides here for #82's precedent: when a run publishes the
+    # value a gate reads, it publishes the threshold it is read against, exactly as
+    # ``agreement.quorum`` sits beside ``yes_votes``. Without it a `stall` halt is
+    # not reconstructable from the record. What that still under-reports, stated
+    # rather than left to be found: the halt predicates are an ORDERED or, so a run
+    # meeting the stall condition can halt ``epoch`` or ``budget`` first — the
+    # implication runs one way only.
+    #
+    # ``stall_epochs`` is deliberately NOT emitted: it is ``0 if material else
+    # prev + 1`` over this array, so a reader holding the record can recompute it.
+    # Ship the counts, not the running total.
+    raised = {
+        "stall_patience": args.stall_patience,
+        "epochs": [{"epoch": e.index, "new_findings": len(e.new_findings),
+                    "new_clusters": len(e.new_clusters),
+                    "material_new_clusters": len(e.material_new_clusters)}
+                   for e in review_run.epochs]}
     # What the panel was GIVEN (#69), one record per epoch, in the order they were
     # gathered. Known before any subprocess exists, so it is reported in a dry run
     # too — the opposite of ``turns``, where 0 means the runtime did not say, and
@@ -797,6 +854,14 @@ def main(argv: list[str] | None = None) -> int:
         # never ran. Counts only: per-persona verdicts remain #33's.
         "agreement": {"quorum": panel.effective_quorum, "roster": len(personas),
                       **agreement, "degenerate": degenerate},
+        # The other input to the halt, beside the one above (#33). ``agreement`` is
+        # what a CONVERGED verdict rests on; this is what a STALL one does — the
+        # counts each epoch raised and the patience they are read against. Together
+        # they are the answer to "why did this run stop?", asked of the artefact
+        # alone. Always present, for the reason ``agreement`` is: an absent key
+        # makes no claim, and a run read back cold cannot otherwise tell an epoch
+        # that raised nothing from one written before this field existed.
+        "raised": raised,
         # What the panel could DO: the policy the run actually used, the granted
         # tools the deny-list cancelled, and the calls the agent was refused (#67).
         # The policy is recorded beside the verdict because "unavailable: []" is a
@@ -844,10 +909,44 @@ def main(argv: list[str] | None = None) -> int:
         # because this artefact is the INPUT to a later run's ``--prior-findings``
         # — without it a contaminated run seeds the next one clean. Computed by the
         # same join ``on_epoch`` uses, so the two cannot disagree.
+        # ``claim_class`` is the fourth component of ``Finding.key``, the Layer-1
+        # dedup signature — so it decides whether a finding is new material, whether
+        # the stall counter resets, and therefore when the loop halts. It reached
+        # the reduce PROMPT and never the artefact, so an archived run could not be
+        # asked why two findings merged. With it, file + line-bucket + claim_class +
+        # severity make the signature exactly recomputable from this array alone.
+        #
+        # Published, never READ BACK by our own code. #73 measured what happens
+        # otherwise: excluding ``claim_class == "meta"`` from the ledger turned a run
+        # that halts ``escalate_ugly`` on one open UGLY into one that halts
+        # ``converged`` with none — a consumer-side match on model data unlatches the
+        # circuit-breaker. Publishing is not reading.
+        #
+        # Unbounded, deliberately and not by inheritance. Bounding it would move
+        # ``Finding.key`` and therefore the stall counter, which is a halting change
+        # and not this issue's to make; bounding it at THIS site instead would break
+        # the reconstruction above, since the signature is recomputable only while
+        # the published string is the one that was hashed. Measured, the longest
+        # claim_class in the probe corpus is 38 characters. The class — this field,
+        # ``title``, and ``evidence`` — is #118, with the measurement on it.
+        #
+        # THE RULE FOR WHAT JUSTIFIES A KEY HERE, written down because the next two
+        # issues both want one. A key belongs in this array when it is (a) a
+        # per-FINDING fact, not one about the run, the epoch or the call, each of
+        # which has its own section above; (b) not derivable from the other keys in
+        # the record, or from an object the reader already has; and (c) load-bearing
+        # for a claim the artefact makes about itself — an input to a control
+        # decision, so that decision is auditable, or provenance a later run reads.
+        # ``claim_class`` qualifies on all three, as ``about_run`` (#73) and
+        # ``ungrounded`` (#71) did. A key that merely repeats what a persona said,
+        # with no control decision resting on it, belongs in the ledger and not in a
+        # second copy of it. #112 (``evidence``) must answer (c); #63's per-finding
+        # "a retry produced this" passes all three on its face.
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open,
-             "about_run": f.about_run, "ungrounded": key in ungrounded}
+             "about_run": f.about_run, "ungrounded": key in ungrounded,
+             "claim_class": f.claim_class}
             for key, f in review_run.ledger.items()],
         # Canonical clusters (the reduce/view). With the default identity reduce
         # this is one cluster per finding; with --semantic-dedup it collapses
