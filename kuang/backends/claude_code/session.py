@@ -305,6 +305,13 @@ class PanelSession:
         # ``raised`` block carries every epoch, the halting one included. The
         # console half is #117, which owns this channel; making a halting epoch
         # print is a change to the loop's shape and is not smuggled in here.
+        #
+        # That rejection is MEASURED, not doctrinal. Implementing it — calling the
+        # gate on the halting epoch as well — turns
+        # ``test_a_multi_epoch_dry_run_still_stops_after_one_epoch`` red, because a
+        # dry run halts on epoch 1 and would then print a synthesis for a panel
+        # nobody spawned. That test's assertion is "the gate was never reached",
+        # and it is #72's rule exactly: a line must not claim what did not happen.
         print(f"new findings: {len(result.new_findings)} | new material issues: "
               f"{len(result.material_new_clusters)} | open blockers: "
               f"{result.open_blockers} | open uglies: {result.open_uglies} | "
