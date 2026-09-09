@@ -135,6 +135,14 @@ def test_the_dedup_category_reaches_the_artefact_and_not_the_line(tmp_path):
 
     MUTATION: render ``claim_class`` into ``ledger_line`` -> this and
     ``test_the_line_still_looks_like_this`` both go red.
+
+    **This is a guard, not a regression test, and it passes on ``main``** — measured,
+    not assumed. Main already has the property it names (the line ignores the
+    category), and the artefact half is satisfied by ``_cli_json``, which is this
+    module's own mirror of the CLI array rather than the CLI. It goes red under the
+    REJECTED option, never under the defect; the artefact key itself is held by
+    ``cli/test_halt_input_reporting.py``. Recorded here because a test that dies to
+    nothing is either a gap or needs justifying, and this one needs justifying.
     """
     # A category that appears nowhere in the rendered line, so "did it leak?" is a
     # question the fixture can actually answer: the obvious ``"retry"`` is a
