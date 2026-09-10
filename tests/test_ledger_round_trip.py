@@ -28,8 +28,9 @@ from types import SimpleNamespace
 import pytest
 
 from kuang.backends.claude_code import PanelSession, load_prior_findings
+from kuang.cli import EVIDENCE_BOUND
 from kuang.engine import (Finding, PersonaReport, PersonaStatus, ReviewSpec,
-                          Severity)
+                          Severity, bounded_diagnosis)
 
 
 def _cli_json(findings, ungrounded=()):
@@ -40,13 +41,17 @@ def _cli_json(findings, ungrounded=()):
     #87 was filed for — a fixture that claims a fidelity it does not have. The
     round trip cannot prove agreement about a key the fixture omits, and it cannot
     prove a key is IGNORED unless the fixture carries it either — which is what
-    ``claim_class`` (#33) is doing here.
+    ``claim_class`` (#33) and ``evidence`` (#112) are doing here. The bound rides
+    on the mirror too: the CLI publishes the value it bounds, so a fixture
+    publishing the raw string would mirror a record the CLI never writes.
     """
     return {"findings": [
         {"persona": f.persona, "severity": f.severity.name, "title": f.title,
          "file": f.file, "line": f.line, "open": f.counts_open,
          "about_run": f.about_run, "ungrounded": f.key in set(ungrounded),
-         "claim_class": f.claim_class}
+         "claim_class": f.claim_class,
+         "evidence": bounded_diagnosis(f.evidence, limit=EVIDENCE_BOUND),
+         "evidence_chars": len(f.evidence)}
         for f in findings]}
 
 
@@ -159,6 +164,71 @@ def test_the_dedup_category_reaches_the_artefact_and_not_the_line(tmp_path):
         "the category leaked into the line the next panel reads"
     assert epoch_memory == seeded_memory, \
         "a key the artefact carries and the line ignores broke the round trip"
+
+
+def test_the_evidence_reaches_the_artefact_and_not_the_line(tmp_path):
+    """#112 publishes ``evidence``; the seed line is deliberately unchanged.
+
+    The same question ``claim_class`` answered above, on a field with a
+    compounding cost rather than a merely useless one. The ARTEFACT carries the
+    persona's "what I checked", because a run read back cold has to record the
+    check and not only the claim. The LINE must not: ``epoch_summary`` and
+    ``load_prior_findings`` share this renderer, so a median ~355 characters of
+    model prose about the surface would enter the next epoch's prompt AND a later
+    run's seed — one failed call's fabrication handed to personas that did not
+    fail (#71), through the trust boundary #63 owns.
+
+    MUTATION: render ``evidence`` into ``ledger_line`` -> this and
+    ``test_the_line_still_looks_like_this`` both go red.
+
+    **A guard, not a regression test, and it passes on ``main``** — measured, like
+    its sibling above. Main has the line half already; the artefact half is held by
+    ``cli/test_evidence_reporting.py``, and here by ``_cli_json``'s mirror. What is
+    load-bearing is that the two ends stay ASYMMETRIC and the round trip survives
+    it.
+    """
+    # Prose that shares no substring with the rendered line, so "did it leak?" is a
+    # question the fixture can answer (#87).
+    finding = Finding("P1", "unbounded retry loop", Severity.BLOCKER,
+                      "resource-exhaustion", "runner.py", 120,
+                      evidence="opened the queue module and counted the wakeups")
+    payload = _cli_json([finding])
+    epoch_memory, seeded_memory = _round_trip(tmp_path, [finding])
+
+    assert payload["findings"][0]["evidence"] == \
+        "opened the queue module and counted the wakeups", \
+        "the artefact records the claim and not the check"
+    assert payload["findings"][0]["evidence_chars"] == len(finding.evidence)
+    assert epoch_memory == "- [BLOCKER/open] (P1) unbounded retry loop @ runner.py:120", \
+        "model prose about the surface leaked into the line the next panel reads"
+    assert epoch_memory == seeded_memory, \
+        "a key the artefact carries and the line ignores broke the round trip"
+
+
+def test_a_seed_from_an_artefact_carrying_evidence_reads_identically(tmp_path):
+    """Published, never read back: the seed must ignore the key, not consume it.
+
+    ``load_prior_findings`` reads eight keys and ``evidence`` is not one of them.
+    That is the boundary #73 measured the cost of crossing — our own code reading
+    model-authored data — and it is asserted as an equality between a seed taken
+    from an artefact WITH the key and one taken from an artefact without it, so a
+    later reader that starts consuming it cannot do so silently.
+    """
+    finding = Finding("P1", "unbounded retry loop", Severity.BLOCKER, "retry",
+                      "runner.py", 120, evidence="read every caller of enqueue()")
+    with_key = _cli_json([finding])
+    without_key = {"findings": [
+        {k: v for k, v in f.items() if not k.startswith("evidence")}
+        for f in _cli_json([finding])["findings"]]}
+    assert "evidence" in with_key["findings"][0], "the fixture cannot express the axis"
+
+    paths = []
+    for name, payload in (("with.json", with_key), ("without.json", without_key)):
+        path = tmp_path / name
+        path.write_text(json.dumps(payload))
+        paths.append(path)
+
+    assert load_prior_findings(paths[0]) == load_prior_findings(paths[1])
 
 
 def test_a_seed_whose_finding_has_no_line_key_still_loads(tmp_path):

@@ -485,9 +485,12 @@ class SurfaceFailure:
     an artefact cold could not otherwise tell a diagnosis that fitted from one
     written before this field existed.
 
-    ``Finding.evidence`` gets the marker and no such field, because it reaches no
-    artefact at all: a truncation flag cannot be emitted for a field that is not
-    emitted. That asymmetry is #112, not an oversight here.
+    ``Finding.evidence`` carried the marker and no such field while it reached no
+    artefact at all — a truncation flag cannot be emitted for a field that is not
+    emitted. #112 closed that asymmetry from the other end: the field is published
+    now, and its structural half is computed where it is published (the CLI's
+    ``evidence_chars``) rather than stored here, because the bound that applies to
+    the published value is applied there too. This vocabulary is unchanged by it.
     """
 
     epoch: int

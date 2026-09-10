@@ -37,7 +37,33 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
 from kuang.engine import (HaltingSet, HaltReason, PanelConfig, PersonaReport,
-                          ReviewSpec, run)
+                          ReviewSpec, bounded_diagnosis, run)
+
+
+# How much of a persona's ``evidence`` the artefact publishes (#112), and the
+# principle it comes from, because #118 owns the class rule for the three
+# model-authored strings and a constant without a principle is the patched table
+# this repo refuses.
+#
+#     A bound on model prose that is PUBLISHED sits above the measured
+#     distribution of the field it bounds, so it fires on an outlier and never on
+#     an ordinary review; the measurement is recorded beside the constant; the
+#     marker rides on top of the bound; and the pre-bound length is emitted so the
+#     loss is exactly knowable.
+#
+# Measured 2026-09-10 by parsing the 19 probe corpus envelopes through
+# ``parse_findings``, n=51 findings (44 of them from the seven live captures):
+# ``evidence`` runs min 0, median 346, max **1038**. Reaching for the nearest
+# constant would have been wrong in both directions and by measurement rather than
+# by taste — ``DIAGNOSIS_BOUND``'s 400 truncates 19 of the 44 live findings, 43% of
+# an ordinary run, and ``_RAW_VALUE_CAP``'s 120 cuts the median to a third. A rule
+# that fires on a healthy run is the mirror image of the defect it prevents.
+#
+# What it under-reports, stated rather than left to be found: a reply longer than
+# this loses its tail, and says so — the marker names the true length and
+# ``evidence_chars`` carries it as a number, so the loss is reported rather than
+# swallowed. Nothing in the corpus reaches it.
+EVIDENCE_BOUND = 1200
 
 
 def _turn_note(report: PersonaReport) -> str:
@@ -943,17 +969,68 @@ def main(argv: list[str] | None = None) -> int:
         # ``claim_class`` qualifies on all three, as ``about_run`` (#73) and
         # ``ungrounded`` (#71) did. A key that merely repeats what a persona said,
         # with no control decision resting on it, belongs in the ledger and not in a
-        # second copy of it. #112 (``evidence``) must answer (c); #63's per-finding
-        # "a retry produced this" passes all three on its face.
+        # second copy of it. #63's per-finding "a retry produced this" passes all
+        # three on its face.
+        #
+        # ``evidence`` is the persona's own "what I checked and found", asked for
+        # verbatim by the output contract and, until #112, thrown away at every
+        # report boundary — seven writers, no reader. It answers (c) on the
+        # PROVENANCE half and not the control half, because no control decision
+        # rests on it: it is not in ``Finding.key``, not in the halt gate, not in
+        # quorum. Two limbs, both about what a reader does with the record:
+        #
+        #   * ADJUDICATION. A finding is a hypothesis until verified against source,
+        #     and the human adjudicates from this artefact. Without ``evidence`` it
+        #     records the CLAIM and not the CHECK, so the one operation the loop
+        #     requires of its own record cannot be started from it.
+        #   * THE INSTRUMENT'S DIAGNOSIS. For a finding with ``about_run`` set this
+        #     is the only record of WHY a reply could not be read — the title gives
+        #     the class of failure, this gives the instance. It is also what makes
+        #     #111's truncation marker observable: six of that fix's seven marked
+        #     sites are this field, and a marker on a field no channel emits is a
+        #     fix nobody can watch work.
+        #
+        # PUBLISHED, NEVER READ BACK, on #73's measurement — the same sentence that
+        # governs ``claim_class`` one key up. It stays out of ``Finding.key``, out of
+        # every predicate here, and out of the probe invariants' branching.
+        #
+        # THE ARTEFACT IS THE ONLY CHANNEL, and both refusals are load-bearing.
+        # Not ``report.ledger_line``: cross-epoch memory and the ``--prior-findings``
+        # seed share that renderer, so evidence there would put a median ~355
+        # characters of model prose about the surface into the next epoch's prompt
+        # and into a later run's seed — #71's contamination compounding, and #63's
+        # trust boundary, neither of them this key's to widen. Not the console
+        # either, and the reason is geometric rather than aesthetic: the console
+        # prints only open uglies and blockers, so it would carry the REVIEW prose
+        # while still not showing the parser's diagnoses, which are NOTEs. What that
+        # under-reports is stated rather than hidden — an operator reading only the
+        # human-readable half still cannot read a diagnosis, and the run's own
+        # account of itself is #117.
+        #
+        # Bounded HERE, which is safe here and was not for ``claim_class``: this
+        # field is no part of the dedup signature, so a cap moves no key, no cluster
+        # and no stall counter. ``evidence_chars`` is the length BEFORE the bound —
+        # ``surface_lost.detail_chars``' shape exactly (#111), so "was this cut" is
+        # ``evidence_chars > EVIDENCE_BOUND``: exactly knowable, and never recovered
+        # by matching the marker's wording. Always present, never optional; the
+        # measured minimum is zero characters, and an absent key could not tell a
+        # persona that said nothing from a run that declined to publish it.
         "findings": [
             {"persona": f.persona, "severity": f.severity.name, "title": f.title,
              "file": f.file, "line": f.line, "open": f.counts_open,
              "about_run": f.about_run, "ungrounded": key in ungrounded,
-             "claim_class": f.claim_class}
+             "claim_class": f.claim_class,
+             "evidence": bounded_diagnosis(f.evidence, limit=EVIDENCE_BOUND),
+             "evidence_chars": len(f.evidence)}
             for key, f in review_run.ledger.items()],
         # Canonical clusters (the reduce/view). With the default identity reduce
         # this is one cluster per finding; with --semantic-dedup it collapses
         # same-concept findings while every raw finding stays under "findings".
+        #
+        # ``members`` is a THINNER projection of a finding published above in full,
+        # which is why it carries neither ``about_run``, ``ungrounded``,
+        # ``claim_class`` nor ``evidence`` (#112): a reader wanting any of those
+        # reads the ledger entry rather than a second, partial copy of it.
         "clusters": [
             {"title": c.title, "severity": c.severity.name, "open": c.counts_open,
              "size": len(c.members), "about_run": c.about_run,
