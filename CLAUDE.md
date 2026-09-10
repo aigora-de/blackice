@@ -113,10 +113,12 @@ Keep examples generic (money movement, migrations, auth, data integrity). When i
 doubt, genericise.
 
 **A run artefact is not publishable by default.** The `--- JSON ---` block and the
-console report carry unbounded model-authored strings written *after reading the
-review surface* — `title`, `claim_class` (#33), and `evidence` if #112 publishes it —
-and the output contract asks each persona for "what you checked and found", which
-invites quoting the source. An artefact therefore inherits the trust level of the
+console report carry model-authored strings written *after reading the review
+surface* — `title` and `claim_class` (#33), both unbounded, and `evidence`, which
+#112 publishes bounded at `EVIDENCE_BOUND` — and the output contract asks each
+persona for "what you checked and found", which invites quoting the source. The
+bound shrinks the aperture and **sanitises nothing**: a 1200-character quotation of
+somebody's source is still a quotation of somebody's source. An artefact therefore inherits the trust level of the
 surface it reviewed:
 - an artefact from a **probe fixture** (`ledger-repo`, `golden-repo`, `sole-repo`,
   the synthetic corpus) may be quoted freely — those surfaces are generic by
