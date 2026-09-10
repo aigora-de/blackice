@@ -178,8 +178,12 @@ def test_the_evidence_reaches_the_artefact_and_not_the_line(tmp_path):
     run's seed — one failed call's fabrication handed to personas that did not
     fail (#71), through the trust boundary #63 owns.
 
-    MUTATION: render ``evidence`` into ``ledger_line`` -> this and
-    ``test_the_line_still_looks_like_this`` both go red.
+    MUTATION, measured rather than predicted: rendering ``evidence`` into
+    ``ledger_line`` turns this red, and the seed-equality test below with it. It
+    does NOT turn ``test_the_line_still_looks_like_this`` red — that fixture's
+    finding carries no evidence, so the widened renderer has nothing to append.
+    Which is the point of a fixture that supplies some: the literal-line test
+    cannot see this axis at all.
 
     **A guard, not a regression test, and it passes on ``main``** — measured, like
     its sibling above. Main has the line half already; the artefact half is held by

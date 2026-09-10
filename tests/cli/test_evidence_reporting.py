@@ -256,7 +256,7 @@ def test_evidence_within_the_bound_is_published_whole_and_unmarked(
         "a run that cut nothing must not report a cut anywhere"
 
 
-def test_the_bound_sits_above_the_measured_distribution(sourced_repo):
+def test_the_bound_sits_above_the_measured_distribution():
     """The bound is derived from a measurement, not borrowed from a neighbour.
 
     GREEN ON MAIN, and labelled rather than left to look like a regression test:
