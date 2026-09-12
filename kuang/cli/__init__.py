@@ -36,8 +36,9 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           discard_note, load_personas,
                                           load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
-from kuang.engine import (HaltingSet, HaltReason, PanelConfig, PersonaReport,
-                          ReviewSpec, bounded_diagnosis, run)
+from kuang.engine import (Finding, HaltingSet, HaltReason, PanelConfig,
+                          PersonaReport, ReviewSpec, Severity,
+                          bounded_diagnosis, run)
 
 
 # How much of a persona's ``evidence`` the artefact publishes (#112), and the
@@ -235,6 +236,50 @@ def _coverage_record(rec: LensCoverage, report: PersonaReport | None) -> dict:
             "how": "injected" if rec.injected else "keyword",
             "reviewed": report is not None and report.status.reviewed,
             "opened_source": opened}
+
+
+def _finding_record(f: Finding, *, ledger_entry: bool = False,
+                    ungrounded: bool = False) -> dict:
+    """One finding as the artefact publishes it: the projection two arrays share.
+
+    ``findings[]`` is the ledger; ``suppressed[]`` is the claim the ledger refused
+    because another finding already held its signature (#119). They publish the
+    same facts about a finding and must not drift apart — a reader asking whether a
+    drop was a collision or an ordinary re-sighting is comparing these two records
+    key by key, and a fact present on one and missing from the other would make
+    that comparison read as a difference between the findings.
+
+    ``ledger_entry`` is the discriminator and ``ungrounded`` is only a value:
+    which keys a record carries is one decision and what one of them says is
+    another, and a single tri-state parameter standing for both would hand a
+    caller wanting ``ungrounded`` on a suppressed record the ``open`` key as well,
+    silently.
+
+    The two keys the **ledger** array alone carries are the two that are facts
+    about the entry rather than about the finding:
+
+    * ``open`` — ``loop.run`` filters on ``counts_open`` *before* the insert, so a
+      suppressed claim was open by construction and publishing it would ship a
+      constant (the ``findings`` key rule, (b));
+    * ``ungrounded`` — ``memory.ungrounded_keys`` is keyed by **signature**, so on a
+      suppressed claim it would state the provenance of the finding that HELD the
+      key rather than its own. What is true of the dropped claim is in the
+      participation record for its persona and epoch, which the artefact carries.
+
+    Key order is fixed and is the order earlier artefacts already carried, so an
+    archive diffs purely additively (#74).
+    """
+    record: dict = {"persona": f.persona, "severity": f.severity.name,
+                    "title": f.title, "file": f.file, "line": f.line}
+    if ledger_entry:
+        record["open"] = f.counts_open
+    record["about_run"] = f.about_run
+    if ledger_entry:
+        record["ungrounded"] = ungrounded
+    record["claim_class"] = f.claim_class
+    record["evidence"] = bounded_diagnosis(f.evidence, limit=EVIDENCE_BOUND)
+    record["evidence_chars"] = len(f.evidence)
+    return record
 
 
 def _surface_note(record: SurfaceRecord | None) -> str:
@@ -549,6 +594,71 @@ def main(argv: list[str] | None = None) -> int:
                   "looked and agreed")
     for f in review_run.open_uglies + review_run.open_blockers:
         print(f"  [{f.severity.name}] ({f.persona}) {f.title} @ {f.file}:{f.line}")
+    # Claims the ledger refused to a collision (#119). An EXCEPTION section, like
+    # #24's and #26's below: it prints only when something was dropped, so on a
+    # healthy run its absence is itself a complete claim and no line about lost
+    # claims appears on a run that lost none.
+    #
+    # Two lines per claim — the one that was dropped, then the entry that displaced
+    # it — because a collision is only legible beside what it collided with: the
+    # pair agree on severity and line-bucket and differ exactly where the encoding
+    # let them merge, and a reader seeing one line alone cannot tell this from the
+    # coarse dedup working as designed.
+    #
+    # Locations and categories print through ``repr``, and the two have different
+    # reasons — stated separately, because one of them was written here as
+    # covering both and did not.
+    #
+    # The LOCATION, because of the second collision route: a persona writing the
+    # string ``"None"`` where another finding has no file at all. Rendered bare
+    # those are the same four characters, so the section would show two identical
+    # locations for findings that differ — reading as exactly the re-sighting it
+    # is not.
+    #
+    # The CATEGORY, because it is the field a collision is CRAFTED in and it is
+    # printed on the line that reports the crafting. ``claim_class`` is always a
+    # string (``contract.py`` coerces it), so the ``None`` route above cannot
+    # reach it; what reaches it is a newline, a carriage return or an escape
+    # sequence, each of which lets the persona being reported on forge an extra
+    # entry, overwrite this one, or recolour the section. ``repr`` escapes all
+    # three. The title and the persona name are NOT quoted here, and that is not
+    # an oversight: the same values print unquoted wherever this tool prints a
+    # finding, so quoting them here alone would imply a guarantee the report does
+    # not make. That whole class is filed separately.
+    #
+    # No ``evidence`` here: #112's console refusal stands. The artefact carries the
+    # persona's working, and the console carries the loss.
+    dropped = [(e.index, s) for e in review_run.epochs for s in e.suppressed]
+    if dropped:
+        print(f"\nsuppressed findings: {len(dropped)} — each hashed to a signature "
+              f"the ledger already held, so it was never recorded")
+        for index, s in dropped:
+            lost, held = s.finding, s.holder
+            # A ruin-class claim dropped is the one case where the loss can change
+            # what the run is FOR. On the two encoding routes the holder is an UGLY
+            # too, so the breaker latches anyway; on a truncated-digest collision it
+            # need not be, and then a run can halt without the circuit-breaker ever
+            # seeing this claim. #125 closes that route; this says so wherever it
+            # happens rather than leaving it to be inferred.
+            ruin = ""
+            if lost.severity is Severity.UGLY:
+                # What was lost, never a claim about what the run DID. On both
+                # encoding routes the holder carries the same severity — severity
+                # is the trailing component and contains no separator — so the
+                # breaker latched on it and only this claim went unseen. Saying
+                # "the breaker never saw this" there would be true of the claim
+                # and false of the run, which is the wrong half to leave an
+                # operator with. On the truncated-digest route (#125) the holder
+                # can be anything, and then nothing latched at all.
+                ruin = ("  — UGLY: the breaker latched on the entry that "
+                        "displaced it"
+                        if held.severity is Severity.UGLY else
+                        "  — UGLY: the breaker never saw this claim")
+            print(f"  (epoch {index}) [{lost.severity.name}] ({lost.persona}) "
+                  f"{lost.title} @ {lost.file!r}:{lost.line} "
+                  f"[{lost.claim_class!r}]{ruin}")
+            print(f"      signature already held by ({held.persona}) {held.title} "
+                  f"@ {held.file!r}:{held.line} [{held.claim_class!r}]")
     # Severities the panel emitted that did not resolve to a level (#24). Reported
     # rather than absorbed: the finding was escalated, not read, and the operator
     # is the one who decides what the persona meant. Silent when there are none.
@@ -642,11 +752,35 @@ def main(argv: list[str] | None = None) -> int:
     # ``stall_epochs`` is deliberately NOT emitted: it is ``0 if material else
     # prev + 1`` over this array, so a reader holding the record can recompute it.
     # Ship the counts, not the running total.
+    #
+    # ``resighted`` is the third state an emitted finding can end in (#119), and it
+    # completes a PARTITION: every open finding an epoch raised was inserted,
+    # recognised as one the ledger already held, or dropped by a collision. That is
+    # what makes the counts checkable rather than merely published — a reader adds
+    # the three and compares them with ``participation[].findings``, which is
+    # counted from the reports and not from the insert, so a finding lost silently
+    # at the ledger shows up as an arithmetic failure. #61's rule ("a reduce must
+    # partition the findings") one layer down, at the layer that actually drops
+    # things.
+    #
+    # Counted at the insert rather than derived by subtraction here: derived, it
+    # would be a restatement of the other two and could not disagree with them,
+    # which is exactly the property that makes the cross-check worth having. The
+    # one case where the two differ is what pins it —
+    # ``test_a_refuted_finding_is_neither_suppressed_nor_counted``, because a
+    # refuted finding is counted in ``participation`` and reaches none of the
+    # three. Which is also the precondition on the cross-check above: it is an
+    # EQUALITY only while nothing is refuted before the insert, and the CLI wires
+    # no adjudicator. Wire one and a reader must read it as ``>=``.
+    # What it does NOT separate, stated rather than left to be found: a re-sighting
+    # by a second persona and a re-sighting by the same one, and a merge that
+    # happened before the values were hashed at all (#126 is the sharpest case).
     raised = {
         "stall_patience": args.stall_patience,
         "epochs": [{"epoch": e.index, "new_findings": len(e.new_findings),
                     "new_clusters": len(e.new_clusters),
-                    "material_new_clusters": len(e.material_new_clusters)}
+                    "material_new_clusters": len(e.material_new_clusters),
+                    "resighted": e.resighted}
                    for e in review_run.epochs]}
     # What the panel was GIVEN (#69), one record per epoch, in the order they were
     # gathered. Known before any subprocess exists, so it is reported in a dry run
@@ -1015,14 +1149,50 @@ def main(argv: list[str] | None = None) -> int:
         # by matching the marker's wording. Always present, never optional; the
         # measured minimum is zero characters, and an absent key could not tell a
         # persona that said nothing from a run that declined to publish it.
-        "findings": [
-            {"persona": f.persona, "severity": f.severity.name, "title": f.title,
-             "file": f.file, "line": f.line, "open": f.counts_open,
-             "about_run": f.about_run, "ungrounded": key in ungrounded,
-             "claim_class": f.claim_class,
-             "evidence": bounded_diagnosis(f.evidence, limit=EVIDENCE_BOUND),
-             "evidence_chars": len(f.evidence)}
-            for key, f in review_run.ledger.items()],
+        "findings": [_finding_record(f, ledger_entry=True,
+                                     ungrounded=key in ungrounded)
+                     for key, f in review_run.ledger.items()],
+        # The claims the ledger REFUSED, and the reason this key exists (#119).
+        # ``Finding.key`` joins four values, two of them written by the persona,
+        # through an encoding that is ambiguous (#125) — so two findings that are
+        # not the same finding can hash alike, and the second one lost its place
+        # to a claim it has nothing to do with. It reached no ledger, no artefact
+        # and no count, and nothing anywhere said so: a collision was
+        # indistinguishable from the coarse dedup working exactly as designed.
+        #
+        # NAMED, not counted. A count makes the loss legible and still leaves the
+        # deletion successful on the record — and a crafted collision is an attempt
+        # to delete a claim. A human adjudicates from this artefact and cannot
+        # adjudicate what they cannot read, so the whole claim is published: the
+        # persona, what it said, and the components that were hashed, which is what
+        # lets a reader recompute the signature and see that this was a collision
+        # rather than a re-sighting. No key here is a kind the ledger array does not
+        # already publish, and on a healthy run it publishes nothing at all.
+        #
+        # Unconditional, for the reason ``agreement`` and ``panel.discarded`` are:
+        # an absent key makes no claim, and a reader coming to an artefact cold
+        # cannot otherwise tell a run that dropped nothing from one written before
+        # this field existed.
+        #
+        # The HOLDER is not published, and that is the one include/exclude
+        # decision worth stating rather than the one to skip: it is derivable, by
+        # recomputing the signature over the components published here and
+        # matching it against ``findings[]`` — which is exactly what
+        # ``check_invariants.py`` does to prove a reported suppression is a
+        # collision. Ship the fact, not the derivation. The console prints the
+        # holder because a reader there cannot recompute a digest.
+        #
+        # KEPT HERE, NOT IN THE LEDGER, and the cost is stated rather than hidden:
+        # this claim counts toward no open-blocker or cluster total and resets no
+        # stall counter, so a cross-epoch collision can still bring a halt forward.
+        # Giving it a ledger place means giving it a distinct key, which is #125
+        # wearing a different hat. The seed is a third channel again (#112): a
+        # dropped claim is deliberately NOT rendered into ``ledger_line``, because
+        # ``epoch_summary`` and ``load_prior_findings`` share that renderer and a
+        # later panel would be handed a claim this run's own record says it did not
+        # keep.
+        "suppressed": [{"epoch": e.index, **_finding_record(s.finding)}
+                       for e in review_run.epochs for s in e.suppressed],
         # Canonical clusters (the reduce/view). With the default identity reduce
         # this is one cluster per finding; with --semantic-dedup it collapses
         # same-concept findings while every raw finding stays under "findings".

@@ -12,7 +12,8 @@ asserted-in-prose — see ``tests/engine/test_backend_agnostic.py``.
 
 from .findings import (AFFIRMATIVE_VERDICT, DIAGNOSIS_BOUND, Cluster,
                        EpochResult, Finding, PersonaReport, PersonaStatus,
-                       ReviewRun, Severity, SurfaceFailure, bounded_diagnosis)
+                       ReviewRun, Severity, Suppression, SurfaceFailure,
+                       bounded_diagnosis)
 from .halting import HaltingSet, HaltReason
 from .loop import PanelConfig, ReviewSpec, run
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
@@ -24,6 +25,7 @@ __all__ = [
     "GateDecision", "GatherSurface", "HaltReason", "HaltingSet", "HumanGate",
     "PanelConfig", "PersonaReport", "PersonaStatus", "Reduce", "ReviewRun",
     "ReviewSpec",
-    "ReviewSurface", "Severity", "SpawnPersona", "SurfaceFailure",
+    "ReviewSurface", "Severity", "SpawnPersona", "Suppression",
+    "SurfaceFailure",
     "bounded_diagnosis", "run",
 ]
