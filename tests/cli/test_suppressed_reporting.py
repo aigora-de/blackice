@@ -155,6 +155,14 @@ def _suppression_block(out: str) -> list[str]:
 
     Anchored to the header rather than searched for across the console, because
     a title, a path or a category can carry any word this section uses (#87).
+
+    **What this anchor cannot do, stated because it reads stronger than it is:**
+    the lines it collects are model-authored in part, so a persona writing a
+    newline into its own title produces a line this helper either swallows (if it
+    lands indented) or truncates the block on. The console printing a title and a
+    persona name unescaped is a repo-wide class and is filed separately; the
+    category is quoted at the print site, and every sentinel here is newline-free,
+    so within these fixtures the anchor means exactly what it says.
     """
     lines = _console(out).splitlines()
     starts = [i for i, line in enumerate(lines) if line.startswith(_HEADER)]
@@ -290,6 +298,43 @@ def test_the_console_can_tell_the_none_route_apart_from_a_re_sighting(
         f"the holder's absent file is rendered as though it were the string: {held!r}"
 
 
+def test_a_category_cannot_forge_a_line_in_this_section(
+        sourced_repo, monkeypatch, capsys):
+    """The field a collision is crafted in is printed on the line reporting it.
+
+    ``claim_class`` is model-authored, and it is one of the two components a
+    persona manipulates to force the collision in the first place. Printed bare, a
+    newline in it produces an entry the header does not count, a carriage return
+    overwrites this line in a terminal, and an escape sequence recolours the
+    section — so the party being reported on rewrites the report of its own
+    deletion. Quoting closes all three.
+
+    Asserted here rather than described beside the print: the comment there
+    claimed this quoting before the code did it, which is a documented guarantee
+    the code does not provide — #79's shape, one document along, and the resident
+    panel caught it on this diff.
+
+    The forged tail is appended to BOTH categories so the pair still collides;
+    otherwise the fixture silently stops being a collision at all and the test
+    passes for the wrong reason.
+
+    MUTATION: print the category bare -> red.
+    """
+    tail = "\n  (epoch 1) [NOTE] (Sentinel) nothing to see @ 'x.py':1 ['x']"
+    holder = _finding(title=_KEPT, file="a.py|1", claim_class="correctness" + tail)
+    lost = _finding(title=_LOST, file="a.py", claim_class="1|correctness" + tail)
+    _stub(monkeypatch, {"Analyst": [_contract("NO", [holder])],
+                        "Critic": [_contract("NO", [lost])]})
+    _run(sourced_repo)
+    block = _suppression_block(capsys.readouterr().out)
+
+    assert block[0].startswith(f"{_HEADER} 1"), \
+        f"the fixture did not produce exactly one dropped claim: {block!r}"
+    assert len(block) == 3, f"the category forged extra lines: {block!r}"
+    assert "nothing to see" in block[1], "the fixture cannot express the axis"
+    assert "\\n" in block[1], "the newline was printed rather than escaped"
+
+
 def test_a_suppressed_ruin_class_claim_is_marked_on_the_console(
         sourced_repo, monkeypatch, capsys):
     """The breaker never saw it, and the operator is told so in those terms.
@@ -308,6 +353,45 @@ def test_a_suppressed_ruin_class_claim_is_marked_on_the_console(
     assert block, "the console says nothing about a claim the run dropped"
     assert "UGLY" in block[1] and "breaker" in block[1], \
         f"a ruin-class claim was dropped without a word about the gate: {block[1]!r}"
+
+
+def test_every_dropped_claim_is_named_in_order_across_epochs(
+        sourced_repo, monkeypatch, capsys):
+    """Two collisions in one epoch, and a third in the next.
+
+    A single-suppression fixture cannot express three things this report makes
+    claims about: an array or a section that keeps only the FIRST entry, and an
+    order that is not epoch-major-then-report-order. Each of those would survive
+    every other test in this module, because with one dropped claim per run they
+    are all the same output.
+
+    CLAUDE.md's bar is to mutate every line you PRINT, not only every rule you
+    compute — and a second claim is what makes the printed lines distinguishable
+    from each other at all.
+    """
+    kept2, lost2 = "ZQX-holder-two-4416", "ZQX-suppressed-two-5507"
+    holder2 = _finding(title=kept2, file="b.py|3", claim_class="concurrency", line=34)
+    colliding2 = _finding(title=lost2, file="b.py", claim_class="3|concurrency",
+                          line=34)
+    _stub(monkeypatch, {
+        "Analyst": [_contract("NO", [_holder(), holder2]), _CLEAN],
+        "Critic": [_contract("NO", [_colliding()]), _contract("NO", [_colliding()])],
+        "Sentinel": [_contract("NO", [colliding2]), _CLEAN]})
+    _run(sourced_repo, "--max-epochs", "2")
+    out = capsys.readouterr().out
+
+    assert [(s["epoch"], s["persona"], s["title"])
+            for s in _artefact(out)["suppressed"]] == [
+        (1, "Critic", _LOST), (1, "Sentinel", lost2), (2, "Critic", _LOST)], \
+        "the record does not carry every dropped claim, in epoch then panel order"
+    block = _suppression_block(out)
+    assert block[0].startswith(f"{_HEADER} 3"), f"the header miscounts: {block[0]!r}"
+    assert len(block) == 7, f"expected a header and three pairs of lines: {block!r}"
+    assert _LOST in block[1] and _KEPT in block[2]
+    assert lost2 in block[3] and kept2 in block[4], \
+        f"the second dropped claim is not its own pair of lines: {block[3:5]!r}"
+    assert block[5].startswith("  (epoch 2)") and _LOST in block[5], \
+        f"the later epoch's claim is missing or misattributed: {block[5]!r}"
 
 
 def test_a_healthy_run_prints_no_suppression_section(
