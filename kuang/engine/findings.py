@@ -145,14 +145,42 @@ class Finding:
     about_run: bool = False          # reports the instrument, not the change (#73)
 
     @property
+    def key_components(self) -> tuple[str | None, str, str, str]:
+        """The four values ``key`` is taken on, before they are joined and hashed.
+
+        Two findings are the same finding **iff this tuple is identical**. Two
+        that share a ``key`` and differ here are a *collision*, and a run reports
+        one rather than losing it silently (#119). The diagnosis compares this
+        tuple and never the digest, because the digest is precisely what cannot
+        tell those two cases apart.
+
+        **Raw values, deliberately.** ``file`` stays ``None`` rather than becoming
+        ``"None"``: a persona may write the string ``"None"`` and the parser keeps
+        it verbatim (``contract.py``), while the join below renders both
+        identically — so a comparison over the rendered string would miss that
+        route entirely, and it is one of the routes the encoding admits (#125).
+
+        ``severity.name`` and the line BUCKET rather than the enum and the line:
+        the join reproduces ``key`` byte-for-byte only with those, and the bucket
+        is what makes the signature deliberately coarse.
+        """
+        bucket = "" if self.line is None else str(self.line // 10)
+        return (self.file, bucket, self.claim_class, self.severity.name)
+
+    @property
     def key(self) -> str:
         """Stable signature for semantic dedup across epochs.
 
         Deliberately coarse (file + line-bucket + claim-class + severity) so a
         persona re-wording the *same* finding does not read as *new material*.
+
+        Derived from ``key_components`` rather than rebuilt here, so the tuple a
+        collision is diagnosed on and the tuple that was actually hashed cannot
+        drift apart — ``EpochResult.material_new_clusters``' rule (#33) one
+        property along. The encoding is unchanged and is still ambiguous: two
+        distinct tuples can render to one string, which is #125.
         """
-        bucket = "" if self.line is None else str(self.line // 10)
-        raw = f"{self.file}|{bucket}|{self.claim_class}|{self.severity.name}"
+        raw = "|".join(str(c) for c in self.key_components)
         return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
     @property
@@ -402,9 +430,56 @@ class PersonaReport:
                 and str(self.verdict or "").strip().upper() == AFFIRMATIVE_VERDICT)
 
 
+@dataclass(frozen=True)
+class Suppression:
+    """A finding the ledger refused because another one already held its key (#119).
+
+    ``Finding.key`` hashes four values, two of them model-authored, through an
+    encoding that is ambiguous (#125) — so two findings whose ``key_components``
+    **differ** can hash alike, and ``loop.run`` keeps only the first. The second
+    persona's claim then reaches no ledger, no artefact and no count: a claim the
+    panel was convened to produce, lost silently. This is the record of that loss.
+
+    **Recorded where the ledger decides, never recomputed by a reporter.** The
+    run is handed to ``HumanGate`` mutably, so a gate that *removes* a ledger key
+    would make a derived walk report a suppression that never happened — a rule
+    firing on a healthy run, which is the mirror image of the defect. "Set at the
+    source" (#30) governs: a fact this exact must not rest on a precondition the
+    seam does not enforce.
+
+    ``holder`` is the entry already in the ledger, kept so both sides of the
+    collision are readable without recomputing a digest.
+
+    **What this deliberately does not name**, so the silence is not read as a
+    claim: two findings whose components are *identical* are the same finding by
+    the ledger's identity rule, so they are re-sightings and counted as such —
+    including every instrument diagnosis, which all share one key (#126). Merges
+    made *before* hashing are equally invisible here, because by then there is
+    one value: an empty, zero or false ``file`` is already ``None``, a null
+    ``claim_class`` is already ``"None"``, ``"L42"`` is already line 42, and a
+    parse-site bound on a component (#118) would merge two long categories the
+    same way.
+    """
+
+    finding: Finding
+    holder: Finding
+
+
 @dataclass
 class EpochResult:
-    """Everything produced by one iteration of the loop."""
+    """Everything produced by one iteration of the loop.
+
+    ``new_findings``, ``resighted`` and ``suppressed`` **partition** what this
+    epoch's reports emitted and the adjudication kept: every open finding is
+    inserted, recognised as one the ledger already holds, or dropped by a
+    collision. A run that reports only the first leaves the other two
+    indistinguishable, which is #119 — and the partition is what lets a reader
+    check the three against the per-persona counts rather than trust them.
+
+    Both are **appended** rather than inserted beside the field they belong with,
+    following the surface record's rule (#74): every field an earlier caller
+    passed positionally stays where it was.
+    """
 
     index: int
     reports: list[PersonaReport]
@@ -413,6 +488,12 @@ class EpochResult:
     open_uglies: int                 # cluster-level count (canonical issues)
     new_clusters: list[Cluster] = field(default_factory=list)  # new canonical issues
     halt: HaltReason | None = None
+    # A collision dropped it; the ledger kept something else (#119).
+    suppressed: list[Suppression] = field(default_factory=list)
+    # Findings whose signature the ledger already held, with identical
+    # components — the coarse dedup working as designed, counted so the
+    # partition above is checkable rather than asserted.
+    resighted: int = 0
 
     @property
     def material_new_clusters(self) -> list[Cluster]:

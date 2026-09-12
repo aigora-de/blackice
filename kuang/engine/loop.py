@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
-                       ReviewRun, Severity, SurfaceFailure,
+                       ReviewRun, Severity, Suppression, SurfaceFailure,
                        bounded_diagnosis)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
@@ -264,13 +264,49 @@ def run(
         # findings land, so we can tell which clusters are genuinely new below.
         prior_keys = set(review_run.ledger)
         new_findings: list[Finding] = []
+        # Every open finding this epoch emitted ends in exactly one of three
+        # states, and a run that reports only the first cannot be asked what
+        # happened to the others (#119).
+        suppressed: list[Suppression] = []
+        resighted = 0
         for report in reports:
             for f in report.findings:
                 if not f.counts_open:
                     continue
-                if f.key not in review_run.ledger:
+                held = review_run.ledger.get(f.key)
+                if held is None:
                     review_run.ledger[f.key] = f
                     new_findings.append(f)
+                elif held.key_components == f.key_components:
+                    # The coarse dedup doing its job: one signature is one
+                    # finding, however many personas raise it or re-word it.
+                    resighted += 1
+                else:
+                    # A COLLISION. The signature joins four values — two of them
+                    # written by the persona — through an encoding that is
+                    # ambiguous (#125), so two findings that are NOT the same
+                    # finding can hash alike, and this one loses its place to a
+                    # claim it has nothing to do with. It reached no ledger, no
+                    # artefact and no count, and nothing said so.
+                    #
+                    # Diagnosed on the pre-hash components, never on the digest:
+                    # the digest is exactly what cannot tell this case from the
+                    # re-sighting above.
+                    #
+                    # Recorded HERE, where the ledger decides, rather than
+                    # derived by a reporter afterwards. ``HumanGate`` receives
+                    # the run mutably, so a later walk reads the ledger as it
+                    # ENDS — and a gate that removes a key would make it report a
+                    # suppression that never happened, which is a rule firing on
+                    # a healthy run. "Set at the source" (#30) governs: a fact
+                    # this exact must not rest on a precondition no seam enforces.
+                    #
+                    # Reported, not kept. Giving the claim a ledger place of its
+                    # own means giving it a distinct key, which is #125 wearing a
+                    # different hat — so what this loses is stated rather than
+                    # quietly fixed: the claim counts toward no total and resets
+                    # no stall counter.
+                    suppressed.append(Suppression(finding=f, holder=held))
 
         # Layer 2 (reduce/view): fold the whole deduped ledger into canonical
         # clusters. The default is identity (one cluster per signature); a semantic
@@ -291,6 +327,8 @@ def run(
             new_clusters=new_clusters,
             open_blockers=len(review_run.open_blocker_clusters),
             open_uglies=len(review_run.open_ugly_clusters),
+            suppressed=suppressed,
+            resighted=resighted,
         )
 
         # Stall accounting: only *material* (blocker/ugly) new clusters reset it.

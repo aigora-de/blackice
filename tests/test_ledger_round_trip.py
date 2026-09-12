@@ -235,6 +235,41 @@ def test_a_seed_from_an_artefact_carrying_evidence_reads_identically(tmp_path):
     assert load_prior_findings(paths[0]) == load_prior_findings(paths[1])
 
 
+def test_a_seed_from_an_artefact_carrying_suppressions_reads_identically(tmp_path):
+    """#119 publishes ``suppressed``; the seed must ignore it, not consume it.
+
+    A claim the ledger dropped to a collision is published so a human can
+    adjudicate it. It is deliberately NOT seeded into a later run: the seed is
+    prose fed to a model, a seeded finding never enters the ledger, and rendering
+    a dropped claim there would hand the next panel a claim this run's own record
+    says it did not keep. Asserted as an equality between a seed taken from an
+    artefact WITH the key and one without, so a later reader that starts
+    consuming it cannot do so silently.
+
+    **GREEN on main: a guard**, on #112's precedent one key along — ``main`` has
+    the property because the key does not exist yet, and what is load-bearing is
+    that publishing it does not change what a seed reads.
+    """
+    finding = Finding("P1", "unbounded retry loop", Severity.BLOCKER, "retry",
+                      "runner.py", 120)
+    dropped = {"epoch": 1, "persona": "P2", "severity": "BLOCKER",
+               "title": "a claim the ledger refused", "file": "runner.py",
+               "line": 120, "claim_class": "1|retry", "about_run": False,
+               "evidence": "read the queue module", "evidence_chars": 25}
+    without = _cli_json([finding])
+    with_key = {**_cli_json([finding]), "suppressed": [dropped]}
+
+    paths = []
+    for name, payload in (("with.json", with_key), ("without.json", without)):
+        path = tmp_path / name
+        path.write_text(json.dumps(payload))
+        paths.append(path)
+
+    assert load_prior_findings(paths[0]) == load_prior_findings(paths[1])
+    assert dropped["title"] not in load_prior_findings(paths[0]), \
+        "a claim the ledger dropped was seeded into a later run as though kept"
+
+
 def test_a_seed_whose_finding_has_no_line_key_still_loads(tmp_path):
     """REGRESSION for #25: ``f["line"]`` raised KeyError on that artefact.
 
