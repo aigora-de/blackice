@@ -46,7 +46,7 @@ from kuang.engine import (Cluster, EpochResult, Finding, GateDecision,
                              PersonaReport, PersonaStatus, ReviewRun, ReviewSpec,
                              Severity)
 from kuang.engine.reduce import _identity_reduce
-from kuang.report import render_argv
+from kuang.report import epoch_counts_line, render_argv
 
 from .cluster import (_CLUSTER_MANDATE, ReduceState, _extract_cluster_groups,
                       _groups_to_clusters, build_cluster_prompt)
@@ -312,10 +312,17 @@ class PanelSession:
         # dry run halts on epoch 1 and would then print a synthesis for a panel
         # nobody spawned. That test's assertion is "the gate was never reached",
         # and it is #72's rule exactly: a line must not claim what did not happen.
-        print(f"new findings: {len(result.new_findings)} | new material issues: "
-              f"{len(result.material_new_clusters)} | open blockers: "
-              f"{result.open_blockers} | open uglies: {result.open_uglies} | "
-              f"tokens: {self.tokens}")
+        # One renderer, shared with the end-of-run account that covers EVERY epoch
+        # including the halting one (#117). Two call sites writing these four
+        # numbers separately could drift, which is ``ledger_line``'s lesson one
+        # record along. ``tokens`` is appended here and only here: it is a running
+        # total this session holds, not a fact about the epoch.
+        counts = epoch_counts_line(
+            new_findings=len(result.new_findings),
+            material_new_clusters=len(result.material_new_clusters),
+            open_blockers=result.open_blockers,
+            open_uglies=result.open_uglies)
+        print(f"{counts} | tokens: {self.tokens}")
         for f in result.new_findings:
             print(f"  [{f.severity.name}] ({f.persona}) {f.title}")
         # A severity we could not read is reported here as well as at the end of
@@ -331,7 +338,12 @@ class PanelSession:
             if report.unresolved_verdict is not None:
                 print(f"  [unresolved verdict] ({report.persona}) "
                       f"{report.unresolved_verdict!r} — not counted as a vote")
+        # "Not a tty, continued without asking" is a FACT about this run, not an
+        # absence (#117) — it is what every run in CI has ever done, and a record
+        # omitting it cannot be told from one written before the field existed.
+        # ``asked=False`` is a measurement this branch is entitled to make; the
+        # seam's default of None, which says nothing, is for gates that cannot.
         if not sys.stdin.isatty():
-            return GateDecision(stop=False)
+            return GateDecision(stop=False, asked=False)
         ans = input("gate — [c]ontinue / [s]top? ").strip().lower()
-        return GateDecision(stop=ans.startswith("s"))
+        return GateDecision(stop=ans.startswith("s"), asked=True)

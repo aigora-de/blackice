@@ -61,12 +61,30 @@ class Reduce(Protocol):
     def __call__(self, findings: Sequence[Finding]) -> list[Cluster]: ...
 
 
-@dataclass
+@dataclass(frozen=True)
 class GateDecision:
-    """The human's decision at a between-epoch gate."""
+    """What a gate decided between epochs, and whether a human was consulted.
+
+    Not "the human's decision": the engine takes any ``HumanGate``, so a gate may
+    decide without a human at all. Saying otherwise here would be a guarantee this
+    module cannot provide — which is why ``asked`` exists beside ``stop`` rather
+    than being inferred from it.
+
+    ``asked`` is **tri-state and defaults to None**, and the default is the point.
+    ``None`` means the gate did not say whether a human was consulted; ``False``
+    means it measured that none was (a run with no terminal, which is every run in
+    CI); ``True`` means one was asked. A boolean default would let a gate's silence
+    pass for a measurement, which is the defect ``PersonaStatus.UNREPORTED``
+    exists to refuse one seam along — a run must not report a fact it never took.
+
+    Frozen, like every other record a run stores (``Finding``, ``Cluster``,
+    ``Suppression``, ``SurfaceFailure``): the loop keeps this on the epoch it
+    followed, and a mutable one would also let a backend returning a single shared
+    instance alias every epoch's record to one object.
+    """
 
     stop: bool = False
-    note: str = ""
+    asked: bool | None = None
 
 
 class HumanGate(Protocol):

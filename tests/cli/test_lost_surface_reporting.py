@@ -133,6 +133,32 @@ def test_a_lost_surface_still_reports_the_epoch_that_completed(sourced_repo, cap
     assert "converged" not in out, "no good verdict for a run that lost its surface"
 
 
+def test_a_lost_surface_reached_its_gate_and_the_record_says_so(
+        sourced_repo, capsys, monkeypatch):
+    """The state that breaks ``epochs - 1`` arithmetic about the gate (#117).
+
+    Every other halt reason stops an epoch BEFORE its gate, so the last epoch's
+    row reads unreached. ``surface_lost`` is the exception: the epoch that failed
+    never began and leaves no record, so every COMPLETED epoch here did reach its
+    gate — and this run is the proof, because the removal that loses the surface is
+    performed AT that gate.
+
+    A reporter counting "epochs minus one" would therefore report this healthy run
+    as one whose gate was skipped, which is the mirror image of the defect #117
+    fixes. Anchored on the artefact rather than the console because what is under
+    test is the record.
+    """
+    _stub(monkeypatch, sourced_repo, remove_at_gate=True)
+    _run(sourced_repo)
+    payload = _artefact(capsys.readouterr().out)
+
+    assert payload["halt_reason"] == "surface_lost"
+    assert payload["gate"] == [
+        {"epoch": 1, "reached": True, "asked": False, "stopped": False}], \
+        "a run that reached its gate is recorded as one that never did"
+    assert len(payload["gate"]) == payload["epochs"]
+
+
 def test_every_always_on_section_survives_the_loss(sourced_repo, capsys, monkeypatch):
     """The measured cost of the defect, section by section.
 

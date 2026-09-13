@@ -68,7 +68,7 @@ def _demo() -> ReviewRun:
         for f in run.open_blockers:
             fixed[f.key] = True
             run.ledger[f.key] = Finding(**{**f.__dict__, "verified": False})  # resolved
-        return GateDecision(stop=False, note="applied fix")
+        return GateDecision(stop=False, asked=True)
 
     review_run = run(
         spec, halting, panel,

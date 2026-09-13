@@ -20,11 +20,16 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
+from typing import TYPE_CHECKING
 
 # Imported at run time, not only for typing: ``ReviewRun.converged`` compares
 # against ``HaltReason.CONVERGED`` in its body. The dependency stays one-way —
 # ``halting`` imports from here for annotations only.
 from .halting import HaltReason
+
+if TYPE_CHECKING:                    # annotations only, and the direction matters:
+    from .protocols import GateDecision   # ``protocols`` imports THIS module at run
+    #                                       time, so importing it back would cycle.
 
 
 # The one string that is a vote. Quorum is a conjunct of CONVERGED, so the set of
@@ -494,6 +499,23 @@ class EpochResult:
     # components — the coarse dedup working as designed, counted so the
     # partition above is checkable rather than asserted.
     resighted: int = 0
+    # What the human gate decided after this epoch, or None where it was never
+    # reached (#117). ``loop.run`` breaks BEFORE the gate when an epoch halts, so
+    # the halting epoch has no decision because none was taken — and a reporter
+    # must state that rather than leave it implied (#30).
+    #
+    # STORED, not derived. ``gate is None`` and ``halt is not None`` coincide on
+    # any ordinary run, but a gate receives this object MUTABLY and the loop has
+    # already passed its own halt check by the time the gate is called — so a gate
+    # that writes ``halt`` would make a derived reporter describe an epoch the gate
+    # DID run on as one it never reached, a rule firing on a healthy run. #119's
+    # boundary on #103's forward rule: derive only where no seam can invalidate the
+    # derivation.
+    #
+    # Written AFTER ``checkpoint`` fires, so a persisted epoch always carries None
+    # here; #31 owns durable writes and inherits that ordering rather than a
+    # silence about it.
+    gate: GateDecision | None = None
 
     @property
     def material_new_clusters(self) -> list[Cluster]:

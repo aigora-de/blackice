@@ -371,6 +371,13 @@ def run(
 
         # Between-epoch HITL gate: apply fixes / adjust scope / file issues / stop.
         decision = human_gate(result, review_run)
+        # Recorded HERE, where the gate returns, rather than derived by a reporter
+        # afterwards (#117). The channel a human acts through was reported by
+        # nothing at all: a run could not say whether the gate was reached, what
+        # was chosen, or at which epoch. The record's PRESENCE is what says the
+        # gate ran — see ``EpochResult.gate`` for why that is not derived from
+        # ``halt``, which this same seam can rewrite.
+        result.gate = decision
         if decision.stop:
             review_run.halt_reason = HaltReason.ABORTED
             break
