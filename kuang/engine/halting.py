@@ -29,7 +29,7 @@ class HaltReason(Enum):
     BUDGET = "budget"                  # token or time ceiling reached
     EPOCH = "epoch"                    # max epochs reached
     STALL = "stall"                    # no new material findings, blockers still open
-    ABORTED = "aborted"                # human gate stopped the loop
+    ABORTED = "aborted"                # the human gate stopped the loop
     NO_REVIEW = "no_review"            # no persona reviewed: there is no verdict
     SURFACE_LOST = "surface_lost"      # the surface could not be re-assembled
 
@@ -48,7 +48,7 @@ class HaltReason(Enum):
     # next move is a new run against corrected scope, which is a different run.
     #
     # It is a seventh member rather than a reuse because every existing one would be
-    # a lie: ABORTED means the human stopped it and nobody did, BUDGET/EPOCH/STALL
+    # a lie: ABORTED means the GATE stopped it and nothing did, BUDGET/EPOCH/STALL
     # name ceilings that were not reached, and NO_REVIEW is a claim about PERSONAS —
     # here they reviewed, and their findings print two lines below the halt line.
     # Which channel failed is the distinction #30 drew between SPAWN_FAILED and

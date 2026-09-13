@@ -44,6 +44,28 @@ def ledger_line(*, severity: str, is_open: bool, persona: str, title: str,
     return f"- [{severity}/{state}] ({persona}) {title} @ {loc}{tags}"
 
 
+def epoch_counts_line(*, new_findings: int, material_new_clusters: int,
+                      open_blockers: int, open_uglies: int) -> str:
+    """Render what one epoch raised: four counts, in a fixed order.
+
+    One renderer because two callers print it (#117): the gate prints it live, as
+    the decision aid a human weighs before choosing whether to keep spending, and
+    the end-of-run account prints it for **every** epoch — including the one a run
+    halts on, which the gate never sees because ``loop.run`` breaks before it.
+
+    Two call sites writing the same four numbers separately is exactly what
+    ``ledger_line`` exists to prevent one record along, and for the same reason: a
+    reader comparing the two would be comparing two renderings, not one fact.
+
+    ``tokens`` is deliberately not here. It is a running total the backend holds,
+    not a fact about the epoch, so the gate appends it and the end-of-run account —
+    printed below a halt line that already carries the run's total — does not.
+    """
+    return (f"new findings: {new_findings} | new material issues: "
+            f"{material_new_clusters} | open blockers: {open_blockers} "
+            f"| open uglies: {open_uglies}")
+
+
 def render_argv(argv: list[str]) -> str:
     """Render a ``claude`` argv for a human, eliding the two enormous arguments.
 

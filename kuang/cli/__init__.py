@@ -36,9 +36,10 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           discard_note, load_personas,
                                           load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
-from kuang.engine import (Finding, HaltingSet, HaltReason, PanelConfig,
-                          PersonaReport, ReviewSpec, Severity,
+from kuang.engine import (Finding, GateDecision, HaltingSet, HaltReason,
+                          PanelConfig, PersonaReport, ReviewSpec, Severity,
                           bounded_diagnosis, run)
+from kuang.report import epoch_counts_line
 
 
 # How much of a persona's ``evidence`` the artefact publishes (#112), and the
@@ -280,6 +281,37 @@ def _finding_record(f: Finding, *, ledger_entry: bool = False,
     record["evidence"] = bounded_diagnosis(f.evidence, limit=EVIDENCE_BOUND)
     record["evidence_chars"] = len(f.evidence)
     return record
+
+
+def _gate_outcome(decision: GateDecision | None) -> str:
+    """What happened at the gate after one epoch, from the record alone (#117).
+
+    Every ending is exactly knowable from the two facts the record holds, and the
+    absent record is itself the third: an epoch that halted never reached the gate,
+    because ``loop.run`` breaks before it. Said outright rather than left implied
+    (#30) — and never phrased as a gate outcome, because a line must not claim what
+    did not happen (#72).
+
+    ``asked`` is tri-state and all three are distinct claims. A gate that did not
+    say whether a human was consulted is not a gate that consulted nobody: the
+    first is silence, the second is a measurement, and reading one as the other is
+    what ``PersonaStatus.UNREPORTED`` exists to refuse one seam along.
+
+    Counts and this clause are all this section prints — no titles and no persona
+    names — so it carries no model-authored string and cannot be forged into
+    (#127).
+    """
+    if decision is None:
+        return "the epoch halted, so the gate was never reached"
+    if decision.asked:
+        return "a human STOPPED the run" if decision.stop \
+            else "a human continued the run"
+    if decision.asked is None:
+        unsaid = "the gate did not say whether a human was asked"
+        return f"the gate stopped the run; {unsaid}" if decision.stop \
+            else f"continued; {unsaid}"
+    return "the gate stopped the run without asking a human" if decision.stop \
+        else "continued without asking a human"
 
 
 def _surface_note(record: SurfaceRecord | None) -> str:
@@ -683,6 +715,34 @@ def main(argv: list[str] | None = None) -> int:
               f"toward quorum")
         for u in unread_verdicts:
             print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
+    # What each epoch raised, and what happened at the gate after it (#117).
+    #
+    # The gate was the SOLE reporter of what an epoch turned up, and it never runs
+    # for the epoch a run halts on — so the epoch that decided the halt got no
+    # console account of itself at all, which under the default
+    # ``--stall-patience 1`` is precisely the epoch whose counts an operator most
+    # needs. This section is the answer, and it is deliberately NOT printed at the
+    # gate: a notice there would appear for some epochs and never for the halting
+    # one, with nothing telling a reader which (#119's refusal, one channel along).
+    # Printed after the loop, so — unlike the gate — it cannot claim what did not
+    # happen (#72); every line here is read back off a record the loop already set.
+    #
+    # Always-on and exhaustive, like ``panel participation:`` and unlike #24's and
+    # #26's exception sections: "the gate was reached and a human continued" is a
+    # claim no absent section can make, and the absence of a claim about the human
+    # gate is the defect itself.
+    #
+    # A section of its own rather than a column on the participation walk, which is
+    # per-persona-per-epoch: folding a run-level narrative into a roster listing
+    # would give one heading two denominators.
+    print(f"\nepoch account: {len(review_run.epochs)} epoch(s) — what each raised, "
+          f"and what happened at the gate after it")
+    for e in review_run.epochs:
+        counts = epoch_counts_line(
+            new_findings=len(e.new_findings),
+            material_new_clusters=len(e.material_new_clusters),
+            open_blockers=e.open_blockers, open_uglies=e.open_uglies)
+        print(f"  epoch {e.index}: {counts} — {_gate_outcome(e.gate)}")
     # Whether the panel actually RAN (#30). Printed on every run, and this is the
     # one place the pattern above is deliberately not copied: #24's and #26's
     # sections report an exception, so their absence is itself a complete claim.
@@ -780,7 +840,18 @@ def main(argv: list[str] | None = None) -> int:
         "epochs": [{"epoch": e.index, "new_findings": len(e.new_findings),
                     "new_clusters": len(e.new_clusters),
                     "material_new_clusters": len(e.material_new_clusters),
-                    "resighted": e.resighted}
+                    "resighted": e.resighted,
+                    # The two counts the halt was actually TAKEN on, per epoch
+                    # (#117). The breaker reads ``open_uglies`` and both CONVERGED
+                    # and STALL read ``open_blockers`` — cluster-level, against the
+                    # ledger as it stood at that epoch — and their only reporter
+                    # was the gate, which never runs for the epoch a run halts on.
+                    # The top-level pair is a DIFFERENT measurement: finding-level,
+                    # over the ledger as it ENDS. Verified by execution: a
+                    # two-epoch run publishes 2 there while epoch 1 decided on 1,
+                    # so the halting epoch's own inputs were unrecoverable.
+                    "open_blockers": e.open_blockers,
+                    "open_uglies": e.open_uglies}
                    for e in review_run.epochs]}
     # What the panel was GIVEN (#69), one record per epoch, in the order they were
     # gathered. Known before any subprocess exists, so it is reported in a dry run
@@ -1022,6 +1093,33 @@ def main(argv: list[str] | None = None) -> int:
         # makes no claim, and a run read back cold cannot otherwise tell an epoch
         # that raised nothing from one written before this field existed.
         "raised": raised,
+        # What happened at the human gate, per epoch (#117). Channel 9 of #40's
+        # enumeration, and the one this artefact said nothing about at all: not
+        # whether the gate was reached, not what was chosen, not when.
+        #
+        # Unconditional and EXHAUSTIVE over the epochs, for the reason ``raised``
+        # and ``agreement`` are: an absent key makes no claim, and a reader coming
+        # to an artefact cold cannot otherwise tell a run whose gate was never
+        # reached from one written before this field existed.
+        #
+        # ``reached`` is the record's PRESENCE, not a second stored flag: the loop
+        # writes a decision exactly when the gate returned one. Derived instead
+        # from the epoch's halt it would be a rule a seam can falsify — see
+        # ``EpochResult.gate``.
+        #
+        # ``asked`` is tri-state and each value is a different fact: ``true`` a
+        # human was consulted, ``false`` the gate measured that none could be
+        # (every CI run), ``null`` the gate did not say. ``null`` also rides on
+        # ``stopped`` where the gate was never reached, on #33's precedent — the
+        # sibling key says which meaning it carries.
+        #
+        # ``bool(...)`` because ``loop.run`` halts on TRUTHINESS, so a seam may
+        # return any value; what this publishes must be the type it claims
+        # (``counted_vote``'s hardening, one field along).
+        "gate": [{"epoch": e.index, "reached": e.gate is not None,
+                  "asked": None if e.gate is None else e.gate.asked,
+                  "stopped": None if e.gate is None else bool(e.gate.stop)}
+                 for e in review_run.epochs],
         # What the panel could DO: the policy the run actually used, the granted
         # tools the deny-list cancelled, and the calls the agent was refused (#67).
         # The policy is recorded beside the verdict because "unavailable: []" is a

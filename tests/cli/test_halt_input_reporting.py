@@ -274,6 +274,14 @@ def test_the_artefact_records_what_each_epoch_raised(
     have distinct signatures. The row is pinned by exact equality deliberately, so
     a key arriving in it is somebody's decision rather than a drift; that is why
     this expectation moved rather than being loosened to a subset check.
+
+    #117 added the fifth and sixth, and this pin is what made that a decision: the
+    two counts the halt is actually TAKEN on — the breaker reads ``open_uglies``,
+    CONVERGED and STALL read ``open_blockers`` — were reported by nothing but the
+    gate, which never runs for the epoch a run halts on. They are cluster-level and
+    per-epoch, where the artefact's top-level pair is finding-level over the ledger
+    as it ENDS, so neither was recoverable from the other. One BLOCKER and one NOTE
+    give one open blocker cluster and no uglies.
     """
     _stub(monkeypatch, {"Analyst": [_contract("NO", [
         _finding("correctness", line=10),
@@ -286,7 +294,8 @@ def test_the_artefact_records_what_each_epoch_raised(
     assert len(raised["epochs"]) == payload["epochs"]
     (first,) = raised["epochs"]
     assert first == {"epoch": 1, "new_findings": 2, "new_clusters": 2,
-                     "material_new_clusters": 1, "resighted": 0}, \
+                     "material_new_clusters": 1, "resighted": 0,
+                     "open_blockers": 1, "open_uglies": 0}, \
         "the counts are not separately-computed numbers"
 
 
