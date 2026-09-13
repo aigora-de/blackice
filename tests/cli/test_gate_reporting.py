@@ -410,6 +410,74 @@ def test_the_console_says_when_a_human_stopped_the_run(sourced_repo, monkeypatch
         f"a human who stopped the run is not rendered as one: {block[1]!r}"
 
 
+# --- 3b. a value the gate cannot be read as is not a measurement (#131) ------
+
+def _gate_returning(monkeypatch, **kwargs):
+    """Wire a gate that hands back exactly what a foreign seam might."""
+    from kuang.engine import GateDecision
+
+    monkeypatch.setattr(session_module.PanelSession, "interactive_gate",
+                        lambda self, result, run: GateDecision(**kwargs))
+
+
+def test_a_string_answer_is_not_published_as_a_human_saying_yes(
+        sourced_repo, monkeypatch, capsys):
+    """REGRESSION for #131: ``asked='no'`` rendered as "a human continued the run".
+
+    The rule is #26's one field along — a verdict is the word or it is not a
+    verdict. ``asked`` is a REPORT value nothing acts on, so a value the tool
+    cannot read is not a measurement and must publish as ``None``. That is
+    deliberately different from ``stopped``, which is coerced, because ``stop`` is
+    a CONTROL value the loop already acted on by truthiness: there the record must
+    say what the loop did.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _gate_returning(monkeypatch, stop=False, asked="no")
+    _run(sourced_repo)
+    out = capsys.readouterr().out
+    row = _artefact(out)["gate"][0]
+
+    assert row["asked"] is None, \
+        f"a value the gate cannot be read as reached the artefact: {row['asked']!r}"
+    block = _account_block(out)
+    assert "a human continued the run" not in block[1], \
+        f"the console claims a human acted on a value that is not one: {block[1]!r}"
+    assert block[1].endswith("the gate did not say whether a human was asked"), \
+        f"the unreadable case is not rendered as unsaid: {block[1]!r}"
+
+
+def test_a_numeric_answer_is_not_published_as_a_boolean(
+        sourced_repo, monkeypatch, capsys):
+    """``1 == True`` in Python, which is why identity is the only honest test.
+
+    A coercion (``bool(...)``) would publish ``1`` as ``True`` and ``0`` as
+    ``False``, inventing a measurement from a value the gate never meant as one —
+    and ``in (True, False, None)`` cannot reject either, which is how the probe
+    rule written to catch this missed it.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _gate_returning(monkeypatch, stop=False, asked=1)
+    _run(sourced_repo)
+    assert _artefact(capsys.readouterr().out)["gate"][0]["asked"] is None, \
+        "a numeric answer was resolved to a human's decision"
+
+
+def test_a_gate_value_that_cannot_be_serialised_does_not_destroy_the_artefact(
+        sourced_repo, monkeypatch, capsys):
+    """The artefact is stdout-only: `json.dumps` raising loses the whole run.
+
+    A paid-for panel's entire record — ledger, participation, surface, tokens —
+    exists nowhere else, so a seam-supplied value must not be able to take it.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _gate_returning(monkeypatch, stop=False, asked=object())
+    _run(sourced_repo)
+    payload = _artefact(capsys.readouterr().out)
+
+    assert payload["gate"][0]["asked"] is None
+    assert payload["epochs"] == 2, "the run's own record did not survive"
+
+
 # --- 4. the counts the halt was actually taken on ----------------------------
 
 def test_the_artefact_records_the_two_counts_the_halt_was_taken_on(
