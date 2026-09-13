@@ -283,6 +283,32 @@ def _finding_record(f: Finding, *, ledger_entry: bool = False,
     return record
 
 
+def _asked(decision: GateDecision | None) -> bool | None:
+    """Whether a human was consulted — published only where the gate SAID so (#131).
+
+    Identity, never truthiness and never ``in (True, False)``: ``1 == True`` in
+    Python, so a coercion would publish ``1`` as a human's decision and a membership
+    test would accept it. #26's rule one field along — a value that is not the word
+    is not the value — and the reason ``normalise_verdict`` resolves exactly two
+    strings and treats the whole of the rest as null.
+
+    **Deliberately different from ``stopped``, which IS coerced**, and the
+    distinction is the principle rather than an exception: ``stop`` is a CONTROL
+    value the loop already acted on by truthiness (`loop.run` halts on
+    ``if decision.stop``), so the record must say what the loop actually did.
+    ``asked`` is a REPORT value nothing acts on, so a value the tool cannot read is
+    not a measurement — it is silence, and the tri-state already has a member for
+    that.
+
+    One rule for both channels, so the console and the artefact cannot disagree
+    about the same gate — ``ledger_line``'s discipline, one field along.
+    """
+    if decision is None:
+        return None
+    asked = decision.asked
+    return asked if asked is True or asked is False else None
+
+
 def _gate_outcome(decision: GateDecision | None) -> str:
     """What happened at the gate after one epoch, from the record alone (#117).
 
@@ -303,10 +329,11 @@ def _gate_outcome(decision: GateDecision | None) -> str:
     """
     if decision is None:
         return "the epoch halted, so the gate was never reached"
-    if decision.asked:
+    asked = _asked(decision)
+    if asked is True:
         return "a human STOPPED the run" if decision.stop \
             else "a human continued the run"
-    if decision.asked is None:
+    if asked is None:
         unsaid = "the gate did not say whether a human was asked"
         return f"the gate stopped the run; {unsaid}" if decision.stop \
             else f"continued; {unsaid}"
@@ -1117,7 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
         # return any value; what this publishes must be the type it claims
         # (``counted_vote``'s hardening, one field along).
         "gate": [{"epoch": e.index, "reached": e.gate is not None,
-                  "asked": None if e.gate is None else e.gate.asked,
+                  "asked": _asked(e.gate),
                   "stopped": None if e.gate is None else bool(e.gate.stop)}
                  for e in review_run.epochs],
         # What the panel could DO: the policy the run actually used, the granted
