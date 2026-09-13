@@ -213,6 +213,45 @@ def test_a_non_interactive_run_says_it_did_not_ask(sourced_repo, monkeypatch,
         "a run that asked nobody does not say so"
 
 
+def test_the_artefact_does_not_derive_reached_from_a_value_a_seam_can_rewrite(
+        sourced_repo, monkeypatch, capsys):
+    """The rejected derivation, pinned where the artefact is actually written.
+
+    ``reached`` is published from the PRESENCE of the record the loop stored, never
+    from ``EpochResult.halt``. The two coincide on every ordinary run — which is
+    exactly why a mutation swapping one for the other is killed by nothing unless a
+    test drives the case where they diverge.
+
+    A gate holds the epoch mutably and the loop has already passed its own halt
+    check by the time the gate is called, so a gate that writes ``halt`` leaves an
+    epoch whose gate DID run looking, to a derived reporter, like one that never
+    reached it. A rule firing on a healthy run is this issue's defect inverted.
+
+    The engine half is pinned in ``tests/engine/test_gate_decisions.py``. This is
+    the CLI half, and it exists because the mutation matrix found it missing: the
+    row implementing the derived version survived every other test in this module.
+    """
+    from kuang.engine import HaltReason
+
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    real_gate = session_module.PanelSession.interactive_gate
+
+    def _meddling_gate(self, result, run):  # noqa: ANN001
+        decision = real_gate(self, result, run)
+        result.halt = HaltReason.STALL
+        return decision
+
+    monkeypatch.setattr(session_module.PanelSession, "interactive_gate",
+                        _meddling_gate)
+    _run(sourced_repo)
+    payload = _artefact(capsys.readouterr().out)
+
+    assert payload["gate"][0]["reached"] is True, \
+        "the artefact derived 'reached' from a field the gate itself rewrote"
+    assert payload["gate"][0]["asked"] is False, \
+        "the fixture stopped exercising the real gate"
+
+
 # --- 2. the operator's own decision ------------------------------------------
 
 def test_a_human_who_stops_the_run_is_recorded_with_the_epoch(
@@ -345,6 +384,30 @@ def test_the_gate_synthesis_says_nothing_about_its_own_decision(
     assert "gate:" not in synthesis
     assert "asking a human" not in synthesis
     assert "never reached" not in synthesis
+
+
+def test_the_console_says_when_a_human_stopped_the_run(sourced_repo, monkeypatch,
+                                                       capsys):
+    """The stopped case on the CONSOLE, which no artefact assertion can cover.
+
+    Found missing by the mutation matrix: rendering a human who STOPPED the run as
+    one who merely continued was killed by nothing, because every console
+    assertion in this module drives a non-interactive run and every tty test reads
+    the artefact instead.
+
+    Asserting on the console is safe in a tty fixture despite ``input()`` writing
+    its prompt without a trailing newline: the next thing printed is the halt line,
+    whose own leading newline closes the prompt's line, so no later line is
+    prefixed by it.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _tty(monkeypatch, "s")
+    _run(sourced_repo, "--max-epochs", "3")
+    block = _account_block(capsys.readouterr().out)
+
+    assert block, "the console gives no epoch account for a run a human stopped"
+    assert block[1].endswith("a human STOPPED the run"), \
+        f"a human who stopped the run is not rendered as one: {block[1]!r}"
 
 
 # --- 4. the counts the halt was actually taken on ----------------------------
