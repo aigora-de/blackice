@@ -478,6 +478,76 @@ def test_a_gate_value_that_cannot_be_serialised_does_not_destroy_the_artefact(
     assert payload["epochs"] == 2, "the run's own record did not survive"
 
 
+# --- 3c. a dry run took no measurement (#133) --------------------------------
+
+def test_a_dry_run_does_not_claim_what_its_epoch_raised(sourced_repo, monkeypatch,
+                                                        capsys):
+    """REGRESSION for #133: the section said `new findings: 0` for a dry run.
+
+    Nothing was spawned, so nothing was reviewed, and *a dry run took no
+    measurement while a real epoch that raised nothing took one and it came back
+    zero*. `new findings: 0` makes those two indistinguishable — and 12 of the 15
+    golden invocations are dry runs, so an operator grepping an archive for epochs
+    that turned nothing up would count runs that never looked.
+
+    `nothing was spawned` is the wording of the dry-run clause in the permissions
+    walk, borrowed deliberately: that line exists for this same reason one section
+    along, where "no tool call was refused" would have been *true* and read as its
+    opposite. Named by site rather than by line — the commit that added this cited
+    a line number and then moved the line it cited.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _run(sourced_repo, "--dry-run")
+    block = _account_block(capsys.readouterr().out)
+
+    assert block, "the dry run prints no epoch account at all"
+    assert "nothing was spawned" in block[1], \
+        f"the dry run claims a measurement it never took: {block[1]!r}"
+    assert "new findings:" not in block[1], \
+        f"the counts survived on a run that reviewed nothing: {block[1]!r}"
+
+
+def test_an_epoch_that_really_raised_nothing_still_reports_its_zeros(
+        sourced_repo, monkeypatch, capsys):
+    """GREEN on `main`, and it guards the fix against over-reaching.
+
+    The pair to the test above, and the reason the discriminator is `--dry-run`
+    rather than "the counts are zero". A real epoch whose panel ran and found
+    nothing **did** take the measurement, and zero is its honest result — so the
+    counts must still print. Without this, "suppress the counts where nothing was
+    raised" is satisfiable by suppressing them whenever they are zero, which would
+    destroy the very distinction #133 exists to draw.
+    """
+    _stub(monkeypatch, {"Analyst": [_contract("NO")]})
+    _run(sourced_repo, "--max-epochs", "1")
+    block = _account_block(capsys.readouterr().out)
+
+    assert block, "the run prints no epoch account at all"
+    assert block[1].startswith("  epoch 1: new findings: 0 | new material issues: 0"), \
+        f"a real epoch that found nothing stopped saying so: {block[1]!r}"
+    assert "nothing was spawned" not in block[1], \
+        "a spawned epoch is described as one that never ran"
+
+
+def test_a_dry_run_keeps_the_half_of_the_line_that_is_true(sourced_repo,
+                                                           monkeypatch, capsys):
+    """GREEN on `main`: the gate clause is correct on a dry run and must survive.
+
+    A dry run halts at epoch 1, so it never reaches the gate, and *"the epoch
+    halted, so the gate was never reached"* is simply true. The fix removes the
+    half of the line that has no subject; a fix that threw away the whole line
+    would take a true statement with it and leave the channel silent again — the
+    defect #117 closed, reopened from the other side.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _run(sourced_repo, "--dry-run")
+    block = _account_block(capsys.readouterr().out)
+
+    assert block, "the dry run prints no epoch account at all"
+    assert block[1].endswith("the epoch halted, so the gate was never reached"), \
+        f"the true half of the line did not survive: {block[1]!r}"
+
+
 # --- 4. the counts the halt was actually taken on ----------------------------
 
 def test_the_artefact_records_the_two_counts_the_halt_was_taken_on(

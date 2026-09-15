@@ -175,6 +175,7 @@ def test_every_always_on_section_survives_the_loss(sourced_repo, capsys, monkeyp
     assert "panel coverage:" in out                       # #82
     assert "panel permissions: mode=" in out              # #67
     assert "semantic reduce:" in out                      # #30
+    assert "epoch account:" in out                        # #117
     assert "--- JSON ---" in out
 
 
