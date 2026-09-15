@@ -769,20 +769,37 @@ def main(argv: list[str] | None = None) -> int:
         # and it came back zero (#133). `new findings: 0` makes those two
         # indistinguishable, and 12 of the 15 golden invocations are dry runs — so
         # an operator grepping an archive for epochs that turned nothing up would
-        # count runs that never looked. `:1007` is the precedent and the wording is
-        # borrowed from it deliberately: that line exists because "no tool call was
-        # refused" would have been *true* and read as its opposite.
+        # count runs that never looked. The precedent is the DRY-RUN CLAUSE IN THE
+        # PERMISSIONS WALK below, whose wording this borrows: it exists because "no
+        # tool call was refused" would have been *true* and read as its opposite.
+        # Named by site rather than by line, deliberately — this comment cited a
+        # line number and the commit that added it pushed the cited line 24 down.
         #
         # Keyed on ``--dry-run`` rather than on the counts being zero, which is the
         # whole distinction: a panel that ran and found nothing must still report
-        # its zeros. The two in-file precedents key on different things each time —
-        # `:1007` on ``args.dry_run``, `degenerate` on ``converged`` — because the
-        # rule is not "one discriminator for dry runs" but *whatever makes this
-        # line's claim have a subject*.
+        # its zeros, and a test pins that so this cannot over-reach. The two in-file
+        # precedents key on different things each time — that clause on
+        # ``args.dry_run``, `degenerate` on ``converged`` — because the rule is not
+        # "one discriminator for dry runs" but *whatever makes this line's claim
+        # have a subject*.
         #
         # The gate clause is untouched on purpose: "the epoch halted, so the gate
         # was never reached" is true on a dry run, and a fix that dropped the whole
         # line would take a true statement with it.
+        #
+        # WHAT THIS DELIBERATELY DOES NOT REACH, because the justification above
+        # says "archive" and the artefact is half of one: ``raised`` keeps
+        # publishing four zeros for a dry run, unconditionally. The asymmetry is
+        # principled rather than an oversight. This line is PROSE read by a human,
+        # under a header saying "what each raised", with the disambiguating fact six
+        # lines away; ``raised`` is STRUCTURED and its siblings are a one-field join
+        # (``halt_reason``, ``participation[].status``). And the join is exactly
+        # knowable rather than a convention: every route in this backend that fails
+        # to review still emits a diagnosis finding (``session.py``'s agent-error
+        # path, ``contract.py``'s unreadable path), so in the artefact
+        # ``new_findings: 0`` with ``halt_reason`` other than ``no_review`` can only
+        # mean a real review that found nothing. An absent key would also make no
+        # claim, which is the artefact's own rule pointing the other way.
         if args.dry_run:
             counts = "nothing was spawned"
         else:

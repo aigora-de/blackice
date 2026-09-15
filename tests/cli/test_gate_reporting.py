@@ -490,9 +490,11 @@ def test_a_dry_run_does_not_claim_what_its_epoch_raised(sourced_repo, monkeypatc
     golden invocations are dry runs, so an operator grepping an archive for epochs
     that turned nothing up would count runs that never looked.
 
-    `nothing was spawned` is `cli/__init__.py:1007`'s wording, deliberately: that
-    line exists for this same reason one section along, where "no tool call was
-    refused" would have been *true* and read as its opposite.
+    `nothing was spawned` is the wording of the dry-run clause in the permissions
+    walk, borrowed deliberately: that line exists for this same reason one section
+    along, where "no tool call was refused" would have been *true* and read as its
+    opposite. Named by site rather than by line — the commit that added this cited
+    a line number and then moved the line it cited.
     """
     _stub(monkeypatch, {"Analyst": _RAISES})
     _run(sourced_repo, "--dry-run")
@@ -520,6 +522,7 @@ def test_an_epoch_that_really_raised_nothing_still_reports_its_zeros(
     _run(sourced_repo, "--max-epochs", "1")
     block = _account_block(capsys.readouterr().out)
 
+    assert block, "the run prints no epoch account at all"
     assert block[1].startswith("  epoch 1: new findings: 0 | new material issues: 0"), \
         f"a real epoch that found nothing stopped saying so: {block[1]!r}"
     assert "nothing was spawned" not in block[1], \
@@ -540,6 +543,7 @@ def test_a_dry_run_keeps_the_half_of_the_line_that_is_true(sourced_repo,
     _run(sourced_repo, "--dry-run")
     block = _account_block(capsys.readouterr().out)
 
+    assert block, "the dry run prints no epoch account at all"
     assert block[1].endswith("the epoch halted, so the gate was never reached"), \
         f"the true half of the line did not survive: {block[1]!r}"
 
