@@ -765,10 +765,31 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nepoch account: {len(review_run.epochs)} epoch(s) — what each raised, "
           f"and what happened at the gate after it")
     for e in review_run.epochs:
-        counts = epoch_counts_line(
-            new_findings=len(e.new_findings),
-            material_new_clusters=len(e.material_new_clusters),
-            open_blockers=e.open_blockers, open_uglies=e.open_uglies)
+        # A dry run took NO MEASUREMENT; a real epoch that raised nothing took one
+        # and it came back zero (#133). `new findings: 0` makes those two
+        # indistinguishable, and 12 of the 15 golden invocations are dry runs — so
+        # an operator grepping an archive for epochs that turned nothing up would
+        # count runs that never looked. `:1007` is the precedent and the wording is
+        # borrowed from it deliberately: that line exists because "no tool call was
+        # refused" would have been *true* and read as its opposite.
+        #
+        # Keyed on ``--dry-run`` rather than on the counts being zero, which is the
+        # whole distinction: a panel that ran and found nothing must still report
+        # its zeros. The two in-file precedents key on different things each time —
+        # `:1007` on ``args.dry_run``, `degenerate` on ``converged`` — because the
+        # rule is not "one discriminator for dry runs" but *whatever makes this
+        # line's claim have a subject*.
+        #
+        # The gate clause is untouched on purpose: "the epoch halted, so the gate
+        # was never reached" is true on a dry run, and a fix that dropped the whole
+        # line would take a true statement with it.
+        if args.dry_run:
+            counts = "nothing was spawned"
+        else:
+            counts = epoch_counts_line(
+                new_findings=len(e.new_findings),
+                material_new_clusters=len(e.material_new_clusters),
+                open_blockers=e.open_blockers, open_uglies=e.open_uglies)
         print(f"  epoch {e.index}: {counts} — {_gate_outcome(e.gate)}")
     # Whether the panel actually RAN (#30). Printed on every run, and this is the
     # one place the pattern above is deliberately not copied: #24's and #26's
