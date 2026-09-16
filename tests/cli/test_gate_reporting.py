@@ -590,9 +590,13 @@ def test_an_unreadable_answer_at_a_real_tty_is_published_as_silence(
     different fact. #131's rule at the input boundary.
 
     Asserting on the console is safe in a tty fixture here despite ``input()``
-    writing its prompt without a trailing newline: the gate's own categorical
-    notice is printed with one and closes the dangling line before the account
-    block is written.
+    writing its prompt without a trailing newline, and the reason is NOT the
+    gate's own notice: ``_account_block`` locates its section by scanning for the
+    ``epoch account:`` header, which the run prints many lines later, so the
+    dangling prompt cannot reach it. Stated precisely because the first version of
+    this docstring credited the notice — and deleting the notice outright leaves
+    this test passing and the block parsing byte-identically. A justification
+    nobody checked, in the module whose subject is claims nobody checked.
     """
     _stub(monkeypatch, {"Analyst": _RAISES})
     _tty(monkeypatch, "abort")

@@ -284,7 +284,7 @@ def _finding_record(f: Finding, *, ledger_entry: bool = False,
 
 
 def _asked(decision: GateDecision | None) -> bool | None:
-    """Whether a human was consulted — published only where the gate SAID so (#131).
+    """Whether the gate resolved a human's answer, and only where it said so (#131).
 
     Identity, never truthiness and never ``in (True, False)``: ``1 == True`` in
     Python, so a coercion would publish ``1`` as a human's decision and a membership
@@ -1173,8 +1173,12 @@ def main(argv: list[str] | None = None) -> int:
         # ``EpochResult.gate``.
         #
         # ``asked`` is tri-state and each value is a different fact: ``true`` a
-        # human was consulted, ``false`` the gate measured that none could be
-        # (every CI run), ``null`` the gate did not say. ``null`` also rides on
+        # human was asked AND the gate resolved their answer, ``false`` the gate
+        # measured that none could be reached (every CI run), ``null`` the gate
+        # resolved no answer — it said nothing, it could not read what came back
+        # (#132), or the seam itself failed. ``true`` is narrower than "a human
+        # was consulted", deliberately: see ``GateDecision.asked``, which carries
+        # the ruling and states what it under-reports. ``null`` also rides on
         # ``stopped`` where the gate was never reached, on #33's precedent — the
         # sibling key says which meaning it carries.
         #

@@ -49,6 +49,13 @@ from kuang.backends.claude_code import PanelSession, Persona
 from kuang.engine import EpochResult, GateDecision, ReviewRun, ReviewSpec
 
 _PROMPT = "gate — [c]ontinue / [s]top? "
+# The two lines the gate PRINTS, quoted so a reword goes red rather than passing
+# unnoticed. Measured, and the reason section 5 exists: until these tests, every
+# printed line in this gate was killed by nothing — the notices could be deleted
+# outright with the whole suite green, and the notice is what makes continuing an
+# ANNOUNCED default rather than the tool deciding out of sight.
+_NOTICE = "unrecognised — type 'c' to continue or 's' to stop"
+_FINAL = "no readable answer — continuing"
 
 
 class _FakeTTY(io.StringIO):
@@ -81,7 +88,10 @@ def _epoch() -> EpochResult:
 def _drive(session, monkeypatch, capsys, answer: str, *, repeats: int = 8):
     """Answer the real prompt ``repeats`` times over, and return (decision, output).
 
-    Finite by construction — see the module docstring.
+    Finite by construction — see the module docstring. ``repeats`` must exceed
+    ``GATE_ATTEMPTS`` for the exhaustion tests to exhaust rather than hit EOF
+    first; the default is comfortably above it, and the count test passes 99 so
+    the coupling is explicit rather than incidental.
     """
     monkeypatch.setattr(sys, "stdin", _FakeTTY(f"{answer}\n" * repeats))
     decision = session.interactive_gate(_epoch(), ReviewRun())
@@ -294,3 +304,128 @@ def test_the_gate_never_prints_what_the_operator_typed(session, monkeypatch,
     _, out = _drive(session, monkeypatch, capsys, secret)
 
     assert secret not in out, "the gate echoed what the operator typed"
+
+
+# --- 5. the lines the gate PRINTS, which were untested until they were mutated -
+
+def test_the_gate_re_prompts_exactly_once_less_than_it_reads(session, monkeypatch,
+                                                             capsys):
+    """GUARD: green against the implementation as first committed, red under mutation.
+
+    Labelled from the measurement rather than from intent. It passes on the first
+    commit of this branch, where the arithmetic was already correct — it is here
+    because the mutation matrix found the line guarded by nothing: changing
+    ``attempt < GATE_ATTEMPTS - 1`` to ``attempt < GATE_ATTEMPTS`` left the whole
+    suite green, so the off-by-one was right only as far as luck, not evidence.
+
+    ``GATE_ATTEMPTS`` reads produce ``GATE_ATTEMPTS - 1`` notices: the last read
+    has nothing to re-prompt for, and announcing a retry that will not happen is a
+    line claiming what did not happen (#72). Both counts are asserted against the
+    constant, never a literal.
+    """
+    from kuang.backends.claude_code.session import GATE_ATTEMPTS
+
+    _, out = _drive(session, monkeypatch, capsys, "abort", repeats=99)
+
+    assert out.count(_PROMPT) == GATE_ATTEMPTS, \
+        f"the gate read {out.count(_PROMPT)} times, not {GATE_ATTEMPTS}"
+    assert out.count(_NOTICE) == GATE_ATTEMPTS - 1, \
+        f"{out.count(_NOTICE)} re-prompts for {GATE_ATTEMPTS} reads"
+
+
+def test_the_gate_states_the_default_before_it_applies_it(session, monkeypatch,
+                                                          capsys):
+    """GUARD: green as first committed, and it exists because nothing guarded it.
+
+    Continuing after an answer nobody could read means proceeding without the
+    human whose oversight the gate exists to obtain. What makes that defensible
+    is that it is **announced before it happens**: the operator is told what will
+    occur if the tool still cannot read them, and can override it with the next
+    keystroke or with Ctrl-C. A silent default would be the tool deciding out of
+    sight, which ``CLAUDE.md``'s first core principle refuses.
+
+    So the notices are load-bearing behaviour, not decoration — and every one of
+    them could be deleted with the suite green until this test existed. Both
+    state the consequence **categorically**, never quoting what was typed.
+    """
+    _, out = _drive(session, monkeypatch, capsys, "abort")
+
+    assert "if I still cannot read you, the run continues" in out, \
+        "the gate applied a default it never announced"
+    assert _FINAL in out, \
+        "the gate continued without saying it could not read the answer"
+    assert "will not claim a human decided" in out, \
+        "the gate did not say what its record would refrain from claiming"
+
+
+def test_the_gate_s_own_notices_do_not_read_as_an_account_of_the_gate(
+        session, monkeypatch, capsys):
+    """GUARD: green as first committed, and it closes a matrix SURVIVOR.
+
+    ``test_the_gate_synthesis_says_nothing_about_its_own_decision`` in
+    ``tests/cli/test_gate_reporting.py`` forbids these three substrings between
+    the synthesis header and the halt line, for #119's reason: the gate runs only
+    between epochs, so an account printed there appears for some epochs and never
+    for the one a run halts on. That guard drives a NON-INTERACTIVE run, so the
+    ``isatty()`` early return fires and nothing this branch prints ever executes
+    in it — measured, by the mutation it failed to kill.
+
+    The substrings are duplicated rather than imported, for the reason
+    ``_FakeTTY`` is: importing across test modules to share three strings couples
+    two files this issue would otherwise not touch. The drift risk is real and is
+    cited in both directions.
+
+    NOT AN ABSENCE TEST. It first asserts the notices were printed at all —
+    without that half it would pass on ``main``, where this branch is unreachable,
+    and be killed by nothing, which is the very defect it repairs one level up.
+    """
+    _, out = _drive(session, monkeypatch, capsys, "abort")
+
+    assert _FINAL in out and _NOTICE in out, \
+        "the gate printed no notices, so this test proves nothing"
+    for forbidden in ("gate:", "asking a human", "never reached"):
+        assert forbidden not in out, \
+            f"the gate's own notice reads as an account of the gate: {forbidden!r}"
+
+
+def test_a_correction_to_continue_is_also_the_answer_that_counts(
+        session, monkeypatch, capsys):
+    """GUARD, green as first committed: the continue branch INSIDE the loop.
+
+    ``test_a_correction_after_a_mistyped_answer_is_the_answer_that_counts`` drives
+    ``n`` then ``s``, so the accept-and-stop branch is exercised on a later
+    attempt but accept-and-continue is only ever exercised on the first. Both
+    branches sit inside the loop and both must survive re-prompting.
+    """
+    monkeypatch.setattr(sys, "stdin", _FakeTTY("abort\nc\n"))
+
+    decision = session.interactive_gate(_epoch(), ReviewRun())
+
+    assert decision == GateDecision(stop=False, asked=True), \
+        "a corrected answer of 'c' was not read as a human choosing to continue"
+
+
+def test_a_console_that_cannot_print_the_notice_does_not_end_the_run(
+        session, monkeypatch, capsys):
+    """REGRESSION: the statement that RECORDS the catch must not itself throw.
+
+    Found by the resident lenses on this change's own diff. This gate's purpose on
+    the unreadable path is to not raise — an answer it cannot read becomes a
+    recorded decision instead of an exception that discards a paid-for panel. But
+    both notices were printed OUTSIDE the guard and both contain an em dash, so on
+    an ASCII stdout (``PYTHONIOENCODING=ascii``, or a ``LC_ALL=C`` redirect)
+    ``print`` raises ``UnicodeEncodeError`` on exactly the EOF path this change
+    exists to survive. ``loop.run`` does not guard this seam (#129 is open on
+    that), so the exception still took the whole run.
+
+    The stdin is empty, so this drives the real ``EOFError`` as well: the guard
+    catches it, and then the recording of the catch must not undo the rescue.
+    """
+    ascii_out = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(""))
+    monkeypatch.setattr(sys, "stdout", ascii_out)
+
+    decision = session.interactive_gate(_epoch(), ReviewRun())
+
+    assert decision == GateDecision(stop=False, asked=None), \
+        "a console that could not print the notice ended the run"

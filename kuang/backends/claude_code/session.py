@@ -73,7 +73,43 @@ from .surface import SurfaceRecord, build_path_surface, gather_diff
 # personas, permissions and model, and a retry count is none of them — and a
 # flag would be unsettable at the one moment it matters, since the operator is
 # already standing at the prompt by the time they would want it.
+#
+# **At least 1 is assumed.** At 0 the gate would prompt nobody and still print
+# "no readable answer", reporting an answer never sought as one that could not be
+# read — #72's rule, that a line must not claim what did not happen. Unreachable
+# without editing this module, which is why it is stated here rather than guarded
+# at run time: a defensive check for a value only this file can set would be code
+# no run can execute.
 GATE_ATTEMPTS = 3
+
+
+def _say(message: str) -> None:
+    """Tell the operator something, and never let the telling end the run (#132).
+
+    The gate's whole purpose on the unreadable path is to NOT raise: an answer it
+    cannot read must become a recorded decision rather than an exception that
+    discards a panel already spawned and paid for. So the statement that records
+    the catch must not be able to throw either — and it could. **Measured**: with
+    an ASCII stdout (``PYTHONIOENCODING=ascii``, or a ``LC_ALL=C`` redirect) the
+    em dash in these notices raises ``UnicodeEncodeError``, and a run piped into
+    ``head`` raises ``BrokenPipeError`` — both from ``print`` itself, on exactly
+    the path that exists to survive a bad answer. ``loop.run`` does not guard this
+    seam (#129 is open on precisely that), so an exception here still takes the
+    whole run with it.
+
+    Deliberately narrow: this wraps the SAYING, not the deciding. A bug in the
+    gate's own branch logic must still surface, which is why this takes a message
+    rather than the call site taking a broad ``try``. ``Exception`` and never
+    ``BaseException`` — a human's Ctrl-C still stops the run.
+
+    Silent on failure because there is nothing to fall back to: the console is the
+    only channel this function has, and a console that cannot print the notice
+    cannot print a complaint about not printing it either.
+    """
+    try:
+        print(message)
+    except Exception:  # noqa: BLE001 — never BaseException
+        pass
 
 
 @dataclass
@@ -405,8 +441,11 @@ class PanelSession:
             if ans in ("c", "continue"):
                 return GateDecision(stop=False, asked=True)
             if attempt < GATE_ATTEMPTS - 1:
-                print("unrecognised — type 'c' to continue or 's' to stop; "
-                      "if I still cannot read you, the run continues")
-        print("no readable answer — continuing; the run's record will not claim "
-              "a human decided")
+                # One fewer notice than reads: the last read has nothing to
+                # re-prompt for, and announcing a retry that will not happen is a
+                # line claiming what did not happen (#72).
+                _say("unrecognised — type 'c' to continue or 's' to stop; "
+                     "if I still cannot read you, the run continues")
+        _say("no readable answer — continuing; the run's record will not claim "
+             "a human decided")
         return GateDecision(stop=False, asked=None)
