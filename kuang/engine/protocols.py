@@ -71,11 +71,23 @@ class GateDecision:
     than being inferred from it.
 
     ``asked`` is **tri-state and defaults to None**, and the default is the point.
-    ``None`` means the gate did not say whether a human was consulted; ``False``
-    means it measured that none was (a run with no terminal, which is every run in
-    CI); ``True`` means one was asked. A boolean default would let a gate's silence
-    pass for a measurement, which is the defect ``PersonaStatus.UNREPORTED``
-    exists to refuse one seam along — a run must not report a fact it never took.
+    ``None`` means the gate did not resolve a human's answer; ``False`` means it
+    measured that none could be reached (a run with no terminal, which is every
+    run in CI); ``True`` means one was asked **and gave an answer the gate
+    resolved**. A boolean default would let a gate's silence pass for a
+    measurement, which is the defect ``PersonaStatus.UNREPORTED`` exists to refuse
+    one seam along — a run must not report a fact it never took.
+
+    ``True`` is deliberately narrower than "a human was asked" (#132). A gate that
+    prompts a human and cannot read what comes back has obtained no decision, and
+    recording ``True`` beside ``stop=False`` would publish *"a human continued the
+    run"* off an answer nobody could read. So ``None`` carries three cases that
+    are one fact — the gate said nothing, the answer never resolved, or the seam
+    itself failed (#129) — and the cost of that is stated rather than hidden: a
+    run where the operator typed past the gate's bound is archived identically to
+    one whose gate was never wired. The operator saw the re-prompts, the archive
+    did not, and no sibling field recovers the difference. The exactly-knowable
+    rule is preferred to a richer one nothing could check.
 
     Frozen, like every other record a run stores (``Finding``, ``Cluster``,
     ``Suppression``, ``SurfaceFailure``): the loop keeps this on the epoch it
