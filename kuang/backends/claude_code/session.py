@@ -58,6 +58,23 @@ from .personas import Persona
 from .spawn import CallResult, _resolve_claude_bin, build_argv, run_claude
 from .surface import SurfaceRecord, build_path_surface, gather_diff
 
+# How many times the gate READS its prompt before it gives up on the answer —
+# reads, not re-prompts, so the name counts what the loop actually does (#132).
+#
+# A TERMINATION BOUND, not a tolerance. It is not a judgement about how many
+# mistakes an operator is allowed: an unbounded loop against a terminal that
+# streams an escape sequence never returns, so the run never reaches its
+# artefact — the same loss #129 exists to prevent, arrived at by another route.
+# The exact number is deliberately not load-bearing, and the tests import this
+# constant rather than asserting the literal, because a threshold nobody has
+# baselined is the thing this repo refuses.
+#
+# A constant and not a CLI flag: the config-driven rule names budgets, epochs,
+# personas, permissions and model, and a retry count is none of them — and a
+# flag would be unsettable at the one moment it matters, since the operator is
+# already standing at the prompt by the time they would want it.
+GATE_ATTEMPTS = 3
+
 
 @dataclass
 class PanelSession:
@@ -345,5 +362,51 @@ class PanelSession:
         # seam's default of None, which says nothing, is for gates that cannot.
         if not sys.stdin.isatty():
             return GateDecision(stop=False, asked=False)
-        ans = input("gate — [c]ontinue / [s]top? ").strip().lower()
-        return GateDecision(stop=ans.startswith("s"), asked=True)
+        # An answer the tool cannot read is NOT a decision (#132). The test was
+        # ``ans.startswith("s")``, which resolved every input to one — and it
+        # failed in BOTH directions: ``abort``, ``no``, ``n``, a bare Enter and a
+        # stray escape sequence all became "a human continued the run", while
+        # ``skip``, ``sure`` and ``scope`` all began with ``s`` and STOPPED a
+        # panel already spawned and paid for. Since #117 the run publishes and
+        # prints that claim, so the archive could be the opposite of what the
+        # operator typed. #24's and #26's rule — a value that is not the word is
+        # not the value — at the one input a HUMAN supplies, where #131 applied
+        # it at the output boundary.
+        #
+        # Exact membership, never a prefix: under a re-prompt ``startswith`` is
+        # not merely imprecise, it silently keeps the false-stop half of the bug.
+        #
+        # Unrecognised is RE-PROMPTED, never guessed. Mapping ``n`` or ``abort``
+        # to stop is the same defect facing the other way, because the next
+        # operator types ``halt``. The notice states the default BEFORE it is
+        # applied, so a tool decision the operator cannot see never happens: they
+        # override it with the next keystroke, or with Ctrl-C, which keeps working
+        # because the catch below is ``Exception`` and never ``BaseException``.
+        #
+        # THE RULING (made here, cited by #129): an answer that never resolves is
+        # recorded as ``asked=None`` and the run CONTINUES. ``None`` is silence —
+        # the tri-state's member for "the gate did not say" — and is deliberately
+        # NOT ``asked=False``, which is the MEASURED claim that no human could be
+        # reached and belongs to the branch above. Halting instead would be the
+        # TOOL deciding, and ``ABORTED`` would record that a human stopped a run
+        # nobody stopped. Continuing is bounded by every ceiling in ``HaltingSet``
+        # and changes nothing in the repo; halting is terminal for a paid-for
+        # panel. What the operator typed is never recorded or echoed — that is an
+        # unbounded operator-authored string, which #130 refused when it removed
+        # ``GateDecision.note`` — so where the run must say why, it says so
+        # categorically.
+        for attempt in range(GATE_ATTEMPTS):
+            try:
+                ans = input("gate — [c]ontinue / [s]top? ").strip().lower()
+            except Exception:  # noqa: BLE001 — never BaseException
+                break
+            if ans in ("s", "stop"):
+                return GateDecision(stop=True, asked=True)
+            if ans in ("c", "continue"):
+                return GateDecision(stop=False, asked=True)
+            if attempt < GATE_ATTEMPTS - 1:
+                print("unrecognised — type 'c' to continue or 's' to stop; "
+                      "if I still cannot read you, the run continues")
+        print("no readable answer — continuing; the run's record will not claim "
+              "a human decided")
+        return GateDecision(stop=False, asked=None)

@@ -571,3 +571,64 @@ def test_the_artefact_records_the_two_counts_the_halt_was_taken_on(
         "the halting epoch's own halt inputs are still unrecorded"
     assert payload["open_blockers"] == 2, \
         "the top-level count is the end-of-run one and must be left alone"
+
+
+# --- 5. an answer the gate cannot read is not a decision (#132) --------------
+
+def test_an_unreadable_answer_at_a_real_tty_is_published_as_silence(
+        sourced_repo, monkeypatch, capsys):
+    """REGRESSION for #132, end to end: the archived inversion.
+
+    The unit half lives in ``tests/backends/claude_code/test_gate_input.py``;
+    this is the half that proves what an *auditor* reads back. On ``main`` an
+    operator who types ``abort`` is published as ``{"asked": true, "stopped":
+    false}`` and printed as *"a human continued the run"* — the opposite of what
+    they typed, in the one channel a human acts through.
+
+    ``asked`` must be ``null`` and not ``false``: ``false`` is the measured claim
+    that no human could be reached, which is what every CI run reports and is a
+    different fact. #131's rule at the input boundary.
+
+    Asserting on the console is safe in a tty fixture here despite ``input()``
+    writing its prompt without a trailing newline: the gate's own categorical
+    notice is printed with one and closes the dangling line before the account
+    block is written.
+    """
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _tty(monkeypatch, "abort")
+    _run(sourced_repo)
+    out = capsys.readouterr().out
+    payload = _artefact(out)
+
+    assert payload["gate"][0] == {"epoch": 1, "reached": True, "asked": None,
+                                  "stopped": False}, \
+        "an answer the gate could not read was archived as a human's decision"
+    block = _account_block(out)
+    assert "a human continued the run" not in block[1], \
+        f"the console claims a human chose to continue: {block[1]!r}"
+    assert block[1].endswith("the gate did not say whether a human was asked"), \
+        f"the unreadable answer is not rendered as unsaid: {block[1]!r}"
+
+
+def test_the_artefact_never_carries_what_the_operator_typed(
+        sourced_repo, monkeypatch, capsys):
+    """GUARD on a REJECTED design: recording the raw answer to explain itself.
+
+    Green on ``main`` and it must stay green. The tempting way to make the
+    unreadable case legible is to archive what was actually typed. PR #130
+    refused exactly that when it removed ``GateDecision.note``, and #118/#121 are
+    open on this surface: an operator-authored string is unbounded, and the
+    artefact is the thing that gets pasted into issues.
+
+    Asserted over the JSON half specifically, because that is the half that
+    outlives the terminal.
+    """
+    secret = "zzq-not-a-token-9471"
+
+    _stub(monkeypatch, {"Analyst": _RAISES})
+    _tty(monkeypatch, secret)
+    _run(sourced_repo)
+    out = capsys.readouterr().out
+
+    assert secret not in out.split("--- JSON ---")[-1], \
+        "the operator's own words reached the artefact"
