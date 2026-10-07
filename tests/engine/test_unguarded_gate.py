@@ -15,21 +15,29 @@ box, the failure is caught as ``Exception`` (never a named backend class, which 
 engine may not import, and never ``BaseException``, so a human's Ctrl-C still stops
 the loop), and it is **recorded** rather than swallowed.
 
-**What the run then does is #132's ruling, cited and not restated**: it lives in
-``GateDecision.asked``'s docstring, which already names "the seam itself failed
-(#129)" as one of ``None``'s three cases. The run CONTINUES and records
-``GateDecision(stop=False, asked=None)``; ``asked=False`` stays the measured
-non-interactive case; there is no new ``HaltReason``, because ``halting.py``'s bar
-is a state the loop cannot usefully continue from and the next epoch can still ask.
+**What the run then does is #132's ruling**, and ``loop.run`` says why that ruling
+holds for THIS case rather than only citing it: the facts differ on the axis it turns
+on, because a seam can fail before the prompt is ever printed. The run CONTINUES and
+records ``GateDecision(stop=False, asked=None)``; ``asked=False`` stays the measured
+non-interactive case; there is no new ``HaltReason``.
 
-**"Fails" means five things, all measured against ``c1e0a80`` by execution.** The
-gate RAISES; it returns ``None``; it returns a foreign object with no ``.stop``
-(which raised identically, in the engine, and never reached the entry point); it
-returns a foreign object WITH a duck-typed ``.stop`` (which the engine survived and
-then stored in a field typed ``GateDecision | None``); or its ``.stop`` is a
-property that raises, which propagated from the attribute read rather than from the
-call. The last is why normalisation is by **type** and happens before ``.stop`` is
-ever read: a guard wrapped around the call alone does not contain it.
+**"Fails" means SEVEN things, every one measured by execution.** The gate raises; it
+returns ``None``; it returns a foreign object with no ``.stop``; it returns one WITH a
+duck-typed ``.stop``; its ``.stop`` is a property that raises; it is a ``GateDecision``
+**subclass** whose ``.stop`` raises; or it is an ordinary ``GateDecision`` whose
+``stop`` has a ``__bool__`` that raises. The last two were found by the pre-merge
+review pass against the first shape of this fix, which type-checked and then read
+``.stop`` below the guard — both propagated out of ``run`` and discarded three
+completed epochs, which is the whole defect, through the door the type check left
+open. **So the rule is not "check the type" but "the engine never reads an unvalidated
+attribute off a seam's return value outside the guard"**, and the call, the check and
+both reads are inside it. Patching the two cases would have been the patched table
+this project refuses.
+
+An eighth exists and is NOT contained here: an exception whose ``__str__`` raises
+propagates from inside the ``except`` block, where the diagnosis is rendered. It is
+filed rather than fixed, because ``gather``'s guard has the identical hole (measured)
+and fixing one seam and not the other would be the asymmetry, not the fix.
 
 **#85's asymmetry does not arise here, and its absence is the design.** A gather
 failure with no completed epoch re-raises, because there is nothing to report. The
@@ -37,25 +45,29 @@ gate is only ever called *after* an epoch completed, so that branch has no insta
 and asserting one would be a test killed by nothing.
 
 **Which of these are regressions, measured on ``main`` with this file in place
-rather than assumed.** Of the eighteen, **one** passes there —
+rather than assumed** — the matrix is in the PR body. **One** passes on ``main``,
 ``test_ctrl_c_at_the_gate_still_stops_the_run``, because nothing catches anything at
-this seam today, so it guards the ``BaseException`` mutation rather than a
-regression. Fifteen are the defect. The remaining two —
-``test_a_healthy_run_never_reports_a_gate_failure`` and
-``test_a_gate_that_stops_the_run_is_untouched_by_the_guard`` — go red there **only**
-on the missing attribute: every other fact they assert passes before and after, so
-they are the mirror image and the ordinary path rather than regressions, and they
-say so on themselves. Three of these tests asserted something false until the run
-was executed; what they asserted and what measurement corrected is recorded on each.
+this seam today; it guards the ``BaseException`` mutation rather than a regression,
+and the matrix shows it is the only test that kills it. Two go red there **only** on
+the missing attribute — ``test_a_healthy_run_never_reports_a_gate_failure`` and
+``test_a_gate_that_stops_the_run_is_untouched_by_the_guard`` — so they are the mirror
+image and the ordinary path, and each says so on itself. The rest are the defect.
+
+**Several of these tests asserted something false until they were run**, and each
+records what measurement corrected: that the loop breaks before the gate on the
+halting epoch, so "a record at every epoch" is ``[True, True, False]``; that one
+docstring's "green on main" was not; and that
+``test_a_decision_that_raises_when_it_is_read_is_contained`` was green for a reason
+adjacent to the one it claimed.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from kuang.engine import (Finding, GateDecision, HaltingSet, HaltReason,
-                          PanelConfig, PersonaReport, PersonaStatus, ReviewSpec,
-                          Severity, run)
+from kuang.engine import (Finding, GateDecision, GateFailure, HaltingSet,
+                          HaltReason, PanelConfig, PersonaReport,
+                          PersonaStatus, ReviewSpec, Severity, run)
 
 PANEL = PanelConfig(personas=[(n, "mandate") for n in ("correctness", "adversary")])
 
@@ -93,10 +105,17 @@ def _raises(exc: BaseException | None = None, *, at: int = 1):
     stdout that cannot encode an em dash — so a gate that fails at all usually
     fails at every epoch after. The default is the realistic case and the one the
     multiplicity test depends on.
+
+    ``exc if exc is not None`` and never ``exc or``: an exception instance whose
+    ``__bool__`` is False would be silently swapped for the default and this helper
+    would measure a different exception than the test named. That is ``_asked``'s
+    rule — a value that is not the value is not the value — applied to the harness
+    rather than only to the code it exercises.
     """
     def gate(result, run):  # noqa: ANN001, ARG001
         if result.index >= at:
-            raise exc or _BackendGateError("the gate could not be reached")
+            raise exc if exc is not None else _BackendGateError(
+                "the gate could not be reached")
         return GateDecision(stop=False, asked=True)
     return gate
 
@@ -302,12 +321,12 @@ def test_a_foreign_object_is_normalised_by_type_and_not_by_attribute():
 
 
 def test_a_decision_that_raises_when_it_is_read_is_contained():
-    """The fifth mode, and the one a guard around the CALL alone does not reach.
+    """A foreign object whose ``.stop`` raises is refused on its TYPE, before the read.
 
-    ``.stop`` as a property that raises propagates from the attribute read, not
-    from ``human_gate(...)``. Normalising by type before ``.stop`` is ever read is
-    what contains it — a second and independent argument for the type check, which
-    does not depend on #131's coercion staying where it is.
+    This one never reaches the attribute: the type check rejects it first, which is
+    all it proves. The two tests below are the ones that reach the read, and they
+    exist because a pre-merge review pass measured that this test was green for a
+    reason adjacent to the one its docstring originally claimed.
     """
     class _Raising:
         @property
@@ -319,6 +338,113 @@ def test_a_decision_that_raises_when_it_is_read_is_contained():
     assert len(review_run.epochs) == 3
     assert review_run.epochs[0].gate_failure.detail == (
         "gate returned _Raising, not GateDecision")
+
+
+def test_a_subclass_whose_stop_raises_when_read_is_contained():
+    """REGRESSION for the door a type check leaves open: ``isinstance`` admits a subclass.
+
+    Measured against the first shape of this fix, which type-checked and then read
+    ``.stop`` below the guard: a ``GateDecision`` SUBCLASS with ``stop`` as a raising
+    property propagated out of ``run`` and discarded three completed epochs — the
+    whole defect #129 was opened on, through the one door the check left open, while
+    the comment beside it claimed the type check was what contained this case.
+
+    Not contrived: subclassing is the obvious way a backend would carry its own state
+    on a frozen record, #130 having removed the field that used to.
+    """
+    class _Sub(GateDecision):
+        def __init__(self):
+            pass
+
+        @property
+        def stop(self):
+            raise RuntimeError("subclass stop cannot be read")
+
+    review_run = _run(_returns(_Sub()))
+
+    assert len(review_run.epochs) == 3
+    assert review_run.epochs[0].gate_failure.detail == (
+        "RuntimeError: subclass stop cannot be read")
+    assert review_run.epochs[0].gate.asked is None
+
+
+def test_a_decision_whose_stop_cannot_be_coerced_is_contained():
+    """REGRESSION: the engine's OWN vocabulary type can carry an unreadable ``stop``.
+
+    ``GateDecision.stop`` is annotated ``bool`` and coerced nowhere — the CLI says so
+    outright, publishing ``bool(e.gate.stop)`` because "``loop.run`` halts on
+    TRUTHINESS, so a seam may return any value". So a perfectly ordinary
+    ``GateDecision`` whose ``stop`` has a raising ``__bool__`` passes every type check
+    there is and then discards the run at the halt test. Validating the wrapper and
+    nothing inside it is what the first shape of this fix did.
+    """
+    class _Boom:
+        def __bool__(self):
+            raise RuntimeError("stop cannot be coerced")
+
+    review_run = _run(_returns(GateDecision(stop=_Boom(), asked=True)))
+
+    assert len(review_run.epochs) == 3
+    assert review_run.epochs[0].gate_failure.detail == (
+        "RuntimeError: stop cannot be coerced")
+
+
+def test_a_legitimate_subclass_is_kept_as_the_engine_s_own_record():
+    """The MIRROR of the two above: containment must not refuse a valid decision.
+
+    A subclass that behaves is not a failure, so no record is written — but what is
+    STORED is a ``GateDecision`` the engine constructed, so the extra state a subclass
+    carried is dropped. Stated on ``HumanGate`` and pinned here, because silently
+    keeping a foreign instance in a field typed ``GateDecision | None`` is the thing
+    this fix exists to stop.
+    """
+    class _Carrier(GateDecision):
+        pass
+
+    review_run = _run(_returns(_Carrier(stop=False, asked=True)), max_epochs=2)
+    stored = review_run.epochs[0].gate
+
+    assert review_run.epochs[0].gate_failure is None
+    assert type(stored) is GateDecision, "the engine's own record, not the seam's"
+    assert stored == GateDecision(stop=False, asked=True)
+
+
+def test_a_wrong_type_diagnosis_is_collapsed_like_its_sibling():
+    """A class name can carry a newline, and one branch collapsed while both claimed to.
+
+    ``GateFailure``'s docstring promises collapse-then-measure-then-bound for
+    ``detail``; the first shape of this fix collapsed only the exception branch, so a
+    type name with a newline in it reached the record as two lines — the harm
+    ``test_a_multi_line_message_is_recorded_as_one_line`` names, one branch along, and
+    one that would have gone live the moment #139 prints this field.
+    """
+    evil = type("Nasty\nSECOND LINE: reads as a report section", (), {"stop": False})
+
+    failure = _run(_returns(evil())).epochs[0].gate_failure
+
+    assert "\n" not in failure.detail
+    assert failure.detail == ("gate returned Nasty SECOND LINE: reads as a report "
+                              "section, not GateDecision")
+    assert failure.detail_chars == len(failure.detail)
+
+
+def test_a_gate_that_answers_clears_a_record_it_wrote_itself():
+    """The gate holds the ``EpochResult`` MUTABLY, so the success path must assign.
+
+    Left to the field's default, a gate that wrote a failure record and then answered
+    normally would publish a decision AND a failure for the same epoch — a
+    self-contradicting record, and a rule firing on a healthy run. The loop sets the
+    suppression record at the source for the same reason (#30). Measured: before this,
+    the meddling gate's record survived into the artefact.
+    """
+    def meddling(result, run):  # noqa: ANN001, ARG001
+        result.gate_failure = GateFailure("I was never a failure", 21)
+        return GateDecision(stop=False, asked=True)
+
+    review_run = _run(meddling, max_epochs=2)
+
+    assert review_run.epochs[0].gate == GateDecision(stop=False, asked=True)
+    assert review_run.epochs[0].gate_failure is None
 
 
 def test_the_diagnosis_for_a_wrong_type_names_the_type_and_nothing_else():

@@ -512,10 +512,16 @@ class EpochResult:
     # boundary on #103's forward rule: derive only where no seam can invalidate the
     # derivation.
     #
-    # Written AFTER ``checkpoint`` fires, so a persisted epoch always carries None
-    # here; #31 owns durable writes and inherits that ordering rather than a
-    # silence about it. ``gate_failure`` below is the SECOND field with that
-    # ordering, so what #31 inherits is a rule and not one exception.
+    # Written AFTER ``checkpoint`` fires for THIS epoch, so the epoch being
+    # persisted always carries None here — but ``checkpoint`` is handed the whole
+    # ``ReviewRun`` and ``epochs`` holds these objects mutably, so every call after
+    # the first sees the EARLIER epochs' records already written. Measured over
+    # three failing gates: epoch 1's snapshot has no record, epoch 2's has epoch 1's,
+    # epoch 3's has both. So a durable write would persist the gate and the gate
+    # failure for every epoch but the most recent one, and the record it is missing
+    # is always the newest. #31 owns that and inherits it stated precisely; the
+    # looser "a persisted epoch always carries None" was already imprecise for this
+    # field and is not generalised to ``gate_failure`` below on that footing.
     #
     # Present WHENEVER THE GATE WAS REACHED, which since #129 is no longer the same
     # thing as "whenever the gate returned a decision": a seam that fails has one
@@ -651,6 +657,24 @@ class GateFailure:
     heading for a published artefact. The type's name is recorded instead: the
     exactly-knowable fact, on #131's rule one field along that a value the tool
     cannot read is not a measurement.
+
+    **And the asymmetry with the branch beside it, which that argument does not
+    reach.** Where the seam RAISED, ``detail`` is ``f"{type(exc).__name__}: {exc}"``
+    — text authored outside this codebase too, bounded in LENGTH and not in content.
+    A gate raising ``FileNotFoundError`` puts an absolute path into the artefact, and
+    a home directory is a person's name on most installs. The two branches are not
+    treated alike because they are not alike: an exception's message is the operator's
+    only account of why their gate failed and the engine cannot reconstruct it, which
+    is the ground ``SurfaceFailure.detail`` and ``spawn``'s meta finding already stand
+    on — ``surface_lost`` publishes git's stderr for exactly this reason. A foreign
+    object's ``repr`` adds nothing its type name does not.
+
+    So this is a channel of the class #121 tracks, equal to ``SurfaceFailure.detail``
+    and narrower than ``spawn``'s unbounded ``title`` (#118). The bound SANITISES
+    NOTHING — 400 characters of a home-directory path is still a home-directory path —
+    and the rule that a live run's artefact is not publishable by default is the
+    control, which is a practice and not a mechanism. #105 is the precedent that one
+    field on one error path shipped a leak of this shape.
 
     Frozen, like every other record a run stores.
     """

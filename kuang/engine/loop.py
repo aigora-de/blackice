@@ -159,7 +159,11 @@ def run(
         reduce: Folds the deduped ledger into canonical clusters (semantic dedup);
             defaults to identity (one cluster per signature). Feeds stall/
             convergence AND the human-facing grouping.
-        human_gate: Called after each epoch; may stop the loop.
+        human_gate: Called after each epoch; may stop the loop. May raise, and may
+            return something that is not a ``GateDecision``: either is contained as a
+            ``GateFailure`` on that epoch, a ``GateDecision(stop=False, asked=None)``
+            is substituted, and the run CONTINUES (#129). What is stored is always a
+            decision the engine constructed, so a subclass's extra state is dropped.
         budget_spent: Returns cumulative output tokens spent (for the budget gate).
         clock: Returns a monotonic time in seconds (for the time gate).
         checkpoint: Optional persistence hook, called each epoch for resumability.
@@ -370,8 +374,46 @@ def run(
             break
 
         # Between-epoch HITL gate: apply fixes / adjust scope / file issues / stop.
+        #
+        # ONE RULE, stated once and applied to the whole seam: the engine never reads
+        # an unvalidated attribute off a seam's return value outside the guard. The
+        # call, the type check and every read are inside it, and what is stored is a
+        # ``GateDecision`` the ENGINE constructed. A type check with the read left
+        # bare below it was the first shape of this fix, and a pre-merge review pass
+        # broke it twice over: ``isinstance`` admits a SUBCLASS whose ``stop`` is a
+        # property that raises, and ``stop`` is coerced nowhere, so even on the
+        # engine's own frozen record a ``__bool__`` can raise. Both reproduced the
+        # whole defect #129 was opened on — a paid-for run discarded — through a door
+        # the check left open while the comment beside it claimed otherwise. Patching
+        # the two cases would have been the patched table this project refuses; the
+        # rule above is the one principle both fall out of.
         try:
-            decision = human_gate(result, review_run)
+            returned = human_gate(result, review_run)
+            if isinstance(returned, GateDecision):
+                # Re-made rather than kept as handed back, which is what puts the
+                # two attribute reads inside the guard. A subclass's extra state is
+                # dropped deliberately: nothing in the engine or the artefact reads
+                # it, and #130 removed the one field that carried free text here.
+                # ``stop`` is coerced because the loop halts on TRUTHINESS below, so
+                # the record must say what the loop acted on (the rule the CLI
+                # applies to the same field); ``asked`` is NOT coerced, because a
+                # value the tool cannot read is not a measurement and the publisher
+                # resolves it by identity (#131).
+                decision = GateDecision(stop=bool(returned.stop), asked=returned.asked)
+                diagnosis = None
+            else:
+                # A seam can fail by returning the wrong thing rather than by
+                # raising: ``None``, or a foreign object. ``None`` and anything
+                # without a ``.stop`` raised at the read and discarded the run
+                # exactly as an exception did; one WITH a duck-typed ``.stop``
+                # survived and was stored in a field typed ``GateDecision | None``,
+                # so the artefact published ``reached: true`` off a value nothing had
+                # checked.
+                #
+                # The diagnosis names the TYPE and stops there: ``repr`` of what came
+                # back is unbounded text authored outside this codebase, on its way
+                # to a published artefact (``GateFailure`` states that in full).
+                diagnosis = f"gate returned {type(returned).__name__}, not GateDecision"
         except Exception as exc:  # noqa: BLE001
             # The third of three injected seams, and the last to be guarded (#129).
             # ``gather`` has had this treatment since #85 and ``spawn`` since #25,
@@ -383,36 +425,53 @@ def run(
             #
             # ``Exception``, never ``BaseException``: the gate prompt is where an
             # operator presses Ctrl-C to stop a run, and that must stay reliable at
-            # the one moment it is most needed. Measured: ``EOFError`` IS an
-            # ``Exception``; ``KeyboardInterrupt`` is not.
-            #
-            # What the run does next is RULED, not decided here — see
-            # ``GateDecision.asked``, which names "the seam itself failed (#129)" as
-            # one of ``None``'s three cases. The run continues and records that no
-            # answer was resolved. No new ``HaltReason``: ``halting.py``'s bar is a
-            # state the loop cannot usefully CONTINUE from, and the next epoch can
-            # still ask, while ``ABORTED`` would record that a human stopped a run
-            # nobody stopped.
-            collapsed = " ".join(f"{type(exc).__name__}: {exc}".split())
+            # the one moment it is most needed. ``EOFError`` is an ``Exception`` and
+            # ``KeyboardInterrupt`` is not — though the shipped backend traps EOF at
+            # its own ``input()`` call, so what reaches here in practice is a stdout
+            # fault, a foreign gate, or a bug in a gate's branch logic.
+            diagnosis = f"{type(exc).__name__}: {exc}"
+        # What the run does next is RULED, not decided here: see ``GateDecision.asked``,
+        # which names "the seam itself failed (#129)" as one of ``None``'s three cases.
+        # The run CONTINUES and records that no answer was resolved.
+        #
+        # Why that is right for THIS case and not merely cited from the one it was
+        # ruled on, because the facts differ on the axis the ruling turns on. #132
+        # ruled on an operator who was present and typed something unreadable; a seam
+        # can fail before the prompt is ever printed, so there may be no human to have
+        # seen anything. What carries over is not "they can override it" but the bar
+        # in ``halting.py``: a halt reason is for a state the loop cannot usefully
+        # continue from, and a run whose gate is down can still do the thing it is
+        # for — the panel reviews, the ledger fills, and the human adjudicates the
+        # artefact afterwards, which is the human-ON-the-loop contract rather than a
+        # human in every step. Halting instead would be the TOOL deciding to stop a
+        # review nobody stopped, and ``ABORTED`` would record exactly that.
+        #
+        # The cost is real and is not hidden: a gate that is down stays down (its
+        # triggers are environmental — see ``GateFailure``), so the epochs after it
+        # run without the between-epoch touchpoint, spending budget the operator
+        # cannot interrupt through the gate. It is bounded by ``max_epochs``, the
+        # stall patience and the token budget, and the artefact says at which epochs
+        # the channel was gone. Ctrl-C remains the operator's unconditional stop.
+        if diagnosis is None:
+            # Set on BOTH paths, at the source, rather than left to the field's
+            # default: the gate holds this ``EpochResult`` mutably, so a gate that
+            # wrote a failure record itself and then answered normally would publish
+            # a decision AND a failure for the same epoch — a rule firing on a
+            # healthy run. The loop's suppression record is set at the source for
+            # the same reason (#30).
+            result.gate_failure = None
+        else:
+            # Collapsed, then measured, then bounded — in that order, once, for both
+            # branches. A bound applied before the collapse spends itself on
+            # whitespace nobody will be shown, and ``detail_chars`` is the length of
+            # the COLLAPSED diagnosis so that "was this cut" stays the exactly
+            # knowable ``detail_chars > DIAGNOSIS_BOUND`` (#111). One site because
+            # the first shape of this fix collapsed only the exception branch while
+            # ``GateFailure``'s docstring promised both, and a class name can carry a
+            # newline, which would have reached the report as a section of its own.
+            collapsed = " ".join(diagnosis.split())
             result.gate_failure = GateFailure(bounded_diagnosis(collapsed),
                                               len(collapsed))
-            decision = GateDecision(stop=False, asked=None)
-        if not isinstance(decision, GateDecision):
-            # Normalised BY TYPE, and never by attribute access. A seam can also
-            # fail by returning the wrong thing: ``None``, or a foreign object. One
-            # with no ``.stop`` raised at the read below and discarded the run
-            # exactly as an exception did; one WITH a duck-typed ``.stop`` survived
-            # and was stored in a field typed ``GateDecision | None``, so the
-            # artefact published ``reached: true`` off a value nothing had checked.
-            # A ``.stop`` that raises on ACCESS fails from the read rather than from
-            # the call, which is why this is a type check ahead of it rather than a
-            # wider ``try``.
-            #
-            # The diagnosis names the type and stops there: ``repr`` of what came
-            # back is unbounded text authored outside this codebase, on its way to a
-            # published artefact (``GateFailure`` states that in full).
-            detail = f"gate returned {type(decision).__name__}, not GateDecision"
-            result.gate_failure = GateFailure(bounded_diagnosis(detail), len(detail))
             decision = GateDecision(stop=False, asked=None)
         # Recorded HERE, below the guard, rather than derived by a reporter
         # afterwards (#117). The channel a human acts through was reported by

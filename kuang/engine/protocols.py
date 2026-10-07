@@ -109,6 +109,19 @@ class GateDecision:
 
 
 class HumanGate(Protocol):
-    """The HITL touchpoint between epochs (fixes/scope/file-issues/stop)."""
+    """The HITL touchpoint between epochs (fixes/scope/file-issues/stop).
+
+    An implementation may raise, and may return something that is not a
+    ``GateDecision``: the loop contains either as a ``GateFailure`` on that epoch,
+    substitutes ``GateDecision(stop=False, asked=None)`` and CONTINUES, because a
+    gate is not a state the loop cannot proceed from (#129). Contained, not hidden —
+    the diagnosis reaches the run artefact.
+
+    **What is stored is a decision the ENGINE constructed**, not the object handed
+    back: ``stop`` is coerced with ``bool`` because the loop halts on truthiness, and
+    a subclass carrying its own state has that state dropped. An implementation
+    needing to record something of its own has no channel here; #130 removed the one
+    that existed.
+    """
 
     def __call__(self, result: EpochResult, run: ReviewRun) -> GateDecision: ...

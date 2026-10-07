@@ -132,6 +132,25 @@ def _artefact(out: str) -> dict:
     return json.loads(out.split("--- JSON ---")[-1])
 
 
+def _account_block(out: str) -> list[str]:
+    """The end-of-run account's header and its indented lines, and nothing else.
+
+    Duplicated from ``tests/cli/test_gate_reporting.py`` rather than promoted to
+    ``tests/conftest.py``: promotion would edit a module this issue does not
+    otherwise touch, which the change-discipline rule refuses. Other sections also
+    print lines beginning "  epoch 1:", so the block has to be sliced rather than
+    grepped — the first shape of this assertion matched four of them.
+    """
+    lines = out.split("--- JSON ---")[0].splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("epoch account:"))
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if not line.startswith("  "):
+            break
+        block.append(line)
+    return block
+
+
 # --- the defect: a failed gate is published ------------------------------------
 
 def test_a_raising_gate_is_published_with_the_epoch_and_the_diagnosis(sourced_repo,
@@ -315,9 +334,15 @@ def test_the_console_account_is_left_to_139(sourced_repo, capsys, monkeypatch):
     _run(sourced_repo)
     out = capsys.readouterr().out.split("--- JSON ---")[0]
 
-    assert "epoch 1: " in out
-    assert "continued; the gate did not say whether a human was asked" in out
-    assert "gate failed" not in out, "#139's to add, with its captures re-baselined"
+    # Pinned as the EXACT line, not as the absence of a phrase. The first shape of
+    # this test asserted ``"gate failed" not in out``, and that substring exists
+    # nowhere in ``kuang/`` — it passed on main, passes here, and would keep passing
+    # under any wording #139 chose, so it pinned nothing. An exact line is what makes
+    # #139 change it deliberately.
+    assert _account_block(out)[1] == (
+        "  epoch 1: new findings: 1 | new material issues: 1 | open blockers: 1 | "
+        "open uglies: 0 — continued; the gate did not say whether a human was asked"), \
+        "the end-of-run account of a failed gate is #139's surface, not this issue's"
 
 
 def test_a_healthy_run_says_so_in_the_artefact(sourced_repo, capsys, monkeypatch):
