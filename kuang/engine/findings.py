@@ -514,8 +514,20 @@ class EpochResult:
     #
     # Written AFTER ``checkpoint`` fires, so a persisted epoch always carries None
     # here; #31 owns durable writes and inherits that ordering rather than a
-    # silence about it.
+    # silence about it. ``gate_failure`` below is the SECOND field with that
+    # ordering, so what #31 inherits is a rule and not one exception.
+    #
+    # Present WHENEVER THE GATE WAS REACHED, which since #129 is no longer the same
+    # thing as "whenever the gate returned a decision": a seam that fails has one
+    # substituted for it, and ``gate_failure`` beside it says so. The presence rule
+    # is unchanged and is still what a reporter reads; what changed is that
+    # presence no longer implies the seam succeeded.
     gate: GateDecision | None = None
+    # Why this epoch's gate decided nothing, where the seam failed (#129). None on
+    # every ordinary epoch, including one whose gate was never reached — the
+    # distinction between "no gate" and "a gate that failed" is ``gate``'s presence
+    # beside this, and neither field is derivable from the other.
+    gate_failure: GateFailure | None = None
 
     @property
     def material_new_clusters(self) -> list[Cluster]:
@@ -597,6 +609,52 @@ class SurfaceFailure:
     """
 
     epoch: int
+    detail: str
+    detail_chars: int
+
+
+@dataclass(frozen=True)
+class GateFailure:
+    """Why an epoch's gate decided nothing: the seam itself failed (#129).
+
+    ``SurfaceFailure``'s sibling at the third injected seam, and its argument for
+    being a field rather than a ``Finding`` applies here verbatim: no persona
+    produced this, it is not a claim about the change under review, and putting it
+    in the ledger would add to #73's ``issues_about_run`` count for something the
+    epoch's own record already states.
+
+    **Per epoch, and that is the one place this diverges from ``SurfaceFailure``'s
+    shape on purpose.** A lost surface ENDS the run, so a singleton on the run says
+    everything there is to say. A failed gate does not end it — #132's ruling is
+    that the run continues, because the next epoch can still ask — and the live
+    triggers are environmental rather than momentary, so a gate that fails once
+    usually fails at every epoch after. A run-level field would record one failure
+    and silently drop the rest, turning a human-gated run into an ungated one with
+    nothing in the record saying so.
+
+    **No ``epoch`` field, which is the second divergence and follows from the
+    first.** ``SurfaceFailure`` carries one because the epoch it names never
+    completed, so no ``EpochResult`` exists to hold it. This record hangs off the
+    epoch it belongs to, and a stored copy of that index is a second source of truth
+    that can disagree with the first. The artefact's row takes ``epoch`` from
+    ``EpochResult.index``.
+
+    ``detail`` is bounded where it is built (``loop.run``), by the same
+    collapse-then-measure-then-bound order ``gather``'s guard uses, and
+    ``detail_chars`` is the length of the COLLAPSED diagnosis before bounding — so
+    "was this cut" stays the exactly-knowable ``detail_chars > DIAGNOSIS_BOUND``
+    rather than a match against the marker's wording (#111).
+
+    **What ``detail`` deliberately does not carry.** Where the seam returned the
+    wrong TYPE there is no exception to render, and the obvious substitute —
+    ``repr`` of what came back — is unbounded text authored outside this codebase,
+    heading for a published artefact. The type's name is recorded instead: the
+    exactly-knowable fact, on #131's rule one field along that a value the tool
+    cannot read is not a measurement.
+
+    Frozen, like every other record a run stores.
+    """
+
     detail: str
     detail_chars: int
 

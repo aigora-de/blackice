@@ -62,9 +62,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
-                       ReviewRun, Severity, Suppression, SurfaceFailure,
-                       bounded_diagnosis)
+from .findings import (EpochResult, Finding, GateFailure, PersonaReport,
+                       PersonaStatus, ReviewRun, Severity, Suppression,
+                       SurfaceFailure, bounded_diagnosis)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -370,13 +370,63 @@ def run(
             break
 
         # Between-epoch HITL gate: apply fixes / adjust scope / file issues / stop.
-        decision = human_gate(result, review_run)
-        # Recorded HERE, where the gate returns, rather than derived by a reporter
+        try:
+            decision = human_gate(result, review_run)
+        except Exception as exc:  # noqa: BLE001
+            # The third of three injected seams, and the last to be guarded (#129).
+            # ``gather`` has had this treatment since #85 and ``spawn`` since #25,
+            # and both paragraphs apply here unchanged: a fallible black box must
+            # not take the whole ``ReviewRun`` with it — every finding,
+            # participation record and token count from the epochs that DID
+            # complete, for a panel already spawned and paid for, with the artefact
+            # stdout-only so none of it is readable back.
+            #
+            # ``Exception``, never ``BaseException``: the gate prompt is where an
+            # operator presses Ctrl-C to stop a run, and that must stay reliable at
+            # the one moment it is most needed. Measured: ``EOFError`` IS an
+            # ``Exception``; ``KeyboardInterrupt`` is not.
+            #
+            # What the run does next is RULED, not decided here — see
+            # ``GateDecision.asked``, which names "the seam itself failed (#129)" as
+            # one of ``None``'s three cases. The run continues and records that no
+            # answer was resolved. No new ``HaltReason``: ``halting.py``'s bar is a
+            # state the loop cannot usefully CONTINUE from, and the next epoch can
+            # still ask, while ``ABORTED`` would record that a human stopped a run
+            # nobody stopped.
+            collapsed = " ".join(f"{type(exc).__name__}: {exc}".split())
+            result.gate_failure = GateFailure(bounded_diagnosis(collapsed),
+                                              len(collapsed))
+            decision = GateDecision(stop=False, asked=None)
+        if not isinstance(decision, GateDecision):
+            # Normalised BY TYPE, and never by attribute access. A seam can also
+            # fail by returning the wrong thing: ``None``, or a foreign object. One
+            # with no ``.stop`` raised at the read below and discarded the run
+            # exactly as an exception did; one WITH a duck-typed ``.stop`` survived
+            # and was stored in a field typed ``GateDecision | None``, so the
+            # artefact published ``reached: true`` off a value nothing had checked.
+            # A ``.stop`` that raises on ACCESS fails from the read rather than from
+            # the call, which is why this is a type check ahead of it rather than a
+            # wider ``try``.
+            #
+            # The diagnosis names the type and stops there: ``repr`` of what came
+            # back is unbounded text authored outside this codebase, on its way to a
+            # published artefact (``GateFailure`` states that in full).
+            detail = f"gate returned {type(decision).__name__}, not GateDecision"
+            result.gate_failure = GateFailure(bounded_diagnosis(detail), len(detail))
+            decision = GateDecision(stop=False, asked=None)
+        # Recorded HERE, below the guard, rather than derived by a reporter
         # afterwards (#117). The channel a human acts through was reported by
         # nothing at all: a run could not say whether the gate was reached, what
         # was chosen, or at which epoch. The record's PRESENCE is what says the
-        # gate ran — see ``EpochResult.gate`` for why that is not derived from
-        # ``halt``, which this same seam can rewrite.
+        # gate was REACHED — see ``EpochResult.gate`` for why that is not derived
+        # from ``halt``, which this same seam can rewrite.
+        #
+        # Below the guard rather than above it, which is where #129 found it: a
+        # gate returning ``None`` was stored and only then read, so an epoch whose
+        # gate RAN was left with a record that renders as "the epoch halted, so the
+        # gate was never reached". Whatever is stored here is a ``GateDecision`` by
+        # the time it is stored, and ``gate_failure`` beside it is what distinguishes
+        # a substituted decision from an answered one.
         result.gate = decision
         if decision.stop:
             review_run.halt_reason = HaltReason.ABORTED

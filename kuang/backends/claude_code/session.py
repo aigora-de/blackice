@@ -93,9 +93,12 @@ def _say(message: str) -> None:
     an ASCII stdout (``PYTHONIOENCODING=ascii``, or a ``LC_ALL=C`` redirect) the
     em dash in these notices raises ``UnicodeEncodeError``, and a run piped into
     ``head`` raises ``BrokenPipeError`` — both from ``print`` itself, on exactly
-    the path that exists to survive a bad answer. ``loop.run`` does not guard this
-    seam (#129 is open on precisely that), so an exception here still takes the
-    whole run with it.
+    the path that exists to survive a bad answer. ``loop.run`` now guards this seam
+    (#129), so an exception here no longer takes the whole run with it — it is
+    recorded as a ``GateFailure`` on the epoch and the run continues. This wrapper
+    is not thereby redundant: a notice that can still be *said* is said, and the
+    guard one layer out cannot tell the difference between a gate that failed before
+    prompting and one that failed after an answer it had already read.
 
     Deliberately narrow: this wraps the SAYING, not the deciding. A bug in the
     gate's own branch logic must still surface, which is why this takes a message

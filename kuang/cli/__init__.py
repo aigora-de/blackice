@@ -1168,9 +1168,13 @@ def main(argv: list[str] | None = None) -> int:
         # reached from one written before this field existed.
         #
         # ``reached`` is the record's PRESENCE, not a second stored flag: the loop
-        # writes a decision exactly when the gate returned one. Derived instead
-        # from the epoch's halt it would be a rule a seam can falsify — see
-        # ``EpochResult.gate``.
+        # writes a decision exactly when the gate was REACHED. Since #129 that is
+        # no longer the same as "when the gate returned one" — a seam that fails
+        # has a decision substituted for it, because the gate WAS reached and ran,
+        # and publishing ``reached: false`` for it would be the falser of the two
+        # claims. ``gate_failures`` below is what tells the two apart. Derived
+        # instead from the epoch's halt this would be a rule a seam can falsify —
+        # see ``EpochResult.gate``.
         #
         # ``asked`` is tri-state and each value is a different fact: ``true`` a
         # human was asked AND the gate resolved their answer, ``false`` the gate
@@ -1189,6 +1193,40 @@ def main(argv: list[str] | None = None) -> int:
                   "asked": _asked(e.gate),
                   "stopped": None if e.gate is None else bool(e.gate.stop)}
                  for e in review_run.epochs],
+        # Where the gate itself FAILED, per epoch, and the backend's own diagnosis
+        # of it (#129). A seam that raises, returns ``None`` or returns something
+        # that is not a ``GateDecision`` has a decision substituted for it so the
+        # run continues — #132's ruling — and the rows above then say ``asked:
+        # null``, which is also what they say for a gate that answered nothing and
+        # for one that could not read the answer. This is the only key that tells
+        # those apart.
+        #
+        # A LIST walked off the epochs rather than a singleton like
+        # ``surface_lost``, and the difference is the reason: a lost surface ENDS
+        # the run, so one record is the whole story, while a failed gate does not
+        # and the triggers are environmental — a closed pipe, a stdout that cannot
+        # encode — so a gate that fails once usually fails at every epoch after. A
+        # singleton would publish one failure and silently drop the rest, which
+        # would read as a human-gated run rather than the ungated one it became.
+        #
+        # Always present and ``[]`` where nothing failed, which is the rule
+        # ``surface_lost`` and ``agreement`` follow: an absent key makes no claim,
+        # and a reader coming to an artefact cold cannot otherwise tell a run whose
+        # gate held from one written before this field existed. Filtered rather
+        # than exhaustive, unlike ``gate`` above, because a row here is an
+        # exception to the ordinary run and ``epoch`` on it is the only index a
+        # reader needs — taken from ``EpochResult.index``, so the record itself
+        # does not carry a second copy to disagree with.
+        #
+        # ``detail_chars`` is how long the diagnosis was BEFORE the 400-character
+        # bound (#111), so "was this cut" is ``detail_chars > 400`` — exactly
+        # knowable and unaffected by any rewording of the marker the string
+        # carries. The same pair ``surface_lost`` publishes, for the same reason.
+        "gate_failures": [{"epoch": e.index,
+                           "detail": e.gate_failure.detail,
+                           "detail_chars": e.gate_failure.detail_chars}
+                          for e in review_run.epochs
+                          if e.gate_failure is not None],
         # What the panel could DO: the policy the run actually used, the granted
         # tools the deny-list cancelled, and the calls the agent was refused (#67).
         # The policy is recorded beside the verdict because "unavailable: []" is a

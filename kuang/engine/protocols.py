@@ -86,8 +86,17 @@ class GateDecision:
     itself failed (#129) — and the cost of that is stated rather than hidden: a
     run where the operator typed past the gate's bound is archived identically to
     one whose gate was never wired. The operator saw the re-prompts, the archive
-    did not, and no sibling field recovers the difference. The exactly-knowable
-    rule is preferred to a richer one nothing could check.
+    did not. The exactly-knowable rule is preferred to a richer one nothing could
+    check.
+
+    **#129 narrowed that cost by exactly one case, and widening the claim to cover
+    the rest would be the defect this paragraph exists to avoid.**
+    ``EpochResult.gate_failure`` is a sibling field, and where it is present the
+    third case — the seam failed — is recoverable after all, with the backend's own
+    diagnosis beside it. The first two remain indistinguishable from each other: a
+    gate that said nothing and a gate that could not read what came back both leave
+    ``asked=None`` and no failure record, because neither is a failure of the seam.
+    That is the residue, and nothing here recovers it.
 
     Frozen, like every other record a run stores (``Finding``, ``Cluster``,
     ``Suppression``, ``SurfaceFailure``): the loop keeps this on the epoch it
