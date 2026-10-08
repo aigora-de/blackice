@@ -93,14 +93,21 @@ def _say(message: str) -> None:
     an ASCII stdout (``PYTHONIOENCODING=ascii``, or a ``LC_ALL=C`` redirect) the
     em dash in these notices raises ``UnicodeEncodeError``, and a run piped into
     ``head`` raises ``BrokenPipeError`` — both from ``print`` itself, on exactly
-    the path that exists to survive a bad answer. ``loop.run`` does not guard this
-    seam (#129 is open on precisely that), so an exception here still takes the
-    whole run with it.
+    the path that exists to survive a bad answer. ``loop.run`` now guards this seam
+    (#129), so an exception here no longer takes the whole run with it — it is
+    recorded as a ``GateFailure`` on the epoch and the run continues. This wrapper
+    is not thereby redundant: a notice that can still be *said* is said, and the
+    guard one layer out would record a seam failure for a path that worked.
 
-    Deliberately narrow: this wraps the SAYING, not the deciding. A bug in the
-    gate's own branch logic must still surface, which is why this takes a message
-    rather than the call site taking a broad ``try``. ``Exception`` and never
-    ``BaseException`` — a human's Ctrl-C still stops the run.
+    Deliberately narrow: this wraps the SAYING, not the deciding. It took a message
+    rather than the call site taking a broad ``try`` so that a bug in the gate's own
+    branch logic would still surface — and **#129 has since put exactly such a
+    ``try`` at the call site**, so that is no longer what keeps the two apart. What
+    this wrapper still buys is the distinction the outer guard cannot draw: without
+    it, the gate's own DOCUMENTED success path — "no readable answer — continuing" —
+    would raise out of a notice and be archived as a seam failure, a record firing on
+    a path built to succeed. ``Exception`` and never ``BaseException`` — a human's
+    Ctrl-C still stops the run.
 
     Silent on failure because there is nothing to fall back to: the console is the
     only channel this function has, and a console that cannot print the notice

@@ -86,8 +86,17 @@ class GateDecision:
     itself failed (#129) — and the cost of that is stated rather than hidden: a
     run where the operator typed past the gate's bound is archived identically to
     one whose gate was never wired. The operator saw the re-prompts, the archive
-    did not, and no sibling field recovers the difference. The exactly-knowable
-    rule is preferred to a richer one nothing could check.
+    did not. The exactly-knowable rule is preferred to a richer one nothing could
+    check.
+
+    **#129 narrowed that cost by exactly one case, and widening the claim to cover
+    the rest would be the defect this paragraph exists to avoid.**
+    ``EpochResult.gate_failure`` is a sibling field, and where it is present the
+    third case — the seam failed — is recoverable after all, with the backend's own
+    diagnosis beside it. The first two remain indistinguishable from each other: a
+    gate that said nothing and a gate that could not read what came back both leave
+    ``asked=None`` and no failure record, because neither is a failure of the seam.
+    That is the residue, and nothing here recovers it.
 
     Frozen, like every other record a run stores (``Finding``, ``Cluster``,
     ``Suppression``, ``SurfaceFailure``): the loop keeps this on the epoch it
@@ -100,6 +109,19 @@ class GateDecision:
 
 
 class HumanGate(Protocol):
-    """The HITL touchpoint between epochs (fixes/scope/file-issues/stop)."""
+    """The HITL touchpoint between epochs (fixes/scope/file-issues/stop).
+
+    An implementation may raise, and may return something that is not a
+    ``GateDecision``: the loop contains either as a ``GateFailure`` on that epoch,
+    substitutes ``GateDecision(stop=False, asked=None)`` and CONTINUES, because a
+    gate is not a state the loop cannot proceed from (#129). Contained, not hidden —
+    the diagnosis reaches the run artefact.
+
+    **What is stored is a decision the ENGINE constructed**, not the object handed
+    back: ``stop`` is coerced with ``bool`` because the loop halts on truthiness, and
+    a subclass carrying its own state has that state dropped. An implementation
+    needing to record something of its own has no channel here; #130 removed the one
+    that existed.
+    """
 
     def __call__(self, result: EpochResult, run: ReviewRun) -> GateDecision: ...
