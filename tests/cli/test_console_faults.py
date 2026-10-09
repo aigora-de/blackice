@@ -50,6 +50,7 @@ import pytest
 from kuang.backends.claude_code import session as session_module
 from kuang.backends.claude_code.spawn import CallResult
 from kuang.cli import main
+from kuang.cli.console import ConsoleStream
 
 _CLAUDE_MD = """\
 # A repo
@@ -130,6 +131,17 @@ class _AsciiThenClosed(_AsciiConsole):
     def flush(self) -> None:
         if self.gone:
             raise BrokenPipeError(32, "Broken pipe")
+
+
+class _BufferedClosedPipe(io.StringIO):
+    """A stdout whose reader has gone, behind a buffer: writes succeed, the flush fails.
+
+    What a real pipe does when the report fits in the buffer — nothing raises until
+    the bytes are pushed, so the loss is only observable at a flush.
+    """
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
 
 
 @pytest.fixture
@@ -286,10 +298,10 @@ def test_a_retry_that_meets_a_closed_pipe_claims_no_substitution(sourced_repo, c
                                                                  monkeypatch):
     """REGRESSION for #141: the replaced text's own write can meet a closed pipe.
 
-    The retry is a second write and a second chance to fail, so it is guarded like
-    the first: the run returns and the stream is lost. And the substitution notice
-    is NOT said, because it claims characters were printed as ``?`` and these never
-    were — the only notice is the one that is true.
+    The substitution notice is NOT said, because it claims characters were printed
+    as ``?`` and these never were — the only notice is the one that is true. That
+    the retry itself survives is pinned at the stream, below: end to end the
+    engine's spawn guard masks it.
     """
     monkeypatch.setattr(sys, "stdout", _AsciiThenClosed())
 
@@ -297,6 +309,32 @@ def test_a_retry_that_meets_a_closed_pipe_claims_no_substitution(sourced_repo, c
     notices = _notices(capsys.readouterr().err)
     assert len(notices) == 1
     assert "not delivered" in notices[0]
+
+
+def test_a_loss_only_a_flush_can_see_is_still_seen(sourced_repo, capsys, monkeypatch):
+    """REGRESSION for #141: a report that fits in the buffer raises at no ``print``.
+
+    The loss then exists only at the flush, so the flush must happen while the entry
+    point can still act on it, not in the interpreter's exit after it has returned.
+    """
+    monkeypatch.setattr(sys, "stdout", _BufferedClosedPipe())
+
+    assert _dry_run(sourced_repo) == 1
+    assert len(_notices(capsys.readouterr().err)) == 1
+
+
+def test_the_retry_of_replaced_text_survives_a_closed_pipe():
+    """REGRESSION for #141, at the stream: the retry is a second write that can fail.
+
+    Pinned directly because end to end it is unreachable as a distinct outcome: the
+    first non-ASCII write of a dry run is inside ``spawn``, whose engine guard (#25)
+    contains an escaped ``BrokenPipeError`` and lets the run continue to the same
+    exit code — measured, a mutation removing this guard survived the CLI tests.
+    """
+    stream = ConsoleStream(_AsciiThenClosed())
+    assert stream.write("a — b") == len("a — b")
+    assert stream.lost is True
+    assert stream.substituted == 0, "nothing was printed, so nothing was printed as '?'"
 
 
 def test_a_closed_stderr_as_well_still_keeps_the_circuit_breaker(sourced_repo,
@@ -334,7 +372,16 @@ def test_main_restores_the_stdout_it_found(sourced_repo, capsys, monkeypatch):
 # --- the real process ----------------------------------------------------------
 
 def _kuang(repo, **kwargs) -> subprocess.CompletedProcess:
-    env = {**os.environ, "PYTHONPATH": str(_ROOT)}
+    """``python -m kuang`` with stdout BUFFERED, as an operator's shell has it.
+
+    The inherited stdout settings are dropped, not passed through. Measured: with
+    ``PYTHONUNBUFFERED`` set, every write reaches the pipe at once, nothing is left
+    for the exit flush, and the closed-pipe test below passes with ``release`` deleted
+    — a harness that exports it would have made that test vacuous.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONUNBUFFERED", "PYTHONIOENCODING")}
+    env["PYTHONPATH"] = str(_ROOT)
     env.update(kwargs.pop("env", {}))
     return subprocess.run(
         [sys.executable, "-m", "kuang", "--repo", str(repo), "--base", "HEAD~1",
