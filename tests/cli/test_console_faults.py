@@ -18,7 +18,9 @@ Two faults, and they are not alike:
 * a CLOSED PIPE is not. There is nothing to fall back to on stdout, so the process
   says so on stderr and exits non-zero: the halt's own code where that is already
   non-zero, ``1`` where it would have been ``0``, so a shell ``&&`` cannot read an
-  undelivered artefact as success and an UGLY's ``3`` is never masked.
+  artefact it KNOWS was undelivered as success and an UGLY's ``3`` is never
+  masked. A reader who leaves after the kernel accepted the bytes is not known —
+  ``| head`` on a report that fits the pipe's buffer — and the stream says so.
 
 What must not happen is lines silently dropped, which is the quieter version of the
 defect and the shape #11 and #111 exist to refuse.
@@ -305,21 +307,21 @@ def test_a_closed_pipe_never_masks_the_circuit_breaker(sourced_repo, capsys,
     assert len(_notices(capsys.readouterr().err)) == 1
 
 
-def test_a_retry_that_meets_a_closed_pipe_claims_no_substitution(sourced_repo, capsys,
-                                                                 monkeypatch):
-    """REGRESSION for #141: the replaced text's own write can meet a closed pipe.
+def test_both_faults_in_one_run_are_both_said(sourced_repo, capsys, monkeypatch):
+    """REGRESSION for #141: the two notices are orthogonal, so both faults say both.
 
-    The substitution notice is NOT said, because it claims characters were printed
-    as ``?`` and these never were — the only notice is the one that is true. That
-    the retry itself survives is pinned at the stream, below: end to end the
-    engine's spawn guard masks it.
+    One is about the TEXT (what was replaced), the other about DELIVERY (whether it
+    arrived). A first draft tied the first to the second — "counted only once
+    accepted" — and the review showed that could not be exact: a buffered write is
+    accepted long before it is known to have arrived. That the retry itself survives
+    is pinned at the stream, below: end to end the engine's spawn guard masks it.
     """
     monkeypatch.setattr(sys, "stdout", _AsciiThenClosed())
 
     assert _dry_run(sourced_repo) == 1
     notices = _notices(capsys.readouterr().err)
-    assert len(notices) == 1
-    assert "not delivered" in notices[0]
+    assert len(notices) == 2
+    assert "replaced by '?'" in notices[0] and "not delivered" in notices[1]
 
 
 def test_a_loss_only_a_flush_can_see_is_still_seen(sourced_repo, capsys, monkeypatch):
@@ -359,7 +361,7 @@ def test_the_retry_of_replaced_text_survives_a_closed_pipe():
     stream = ConsoleStream(_AsciiThenClosed())
     assert stream.write("a — b") == len("a — b")
     assert stream.lost is True
-    assert stream.substituted == 0, "nothing was printed, so nothing was printed as '?'"
+    assert stream.substituted == 1, "the text had one character replaced"
 
 
 def test_a_closed_stderr_as_well_still_keeps_the_circuit_breaker(sourced_repo,
@@ -444,3 +446,152 @@ def test_a_real_closed_pipe_exits_cleanly(sourced_repo):
     assert "Traceback" not in proc.stderr
     assert "Exception ignored" not in proc.stderr
     assert len(_notices(proc.stderr)) == 1
+
+# --- what the pre-merge review found, each measured before it was accepted ------
+
+def test_the_stream_presents_the_encoding_it_wraps_and_the_errors_it_applies():
+    """REGRESSION for #141's review: ``input()`` reads these two to encode a prompt.
+
+    A first draft shadowed ``encoding`` with its own fault record, ``None`` until the
+    first fault and the fault's codec after it — and ``errors`` was the wrapped
+    stream's ``strict``. The pty test below is what that cost.
+    """
+    stream = ConsoleStream(_AsciiConsole())
+    assert stream.encoding == "ascii"
+    stream.write("a — b")
+    assert stream.encoding == "ascii" and stream.errors == "replace"
+
+
+_DRIVER = '''\
+import json, sys
+from kuang.backends.claude_code import session
+from kuang.backends.claude_code.spawn import CallResult
+from kuang.cli import main
+
+def _fake(self, prompt, mandate, tools, model):
+    f = {"title": "weak logic", "severity": sys.argv[2], "claim_class": "logic",
+         "file": "a.py", "line": 1, "evidence": "read it"}
+    body = json.dumps({"verdict": "NO", "findings": [f]})
+    return CallResult(f"I reviewed it.\\n\\n```json\\n{body}\\n```\\n", 0)
+
+session.PanelSession._run_claude = _fake
+raise SystemExit(main(["--repo", sys.argv[1], "--base", "HEAD~1", "--max-epochs", "2",
+                       "--no-parallel"]))
+'''
+
+
+def _driven(tmp_path, repo, severity: str) -> list[str]:
+    """A real ``python`` running ``main`` over a stubbed panel: no reviewer is spawned."""
+    driver = tmp_path / "driver.py"
+    driver.write_text(_DRIVER)
+    return [sys.executable, str(driver), str(repo), severity]
+
+
+def _env(**extra) -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONUNBUFFERED", "PYTHONIOENCODING")}
+    env["PYTHONPATH"] = str(_ROOT)
+    env.update(extra)
+    return env
+
+
+@pytest.mark.skipif(not hasattr(os, "openpty"), reason="needs a pseudo-terminal")
+def test_an_ascii_terminal_still_asks_the_human(sourced_repo, tmp_path):
+    """REGRESSION for #141's review, the BLOCKER: the gate skipped the human it asks.
+
+    On a terminal ``input()`` encodes its prompt itself, from ``sys.stdout``'s
+    ``encoding`` and ``errors``, bypassing ``write``. With those wrong, the gate's
+    em-dash prompt raised at an ASCII terminal and the gate recorded the run as one
+    whose answer it could not read — ``asked: null`` for a human who was there.
+    Driven on a real pty because no capture stream takes that path.
+    """
+    master, slave = os.openpty()
+    proc = subprocess.Popen(_driven(tmp_path, sourced_repo, "BAD"), stdin=slave,
+                            stdout=slave, stderr=subprocess.PIPE,
+                            env=_env(PYTHONIOENCODING="ascii"))
+    os.close(slave)
+    os.write(master, b"c\nc\nc\n")
+    out = b""
+    while True:
+        try:
+            chunk = os.read(master, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    err = proc.stderr.read().decode("ascii", "replace")
+    proc.wait(timeout=60)
+    os.close(master)
+
+    text = out.decode("ascii", "replace")
+    assert proc.returncode == 0, err
+    gate = json.loads(text.split("--- JSON ---")[-1])["gate"]
+    assert gate[0]["asked"] is True, "a human at the terminal answered"
+    assert "no readable answer" not in text
+
+
+def test_a_closed_stdout_descriptor_is_a_lost_stream(sourced_repo, capsys, monkeypatch):
+    """REGRESSION for #141's review: ``>&-`` leaves ``sys.stdout`` as ``None``.
+
+    The first draft crashed on it before the run began. On ``main`` it returned
+    ``0`` with nothing delivered — the "reads as success" shape this issue refuses.
+    """
+    monkeypatch.setattr(sys, "stdout", None)
+
+    assert _dry_run(sourced_repo) == 1
+    notices = _notices(capsys.readouterr().err)
+    assert len(notices) == 1 and "not delivered" in notices[0]
+
+
+def test_a_closed_stderr_descriptor_keeps_the_notice_out_of_the_artefact(
+        sourced_repo, monkeypatch):
+    """REGRESSION for #141, found while fixing the review: ``2>&-`` makes it ``None``.
+
+    ``print(file=None)`` writes to stdout — after the ``--- JSON ---`` block, where
+    both parsers read to EOF. With nowhere to say it, it is not said anywhere else.
+    """
+    console = _AsciiConsole()
+    monkeypatch.setattr(sys, "stdout", console)
+    monkeypatch.setattr(sys, "stderr", None)
+
+    assert _dry_run(sourced_repo) == 0
+    json.loads(console.getvalue().split("--- JSON ---")[-1])
+
+
+def test_help_into_a_closed_pipe_exits_cleanly(tmp_path):
+    """REGRESSION for #141's review: an ``argparse`` exit skipped the stream's settling.
+
+    Not a regression of the first draft — ``main`` gave the same ``120`` — but the
+    stream claims every print made under ``main``, and ``--help`` is one.
+    """
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        proc = subprocess.run([sys.executable, "-m", "kuang", "--help"], env=_env(),
+                              stdout=write_end, stderr=subprocess.PIPE, text=True)
+    finally:
+        os.close(write_end)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Exception ignored" not in proc.stderr
+
+
+@pytest.mark.parametrize("severity, code", [("UGLY", 3), ("BAD", 1)])
+def test_both_streams_closed_in_a_real_process(sourced_repo, tmp_path, severity, code):
+    """REGRESSION for #141's review, the other BLOCKER: ``2>&1 | head``.
+
+    The in-process test above holds against stand-ins with no exit flush. In a real
+    process the failed notice left bytes in stderr's buffer, the interpreter's exit
+    flush failed on them, and an UGLY's ``3`` became ``120``.
+    """
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    try:
+        proc = subprocess.run(_driven(tmp_path, sourced_repo, severity), env=_env(),
+                              stdin=subprocess.DEVNULL, stdout=write_end,
+                              stderr=write_end)
+    finally:
+        os.close(write_end)
+
+    assert proc.returncode == code

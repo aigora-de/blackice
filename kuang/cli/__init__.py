@@ -36,7 +36,7 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           discard_note, load_personas,
                                           load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
-from kuang.cli.console import ConsoleStream
+from kuang.cli.console import ConsoleStream, release
 from kuang.engine import (Finding, GateDecision, HaltingSet, HaltReason,
                           PanelConfig, PersonaReport, ReviewSpec, Severity,
                           bounded_diagnosis, run)
@@ -454,26 +454,38 @@ def _surface_loss_lines(record: SurfaceRecord) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     """Run the panel and print its report, which a stdout fault must not end (#141).
 
-    Every print made under this call goes through one ``ConsoleStream``. A run whose
-    report did not reach its reader never exits ``0``: the halt's own code is kept
-    where it is already non-zero, because each such code carries a stronger fact than
-    "not delivered" — an UGLY's ``3`` above all — and ``1`` stands in for a ``0``.
-    That is the code an unhandled exception returned here before, so no caller sees
-    a new one; what the codes MEAN is #32's to rule.
+    Every print made under this call goes through one ``ConsoleStream``. A run that
+    KNOWS its report did not reach its reader never exits ``0``: the halt's own code
+    is kept where it is already non-zero, because each such code carries a stronger
+    fact than "not delivered" — an UGLY's ``3`` above all — and ``1`` stands in for a
+    ``0``. A reader who leaves after the kernel accepted the bytes is not known, and
+    ``ConsoleStream`` says so. ``1`` is the code an unhandled exception returned here
+    on these paths before, where it was not ``120``; what the codes MEAN is #32's to
+    rule.
+
+    The stream is settled in ``finally``, so an ``argparse`` exit or a Ctrl-C is
+    flushed, released and noticed like a return — only the exit code is theirs.
     """
     console = ConsoleStream(sys.stdout)
     sys.stdout = console
     try:
         code = _report(argv)
-        console.flush()
     finally:
+        console.flush()
         sys.stdout = console.inner
         console.release()
-    for notice in console.notices():
-        try:
-            print(notice, file=sys.stderr)
-        except OSError:
-            pass  # stderr is gone as well: the exit code is the only channel left
+        for notice in console.notices():
+            # ``print(file=None)`` writes to stdout, which is after the JSON block:
+            # with descriptor 2 closed there is nowhere to say it, not somewhere else.
+            if sys.stderr is None:
+                break
+            try:
+                print(notice, file=sys.stderr)
+            except OSError:
+                # stderr is gone as well: the exit code is the only channel left, and
+                # the bytes left buffered must not fail again at the interpreter's exit.
+                release(sys.stderr)
+                break
     return (code or 1) if console.lost else code
 
 
