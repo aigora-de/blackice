@@ -109,7 +109,9 @@ def _raising_gate(self, result, run):  # noqa: ANN001, ARG001
     """The live trigger, unstubbed in spirit: the gate prints before it prompts.
 
     ``interactive_gate`` prints the epoch synthesis above the prompt and outside
-    every guard, so an ASCII stdout or a closed pipe raises there. Raised directly
+    every guard, so an ASCII stdout or a closed pipe raised there — until #141
+    wrapped stdout at the entry point, after which neither does under ``main``; the
+    guard is pinned for any gate that still raises. Raised directly
     here rather than by breaking stdout, because a test that broke the capture
     stream would be measuring pytest's plumbing rather than the engine's guard.
     """

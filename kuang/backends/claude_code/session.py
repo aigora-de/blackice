@@ -97,7 +97,10 @@ def _say(message: str) -> None:
     (#129), so an exception here no longer takes the whole run with it — it is
     recorded as a ``GateFailure`` on the epoch and the run continues. This wrapper
     is not thereby redundant: a notice that can still be *said* is said, and the
-    guard one layer out would record a seam failure for a path that worked.
+    guard one layer out would record a seam failure for a path that worked. Under
+    the ``kuang`` entry point neither fault reaches this ``print`` any more, because
+    that entry point wraps stdout for the whole run (#141); the backend driven any
+    other way still raises exactly as measured, so this wrapper stays.
 
     Deliberately narrow: this wraps the SAYING, not the deciding. It took a message
     rather than the call site taking a broad ``try`` so that a bug in the gate's own
