@@ -36,6 +36,7 @@ from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           discard_note, load_personas,
                                           load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
+from kuang.cli.console import ConsoleStream
 from kuang.engine import (Finding, GateDecision, HaltingSet, HaltReason,
                           PanelConfig, PersonaReport, ReviewSpec, Severity,
                           bounded_diagnosis, run)
@@ -451,6 +452,32 @@ def _surface_loss_lines(record: SurfaceRecord) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the panel and print its report, which a stdout fault must not end (#141).
+
+    Every print made under this call goes through one ``ConsoleStream``. A run whose
+    report did not reach its reader never exits ``0``: the halt's own code is kept
+    where it is already non-zero, because each such code carries a stronger fact than
+    "not delivered" — an UGLY's ``3`` above all — and ``1`` stands in for a ``0``.
+    That is the code an unhandled exception returned here before, so no caller sees
+    a new one; what the codes MEAN is #32's to rule.
+    """
+    console = ConsoleStream(sys.stdout)
+    sys.stdout = console
+    try:
+        code = _report(argv)
+        console.flush()
+    finally:
+        sys.stdout = console.inner
+        console.release()
+    for notice in console.notices():
+        try:
+            print(notice, file=sys.stderr)
+        except OSError:
+            pass  # stderr is gone as well: the exit code is the only channel left
+    return (code or 1) if console.lost else code
+
+
+def _report(argv: list[str] | None) -> int:
     ap = argparse.ArgumentParser(description="Adversarial review panel loop over a git diff.")
     ap.add_argument("--repo", default=".", help="repository root")
     # Exactly one review mode is active per run: diff mode (--base/--head) OR
@@ -1204,8 +1231,10 @@ def main(argv: list[str] | None = None) -> int:
         # A LIST walked off the epochs rather than a singleton like
         # ``surface_lost``, and the difference is the reason: a lost surface ENDS
         # the run, so one record is the whole story, while a failed gate does not
-        # and the triggers are environmental — a closed pipe, a stdout that cannot
-        # encode — so a gate that fails once usually fails at every epoch after. A
+        # and the triggers are environmental, so a gate that fails once usually
+        # fails at every epoch after. The two #129 measured — a closed pipe, a
+        # stdout that cannot encode — no longer reach the gate under this entry
+        # point, which wraps stdout for the whole run (#141); the shape stands. A
         # singleton would publish one failure and silently drop the rest, which
         # would read as a human-gated run rather than the ungated one it became.
         #

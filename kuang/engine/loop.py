@@ -428,7 +428,8 @@ def run(
             # the one moment it is most needed. ``EOFError`` is an ``Exception`` and
             # ``KeyboardInterrupt`` is not — though the shipped backend traps EOF at
             # its own ``input()`` call, so what reaches here in practice is a stdout
-            # fault, a foreign gate, or a bug in a gate's branch logic.
+            # fault (where the entry point does not absorb it, as ``kuang``'s has
+            # since #141), a foreign gate, or a bug in a gate's branch logic.
             diagnosis = f"{type(exc).__name__}: {exc}"
         # What the run does next is RULED, not decided here: see ``GateDecision.asked``,
         # which names "the seam itself failed (#129)" as one of ``None``'s three cases.
