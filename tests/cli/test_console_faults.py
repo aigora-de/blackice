@@ -133,6 +133,17 @@ class _AsciiThenClosed(_AsciiConsole):
             raise BrokenPipeError(32, "Broken pipe")
 
 
+class _UnbufferedClosedPipe(io.StringIO):
+    """A stdout whose reader has gone, with NO buffer: the write fails, the flush cannot.
+
+    What ``python -u`` or ``PYTHONUNBUFFERED`` gives a real pipe — every write is
+    pushed at once, so nothing is left for a flush to fail on.
+    """
+
+    def write(self, s: str) -> int:
+        raise BrokenPipeError(32, "Broken pipe")
+
+
 class _BufferedClosedPipe(io.StringIO):
     """A stdout whose reader has gone, behind a buffer: writes succeed, the flush fails.
 
@@ -318,6 +329,20 @@ def test_a_loss_only_a_flush_can_see_is_still_seen(sourced_repo, capsys, monkeyp
     point can still act on it, not in the interpreter's exit after it has returned.
     """
     monkeypatch.setattr(sys, "stdout", _BufferedClosedPipe())
+
+    assert _dry_run(sourced_repo) == 1
+    assert len(_notices(capsys.readouterr().err)) == 1
+
+
+def test_a_loss_only_a_write_can_see_is_still_seen(sourced_repo, capsys, monkeypatch):
+    """REGRESSION for #141: the mirror of the test above, for an unbuffered stdout.
+
+    Measured, a mutation that stopped the WRITE from recording the loss survived every
+    other test, because each of their stand-ins also fails the final flush, which
+    records it a second time. Unbuffered, nothing is left to flush — the write is the
+    only place the loss is ever seen, and without it the run exits ``0``.
+    """
+    monkeypatch.setattr(sys, "stdout", _UnbufferedClosedPipe())
 
     assert _dry_run(sourced_repo) == 1
     assert len(_notices(capsys.readouterr().err)) == 1
