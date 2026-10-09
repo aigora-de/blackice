@@ -48,29 +48,31 @@ class ConsoleStream:
         self.lost = False
 
     def write(self, s: str) -> int:
-        if self.lost:
-            return len(s)
         try:
             return self.inner.write(s)
         except UnicodeEncodeError as exc:
-            self.encoding = exc.encoding
             kept = s.encode(exc.encoding, "replace").decode(exc.encoding)
-            self.substituted += sum(1 for a, b in zip(s, kept) if a != b)
-            return self._deliver(kept)
+            # Counted only once the replaced text is accepted: the notice says these
+            # characters were PRINTED as ``?``, which a retry that met a closed pipe
+            # never did. Accepted is not flushed — a buffered stream that is lost
+            # later has still counted them, and the lost notice beside it says so.
+            if self._deliver(kept):
+                self.encoding = exc.encoding
+                self.substituted += sum(1 for a, b in zip(s, kept) if a != b)
+            return len(s)
         except BrokenPipeError:
             self.lost = True
             return len(s)
 
-    def _deliver(self, s: str) -> int:
+    def _deliver(self, s: str) -> bool:
         try:
-            return self.inner.write(s)
+            self.inner.write(s)
         except BrokenPipeError:
             self.lost = True
-            return len(s)
+            return False
+        return True
 
     def flush(self) -> None:
-        if self.lost:
-            return
         try:
             self.inner.flush()
         except BrokenPipeError:

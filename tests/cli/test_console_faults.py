@@ -108,6 +108,30 @@ class _ClosedPipe(io.StringIO):
             raise BrokenPipeError(32, "Broken pipe")
 
 
+class _AsciiThenClosed(_AsciiConsole):
+    """An ASCII stdout whose reader leaves the moment the first encoding fault is raised.
+
+    So the retry of the replaced text meets a closed pipe: both faults, in one write.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gone = False
+
+    def write(self, s: str) -> int:
+        if self.gone:
+            raise BrokenPipeError(32, "Broken pipe")
+        try:
+            return super().write(s)
+        except UnicodeEncodeError:
+            self.gone = True
+            raise
+
+    def flush(self) -> None:
+        if self.gone:
+            raise BrokenPipeError(32, "Broken pipe")
+
+
 @pytest.fixture
 def sourced_repo(changed_repo):
     (changed_repo / "CLAUDE.md").write_text(_CLAUDE_MD)
@@ -194,6 +218,7 @@ def test_a_substitution_is_said_once_with_its_exact_count(sourced_repo, capsys,
     assert len(notices) == 1
     assert f"{replaced} character(s)" in notices[0]
     assert "ascii" in notices[0]
+    assert "artefact is ASCII-escaped and unaffected" in notices[0]
     notices[0].encode("ascii")
 
 
@@ -255,6 +280,40 @@ def test_a_closed_pipe_never_masks_the_circuit_breaker(sourced_repo, capsys,
                "--no-parallel"])
     assert rc == 3
     assert len(_notices(capsys.readouterr().err)) == 1
+
+
+def test_a_retry_that_meets_a_closed_pipe_claims_no_substitution(sourced_repo, capsys,
+                                                                 monkeypatch):
+    """REGRESSION for #141: the replaced text's own write can meet a closed pipe.
+
+    The retry is a second write and a second chance to fail, so it is guarded like
+    the first: the run returns and the stream is lost. And the substitution notice
+    is NOT said, because it claims characters were printed as ``?`` and these never
+    were — the only notice is the one that is true.
+    """
+    monkeypatch.setattr(sys, "stdout", _AsciiThenClosed())
+
+    assert _dry_run(sourced_repo) == 1
+    notices = _notices(capsys.readouterr().err)
+    assert len(notices) == 1
+    assert "not delivered" in notices[0]
+
+
+def test_a_closed_stderr_as_well_still_keeps_the_circuit_breaker(sourced_repo,
+                                                                  monkeypatch):
+    """REGRESSION for #141: ``2>&1 | head`` closes both streams at once.
+
+    Then the notice has nowhere to go either, and the exit code is the only channel
+    left — so the notice must not raise, or an UGLY's ``3`` becomes the ``1`` of an
+    unhandled exception.
+    """
+    _ugly_panel(monkeypatch)
+    monkeypatch.setattr(sys, "stdout", _ClosedPipe())
+    monkeypatch.setattr(sys, "stderr", _ClosedPipe())
+
+    rc = main(["--repo", str(sourced_repo), "--base", "HEAD~1", "--max-epochs", "1",
+               "--no-parallel"])
+    assert rc == 3
 
 
 def test_main_restores_the_stdout_it_found(sourced_repo, capsys, monkeypatch):
