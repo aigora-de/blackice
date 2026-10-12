@@ -114,6 +114,19 @@ class RaisesHostileFailure(Exception):
         raise SecondaryHostile()
 
 
+class NothingRenders(Exception, metaclass=Meta):
+    """Name, message and repr all hostile, so the FALLBACK's own name lookup is
+    the one under test. Without it a ``type(exc).__name__`` fallback survived
+    the mutation matrix: the metaclass shape alone renders, and never reaches
+    the fallback."""
+
+    def __str__(self):
+        raise ValueError("str exploded")
+
+    def __repr__(self):
+        raise ValueError("repr exploded")
+
+
 class StrRaisesInterrupt(Exception):
     def __str__(self):
         raise KeyboardInterrupt
@@ -127,6 +140,7 @@ SHAPES = {
     "assigned-name": AssignedName,
     "repr-returns-hostile": ReprReturnsHostile,
     "failure-is-hostile": RaisesHostileFailure,
+    "nothing-renders": NothingRenders,
 }
 
 # --- driving the engine -----------------------------------------------------
@@ -342,6 +356,15 @@ def test_the_type_name_survives_a_metaclass():
     """Kills a ``type(exc).__name__`` fallback: the metaclass property raises."""
     assert _contained(lambda: type_name(MetaName())) == "MetaName"
     assert _contained(lambda: render_exception(MetaName())) == "MetaName: "
+
+
+def test_the_fallback_names_the_type_when_nothing_else_renders():
+    """Kills a ``type(exc).__name__`` FALLBACK, which is what the issue first
+    proposed: it raises where the message already could not be rendered."""
+    expected = "NothingRenders: <unrenderable: ValueError raised while rendering it>"
+
+    assert _contained(lambda: render_exception(NothingRenders())) == expected
+    assert _contained(lambda: repr_exception(NothingRenders())) == expected
 
 
 def test_a_type_name_assigned_a_str_subclass_is_coerced():
