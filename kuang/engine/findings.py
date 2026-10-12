@@ -12,7 +12,9 @@ the whole loop. Nothing here decides anything — the halting predicate lives in
 is the one place the bound on a diagnostic string is applied, and the two fields
 it protects — ``Finding.evidence`` and ``SurfaceFailure.detail`` — are both
 defined below. The engine holds it because a backend may import the engine and
-never the reverse (``tests/engine/test_backend_agnostic.py``).
+never the reverse (``tests/engine/test_backend_agnostic.py``). ``render_exception``,
+``repr_exception`` and ``type_name`` sit beside it for the same reason: they are the
+one place an exception is turned into a diagnosis (#142).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 # Imported at run time, not only for typing: ``ReviewRun.converged`` compares
 # against ``HaltReason.CONVERGED`` in its body. The dependency stays one-way —
@@ -89,6 +91,98 @@ def bounded_diagnosis(text: str, limit: int = DIAGNOSIS_BOUND) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}… [truncated: {limit} of {len(text)} characters]"
+
+
+# The C-level slot ``type.__name__`` reads, reached without attribute lookup on the
+# class: a metaclass ``__name__`` property, or a metaclass ``__getattribute__``,
+# cannot intercept it (measured, #142). It can still hand back a ``str`` SUBCLASS
+# — ``cls.__name__ = <subclass>`` is accepted — which is why ``type_name`` coerces
+# on the fallback as well.
+_TYPE_NAME = type.__dict__["__name__"]
+
+
+def type_name(obj: object) -> str:
+    """The name of ``obj``'s type, as an exact ``str``, and never a raise.
+
+    **One rule: the name exactly as the guards rendered it before #142, and the
+    C-level slot only where that raises.** ``format(type(obj).__name__, "")`` is
+    what the f-string ``{type(exc).__name__}`` called, so a healthy name — including
+    one a metaclass property supplies without raising — renders to the byte as it
+    did. Consulting the slot FIRST was the first shape of this fix, and a pre-merge
+    review pass caught it renaming such an exception: the fix firing on a healthy
+    value, which is the mirror image of the defect.
+
+    Where the attempt raises — a metaclass property that raises, or a name assigned
+    a ``str`` subclass whose ``__format__`` does — the slot is the exactly-knowable
+    fallback, reached by a route that runs no code the object's author wrote.
+    ``str.__str__`` sheds a subclass on both paths without calling a method it
+    could override. ``Exception``, never ``BaseException``, for ``_rendered``'s
+    reason.
+    """
+    try:
+        return str.__str__(format(type(obj).__name__, ""))
+    except Exception:  # noqa: BLE001
+        return str.__str__(_TYPE_NAME.__get__(type(obj), type))
+
+
+def _rendered(exc: BaseException, render: Callable[[BaseException], str]) -> str:
+    """``render(exc)`` as an exact ``str``, or a fallback that says it failed.
+
+    The one guarded core under ``render_exception`` and ``repr_exception`` (#142).
+    Every seam guard (#85, #25, #129) renders the exception it caught INSIDE its
+    own ``except``, so an exception that cannot be rendered used to raise from the
+    handler and discard the run the guard exists to keep. Three local ``try``s
+    would be the patched table; this is the one place the rule is applied.
+
+    **What the fallback says, decided rather than left blank.** A blank record is
+    #111's defect — a record that does not say what it could not keep — and a
+    generic string hides which type failed. So it names the two things exactly
+    knowable when the message is not: the type that could not be rendered, and
+    the type of what was raised trying. NEVER the secondary exception's MESSAGE:
+    it can be hostile too, and rendering it reopens the defect one level down.
+    Not ``object.__repr__``, which never raises but embeds a memory address and
+    would put non-determinism into the artefact.
+
+    ``Exception``, never ``BaseException``, for the reason every guard states: a
+    ``KeyboardInterrupt`` raised while rendering cannot be told from an operator's
+    Ctrl-C, and swallowing it would make Ctrl-C unreliable at the moment it is
+    needed.
+
+    **What it under-reports, stated rather than left to be found.** A ``__str__``
+    that HANGS is not contained — that needs a timeout, #66's territory — and one
+    that returns an enormous string is bounded by ``bounded_diagnosis`` only after
+    it has been built, so the memory is spent first. And ANY ``BaseException``
+    raised while rendering escapes, not only ``KeyboardInterrupt`` — ``SystemExit``,
+    ``GeneratorExit``, a custom subclass — exactly as it does when a seam raises one
+    directly: the doctrine is drawn at ``Exception`` for every guard, not per case.
+    """
+    try:
+        return str.__str__(render(exc))
+    except Exception as failure:  # noqa: BLE001
+        return (f"{type_name(exc)}: "
+                f"<unrenderable: {type_name(failure)} raised while rendering it>")
+
+
+def render_exception(exc: BaseException) -> str:
+    """``Name: message``, exactly as ``f"{type(exc).__name__}: {exc}"`` renders a
+    healthy exception, and a stated fallback for one that cannot be (#142).
+
+    ``format(exc, "")`` is what the f-string called, so a healthy exception renders
+    to the byte as it did. Its result is coerced BEFORE it is interpolated:
+    ``format`` passes a ``str`` subclass through, and interpolating that would call
+    the subclass's own ``__format__``.
+    """
+    return _rendered(
+        exc, lambda e: f"{type_name(e)}: {str.__str__(format(e, ''))}")
+
+
+def repr_exception(exc: BaseException) -> str:
+    """``repr(exc)`` as an exact ``str``, with ``render_exception``'s fallback.
+
+    ``repr`` passes a ``str`` subclass through unchanged, and the caller hands the
+    result to ``bounded_diagnosis``, which calls ``len`` and slices it.
+    """
+    return _rendered(exc, repr)
 
 
 class Severity(IntEnum):
@@ -585,7 +679,9 @@ class SurfaceFailure:
     What the halt reason CANNOT state is which epoch, because the run reports the
     epochs that completed and this one did not — hence ``epoch``.
 
-    ``detail`` is the exception's type and message, and it is bounded where it is
+    ``detail`` is the exception's type and message as ``render_exception`` renders
+    them — or, for an exception whose message cannot be rendered, its type and that
+    stated fact, never a blank (#142) — and it is bounded where it is
     built (``loop.run``): a backend's exception text carries git's stderr or a list
     of paths and has no length contract, and this string is both printed and written
     into an artefact meant to be shared.
@@ -659,8 +755,9 @@ class GateFailure:
     cannot read is not a measurement.
 
     **And the asymmetry with the branch beside it, which that argument does not
-    reach.** Where the seam RAISED, ``detail`` is ``f"{type(exc).__name__}: {exc}"``
-    — text authored outside this codebase too, bounded in LENGTH and not in content.
+    reach.** Where the seam RAISED, ``detail`` is ``render_exception(exc)`` — for a
+    healthy exception exactly ``f"{type(exc).__name__}: {exc}"``, and a stated
+    fallback naming only types where that cannot be rendered (#142) — text authored outside this codebase too, bounded in LENGTH and not in content.
     A gate raising ``FileNotFoundError`` puts an absolute path into the artefact, and
     a home directory is a person's name on most installs. The two branches are not
     treated alike because they are not alike: an exception's message is the operator's
