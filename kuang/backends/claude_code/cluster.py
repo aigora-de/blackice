@@ -26,8 +26,8 @@ from .contract import _collapse_whitespace, extract_json_blocks
 class ReduceState(Enum):
     """What became of the semantic reduce on one epoch (#30).
 
-    ``session.reduce`` degrades to the identity reduce from four branches
-    carrying five distinct reasons, and until now recorded none of them: a
+    ``session.reduce`` degrades to the identity reduce for five distinct
+    reasons, and until now recorded none of them: a
     clusterer that answered with a conservative grouping merging nothing and one
     that never answered at all produced byte-identical output bar the nine tokens
     the call itself cost. "The ratio is the tell" — ``canonical issues: N
@@ -48,7 +48,7 @@ class ReduceState(Enum):
     DRY_RUN = "dry_run"                      # nothing was spawned
     NOTHING_TO_REDUCE = "nothing_to_reduce"  # fewer than two findings
     RAN = "ran"                              # answered; its grouping was used
-    CALL_FAILED = "call_failed"              # DEGRADED: the call errored
+    CALL_FAILED = "call_failed"              # DEGRADED: the call errored or raised (#149)
     ECHOED_CONTRACT = "echoed_contract"      # DEGRADED: our example, restated (#61)
     NO_GROUPING = "no_grouping"              # DEGRADED: no grouping could be read (#149)
 
@@ -158,16 +158,7 @@ def _extract_cluster_groups(
     raw = kept[-1]
     try:
         data = json.loads(raw)
-    except Exception:  # noqa: BLE001
-        # The reply is untrusted text, so ANY failure to parse it means that no
-        # grouping could be read, and the rule is that, not a list of classes
-        # (#149). The list this replaced was measured incomplete twice: a reply
-        # nested 2,000 deep raises ``RecursionError``, and a digit string over
-        # 4,300 characters raises plain ``ValueError`` (the integer-string limit),
-        # of which ``JSONDecodeError`` is only a subclass. Each escaped a method
-        # documented "Never raises" and could be steered from the reviewed code.
-        #
-        # ``Exception``, never ``BaseException``: Ctrl-C still stops the run.
+    except (json.JSONDecodeError, TypeError):
         return None, ReduceState.NO_GROUPING
     if isinstance(data, dict):
         groups = data.get("clusters", data.get("groups"))

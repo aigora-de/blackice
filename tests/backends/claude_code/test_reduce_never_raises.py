@@ -24,8 +24,8 @@ misalignment would be silent. That is why #149 lands first.
 **The rule, stated once:** every call records exactly one state and returns a
 partition, and no path raises. Two guards, each naming the stage that failed, which
 is the vocabulary ``ReduceState`` already has. A call that raised is ``CALL_FAILED``.
-A reply whose JSON could not be read is ``NO_GROUPING``, the state a truncated reply
-already reached.
+A reply from which no grouping could be read, for any reason, is ``NO_GROUPING``,
+the state a truncated reply already reached.
 
 **Which are regressions, measured on main with this file in place.** Recorded in the
 PR body. The ones green on main say so in their own docstrings: they guard the
@@ -149,6 +149,26 @@ def test_any_failure_to_read_the_reply_is_no_grouping_not_only_the_measured_ones
     assert session.reduce_states == [ReduceState.NO_GROUPING]
 
 
+@pytest.mark.parametrize("text", [None, [[0, 1], [2]]], ids=["null", "list"])
+def test_a_reply_that_is_not_text_falls_back_and_says_so(session, text):
+    """REGRESSION for #149, found at the pre-merge review.
+
+    ``run_claude`` returns the envelope's ``result`` as it finds it, so an envelope
+    whose ``result`` is ``null`` or a list hands the extractor something that is not
+    text, and ``extract_json_blocks`` raises ``TypeError`` outside the ``json.loads``
+    catch. Measured through the REAL ``run_claude`` against a stand-in binary
+    (``states=[] tokens=9``), and red on this fix's first shape, which guarded only
+    the parse. The tokens WERE spent and stay counted: the call succeeded.
+    """
+    session._run_claude = _canned(text)
+
+    clusters = _reduce(session)
+
+    assert _is_identity(clusters, _findings())
+    assert session.reduce_states == [ReduceState.NO_GROUPING]
+    assert session.tokens == 7
+
+
 # --- the defect: a call that raises --------------------------------------------
 
 def test_a_call_that_raises_is_a_failed_call(session):
@@ -184,6 +204,7 @@ def test_the_record_has_exactly_one_state_per_call_on_every_path(session):
         (DIGITS, ReduceState.NO_GROUPING),
         (FileNotFoundError("gone"), ReduceState.CALL_FAILED),
         ("", ReduceState.NO_GROUPING),
+        (None, ReduceState.NO_GROUPING),
         ('{"clusters": [[0], [1], [2]]}', ReduceState.RAN),
     ]
     for reply, _ in replies:
