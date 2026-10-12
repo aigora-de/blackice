@@ -26,8 +26,8 @@ from .contract import _collapse_whitespace, extract_json_blocks
 class ReduceState(Enum):
     """What became of the semantic reduce on one epoch (#30).
 
-    ``session.reduce`` degrades to the identity reduce from four branches
-    carrying five distinct reasons, and until now recorded none of them: a
+    ``session.reduce`` degrades to the identity reduce for five distinct
+    reasons, and until now recorded none of them: a
     clusterer that answered with a conservative grouping merging nothing and one
     that never answered at all produced byte-identical output bar the nine tokens
     the call itself cost. "The ratio is the tell" — ``canonical issues: N
@@ -48,9 +48,9 @@ class ReduceState(Enum):
     DRY_RUN = "dry_run"                      # nothing was spawned
     NOTHING_TO_REDUCE = "nothing_to_reduce"  # fewer than two findings
     RAN = "ran"                              # answered; its grouping was used
-    CALL_FAILED = "call_failed"              # DEGRADED: the call errored
+    CALL_FAILED = "call_failed"              # DEGRADED: the call errored or raised (#149)
     ECHOED_CONTRACT = "echoed_contract"      # DEGRADED: our example, restated (#61)
-    NO_GROUPING = "no_grouping"              # DEGRADED: nothing list-shaped in the reply
+    NO_GROUPING = "no_grouping"              # DEGRADED: no grouping could be read (#149)
 
     @property
     def degraded(self) -> bool:

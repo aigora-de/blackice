@@ -296,10 +296,11 @@ class PanelSession:
     def reduce(self, findings: Sequence[Finding]) -> list[Cluster]:
         """Fold the deduped ledger into canonical clusters via one cheap model call.
 
-        A ``loop.Reduce`` implementation. Never raises: a call error, a missing
-        contract, or fewer than two findings all fall back to the deterministic
-        identity reduce, so the engine's control loop keeps working even when the
-        clusterer is unavailable.
+        A ``loop.Reduce`` implementation. Never raises: a call error, a call that
+        raises, a reply that cannot be read, a missing contract, or fewer than two
+        findings all fall back to the deterministic identity reduce, so the engine's
+        control loop keeps working even when the clusterer is unavailable. That
+        claim was false until #149, and every path now records exactly one state.
 
         Every one of those outcomes is now RECORDED on the session, in ``reduce_states``,
         one entry per epoch (#30). Falling back silently is what made a dead
@@ -318,17 +319,51 @@ class PanelSession:
             self.reduce_states.append(ReduceState.NOTHING_TO_REDUCE)
             return _identity_reduce(findings)
         model = self.cluster_model or self.default_model
-        call = self._run_claude(
-            build_cluster_prompt(findings), _CLUSTER_MANDATE, ["Read"], model)
+        try:
+            call = self._run_claude(
+                build_cluster_prompt(findings), _CLUSTER_MANDATE, ["Read"], model)
+        except Exception:  # noqa: BLE001
+            # A call that RAISED, as against one that returned an error: a
+            # ``claude`` binary that has gone, say, which ``subprocess.run`` reports
+            # by raising. It used to propagate out of a method documented "Never
+            # raises", and to do so BEFORE the state below was appended, leaving the
+            # record one short. The CLI numbers that record by position, so every
+            # later epoch would be reported against the wrong one (#149). It is the
+            # stage that failed, so it is ``CALL_FAILED``, and no tokens are counted
+            # because no result exists to count them from. A call that raised after
+            # its process had run may have spent some that nobody can read back;
+            # what counts against the budget is #65's, not this guard's.
+            #
+            # ``Exception``, never ``BaseException``: an operator's Ctrl-C during the
+            # clusterer call must still stop the run.
+            self.reduce_states.append(ReduceState.CALL_FAILED)
+            return _identity_reduce(findings)
         self.tokens += call.output_tokens
         if call.error:
             self.reduce_states.append(ReduceState.CALL_FAILED)
             return _identity_reduce(findings)
-        groups, state = _extract_cluster_groups(call.text)
+        try:
+            groups, state = _extract_cluster_groups(call.text)
+            clusters = None if groups is None else _groups_to_clusters(findings, groups)
+        except Exception:  # noqa: BLE001
+            # The second stage, guarded whole: everything done to the REPLY. It is
+            # untrusted, so any failure to read a grouping out of it means that none
+            # could be read, and the rule is that, not a list of classes (#149). A
+            # list was measured incomplete three times over: a reply nested deeply
+            # enough raises ``RecursionError`` in ``json.loads`` (from 994 levels on
+            # 3.11 to 116,224 on 3.14: the threshold is the interpreter's, not a
+            # constant anyone can test against), a digit string over
+            # 4,300 characters raises plain ``ValueError`` (the integer-string
+            # limit, of which ``JSONDecodeError`` is only a subclass), and an
+            # envelope whose ``result`` is ``null`` or a list hands the extractor
+            # something that is not text at all. Guarding only the parse was this
+            # fix's first shape, and the pre-merge review broke it with the third.
+            #
+            # The state is appended BELOW, once, on both paths, so the record cannot
+            # come out short. ``Exception``, never ``BaseException``.
+            state, clusters = ReduceState.NO_GROUPING, None
         self.reduce_states.append(state)
-        if groups is None:
-            return _identity_reduce(findings)
-        return _groups_to_clusters(findings, groups)
+        return _identity_reduce(findings) if clusters is None else clusters
 
     # --- checkpoint: refresh cross-epoch memory from the ledger ---
     def on_epoch(self, run: ReviewRun) -> None:
