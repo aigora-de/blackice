@@ -12,7 +12,9 @@ the whole loop. Nothing here decides anything — the halting predicate lives in
 is the one place the bound on a diagnostic string is applied, and the two fields
 it protects — ``Finding.evidence`` and ``SurfaceFailure.detail`` — are both
 defined below. The engine holds it because a backend may import the engine and
-never the reverse (``tests/engine/test_backend_agnostic.py``).
+never the reverse (``tests/engine/test_backend_agnostic.py``). ``render_exception``,
+``repr_exception`` and ``type_name`` sit beside it for the same reason: they are the
+one place an exception is turned into a diagnosis (#142).
 """
 
 from __future__ import annotations
@@ -94,20 +96,33 @@ def bounded_diagnosis(text: str, limit: int = DIAGNOSIS_BOUND) -> str:
 # The C-level slot ``type.__name__`` reads, reached without attribute lookup on the
 # class: a metaclass ``__name__`` property, or a metaclass ``__getattribute__``,
 # cannot intercept it (measured, #142). It can still hand back a ``str`` SUBCLASS
-# — ``cls.__name__ = <subclass>`` is accepted — which is why ``type_name`` coerces.
+# — ``cls.__name__ = <subclass>`` is accepted — which is why ``type_name`` coerces
+# on the fallback as well.
 _TYPE_NAME = type.__dict__["__name__"]
 
 
 def type_name(obj: object) -> str:
-    """The name of ``obj``'s type, as an exact ``str``, by a route that cannot raise.
+    """The name of ``obj``'s type, as an exact ``str``, and never a raise.
 
-    ``type(obj).__name__`` is not that route: a metaclass property makes it raise,
-    and a name assigned a ``str`` subclass carries whatever that subclass
-    overrides into every f-string it reaches. ``str.__str__`` sheds the subclass
-    without calling a method it could override. Unguarded, because nothing here
-    runs code the object's author wrote.
+    **One rule: the name exactly as the guards rendered it before #142, and the
+    C-level slot only where that raises.** ``format(type(obj).__name__, "")`` is
+    what the f-string ``{type(exc).__name__}`` called, so a healthy name — including
+    one a metaclass property supplies without raising — renders to the byte as it
+    did. Consulting the slot FIRST was the first shape of this fix, and a pre-merge
+    review pass caught it renaming such an exception: the fix firing on a healthy
+    value, which is the mirror image of the defect.
+
+    Where the attempt raises — a metaclass property that raises, or a name assigned
+    a ``str`` subclass whose ``__format__`` does — the slot is the exactly-knowable
+    fallback, reached by a route that runs no code the object's author wrote.
+    ``str.__str__`` sheds a subclass on both paths without calling a method it
+    could override. ``Exception``, never ``BaseException``, for ``_rendered``'s
+    reason.
     """
-    return str.__str__(_TYPE_NAME.__get__(type(obj), type))
+    try:
+        return str.__str__(format(type(obj).__name__, ""))
+    except Exception:  # noqa: BLE001
+        return str.__str__(_TYPE_NAME.__get__(type(obj), type))
 
 
 def _rendered(exc: BaseException, render: Callable[[BaseException], str]) -> str:
@@ -136,7 +151,10 @@ def _rendered(exc: BaseException, render: Callable[[BaseException], str]) -> str
     **What it under-reports, stated rather than left to be found.** A ``__str__``
     that HANGS is not contained — that needs a timeout, #66's territory — and one
     that returns an enormous string is bounded by ``bounded_diagnosis`` only after
-    it has been built, so the memory is spent first.
+    it has been built, so the memory is spent first. And ANY ``BaseException``
+    raised while rendering escapes, not only ``KeyboardInterrupt`` — ``SystemExit``,
+    ``GeneratorExit``, a custom subclass — exactly as it does when a seam raises one
+    directly: the doctrine is drawn at ``Exception`` for every guard, not per case.
     """
     try:
         return str.__str__(render(exc))
@@ -661,7 +679,9 @@ class SurfaceFailure:
     What the halt reason CANNOT state is which epoch, because the run reports the
     epochs that completed and this one did not — hence ``epoch``.
 
-    ``detail`` is the exception's type and message, and it is bounded where it is
+    ``detail`` is the exception's type and message as ``render_exception`` renders
+    them — or, for an exception whose message cannot be rendered, its type and that
+    stated fact, never a blank (#142) — and it is bounded where it is
     built (``loop.run``): a backend's exception text carries git's stderr or a list
     of paths and has no length contract, and this string is both printed and written
     into an artefact meant to be shared.
@@ -735,8 +755,9 @@ class GateFailure:
     cannot read is not a measurement.
 
     **And the asymmetry with the branch beside it, which that argument does not
-    reach.** Where the seam RAISED, ``detail`` is ``f"{type(exc).__name__}: {exc}"``
-    — text authored outside this codebase too, bounded in LENGTH and not in content.
+    reach.** Where the seam RAISED, ``detail`` is ``render_exception(exc)`` — for a
+    healthy exception exactly ``f"{type(exc).__name__}: {exc}"``, and a stated
+    fallback naming only types where that cannot be rendered (#142) — text authored outside this codebase too, bounded in LENGTH and not in content.
     A gate raising ``FileNotFoundError`` puts an absolute path into the artefact, and
     a home directory is a person's name on most installs. The two branches are not
     treated alike because they are not alike: an exception's message is the operator's

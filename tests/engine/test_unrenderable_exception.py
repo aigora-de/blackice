@@ -21,10 +21,14 @@ slot hands the subclass back); and, at spawn only, a ``repr`` that returns a
 ``str`` subclass whose ``__len__`` raises inside ``bounded_diagnosis``.
 
 **What each test is.** The seam rows and the helper's hostile rows are the
-regression. Three are guards, green on ``main``, and say so in their own
-docstrings: the ``KeyboardInterrupt`` rows (Ctrl-C must still stop a run) and
-the healthy-exception rows (the mirror image of the defect — a healthy exception
-rendering differently from today is the fix firing on a healthy run).
+regression. Every test green on ``main`` is a GUARD and says so in its own
+docstring — measured with a shim reproducing today's expressions: the
+``KeyboardInterrupt`` rows (Ctrl-C must still stop a run); the healthy-exception
+rows, the captured spawn record and the metaclass-renamed exception (the mirror
+image of the defect — a healthy exception rendering differently from today is the
+fix firing on a healthy run); the hostile-subclass MESSAGE row; and the
+``repr-returns-hostile`` rows at gather and the gate, which are safe on main only
+by accident.
 """
 
 from __future__ import annotations
@@ -247,6 +251,19 @@ def test_ctrl_c_raised_while_rendering_still_stops_the_run(seam):
         _drive(seam, StrRaisesInterrupt)
 
 
+def test_ctrl_c_raised_while_rendering_crosses_the_thread_pool():
+    """GUARD, green on main. Spawn's guard runs inside a worker thread, so the
+    serial row above does not show the interrupt surviving ``pool.map``."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        if persona == "first":
+            raise StrRaisesInterrupt()
+        return PersonaReport(persona=persona, verdict="NO")
+
+    with pytest.raises(KeyboardInterrupt):
+        run(ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=2), PANEL,
+            spawn=spawn, gather=lambda epoch: "diff", parallel=True)
+
+
 def test_the_records_name_the_type_that_could_not_be_rendered():
     """What each seam's record says, end to end: never blank, never generic."""
     expected = "StrRaises: <unrenderable: ValueError raised while rendering it>"
@@ -373,6 +390,51 @@ def test_a_type_name_assigned_a_str_subclass_is_coerced():
 
     assert type(name) is str
     assert name == "AssignedName"
+
+
+class FormatsHostile(str):
+    """A name that formats cleanly — to a ``str`` subclass that is hostile."""
+
+    def __format__(self, spec):
+        return HostileStr("FormatsHostileName")
+
+
+class FormatsHostileName(Exception):
+    pass
+
+
+FormatsHostileName.__name__ = FormatsHostile("FormatsHostileName")
+
+
+def test_a_type_name_formatted_to_a_str_subclass_is_coerced():
+    """The first route — the name as the guards rendered it — succeeds here, and
+    ``format`` passes the subclass through: kills dropping its coercion."""
+    name = _contained(lambda: type_name(FormatsHostileName()))
+
+    assert type(name) is str
+    assert name == "FormatsHostileName"
+
+
+class Renamer(type):
+    @property
+    def __name__(cls):
+        return "Renamed"
+
+
+class RenamedByItsMetaclass(Exception, metaclass=Renamer):
+    pass
+
+
+def test_a_name_a_metaclass_supplies_healthily_is_kept():
+    """GUARD, green on main: the mirror image of the defect. A metaclass property
+    that RETURNS is healthy, and today's f-string used its value. Consulting the
+    C-level slot first — the first shape of this fix, caught by the pre-merge
+    lens pass — rendered ``RenamedByItsMetaclass`` instead."""
+    exc = RenamedByItsMetaclass("m")
+
+    assert _contained(lambda: render_exception(exc)) == \
+        f"{type(exc).__name__}: {exc}" == "Renamed: m"
+    assert _contained(lambda: type_name(exc)) == "Renamed"
 
 
 def test_a_message_returned_as_a_hostile_str_subclass_is_kept():
