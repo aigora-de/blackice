@@ -195,7 +195,11 @@ def test_the_operator_is_told_in_prose_not_by_a_ratio(sourced_repo, capsys,
 
 # --- a reply that cannot be read must not cost the run (#149) -------------------
 
-NESTED_REPLY = CallResult("```json\n" + "[" * 2000 + "]" * 2000 + "\n```\n", 0)
+# A million deep, which raises on every interpreter measured (the threshold runs
+# from 994 levels on 3.11 to 116,224 on 3.14); 2,000 parsed cleanly on CI's 3.12.
+# ``test_reduce_never_raises.py`` asserts the precondition on the interpreter.
+NESTED_REPLY = CallResult(
+    "```json\n" + "[" * 1_000_000 + "]" * 1_000_000 + "\n```\n", 0)
 
 
 def test_a_nested_cluster_reply_still_publishes_the_run(sourced_repo, capsys,

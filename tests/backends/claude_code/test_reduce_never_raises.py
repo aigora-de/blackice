@@ -5,8 +5,13 @@
 Measured on ``main`` at ``0fd8ebb``: the docstring promised that every failure falls
 back to the identity reduce, and three inputs raised straight through it instead.
 
-* A clusterer reply nested 2,000 deep raised ``RecursionError`` out of ``json.loads``.
-  The reply is model-authored, after a prompt built from findings that reviewers
+* A clusterer reply nested deeply enough raised ``RecursionError`` out of
+  ``json.loads``. How deep is the interpreter's business, and it was measured
+  moving by two orders of magnitude: the first raising depth is 994 on 3.11.15,
+  1,498 on 3.12.0, 9,999 on 3.13.11 and 116,224 on 3.14.6. The fixture is a
+  million deep, which raises on all four, and ``_nested_raises_here`` asserts
+  that before any test relies on it. The first push of this file used 2,000,
+  which CI's newer 3.12 parsed as a legitimate empty grouping. The reply is model-authored, after a prompt built from findings that reviewers
   wrote while reading the surface under review, so the input is steerable from the
   reviewed code.
 * A digit string over 4,300 characters raised ``ValueError``, Python's integer-string
@@ -36,6 +41,8 @@ No network, no subprocess: ``_run_claude`` is replaced, as in ``test_cluster.py`
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kuang.backends.claude_code import PanelSession
@@ -44,8 +51,27 @@ from kuang.backends.claude_code.cluster import ReduceState
 from kuang.backends.claude_code.spawn import CallResult
 from kuang.engine import Finding, ReviewSpec, Severity
 
-NESTED = "[" * 2000 + "]" * 2000
+NESTED = "[" * 1_000_000 + "]" * 1_000_000
 DIGITS = "[[" + "1" * 5000 + "]]"
+
+
+def _nested_raises_here() -> None:
+    """Fail LOUDLY if this interpreter parses ``NESTED``, rather than pass quietly.
+
+    A fixture that cannot express the axis makes every test below test nothing:
+    the reply would parse as a legal empty grouping and report ``ran``, which is
+    exactly what CI's newer 3.12 did with the 2,000-deep first version.
+    """
+    try:
+        json.loads(NESTED)
+    except RecursionError:
+        return
+    raise AssertionError("this interpreter parses NESTED: deepen the fixture")
+
+
+@pytest.fixture(autouse=True)
+def _fixture_expresses_the_axis():
+    _nested_raises_here()
 
 
 def _findings():

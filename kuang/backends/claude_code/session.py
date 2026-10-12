@@ -349,8 +349,10 @@ class PanelSession:
             # The second stage, guarded whole: everything done to the REPLY. It is
             # untrusted, so any failure to read a grouping out of it means that none
             # could be read, and the rule is that, not a list of classes (#149). A
-            # list was measured incomplete three times over: a reply nested 2,000
-            # deep raises ``RecursionError`` in ``json.loads``, a digit string over
+            # list was measured incomplete three times over: a reply nested deeply
+            # enough raises ``RecursionError`` in ``json.loads`` (from 994 levels on
+            # 3.11 to 116,224 on 3.14: the threshold is the interpreter's, not a
+            # constant anyone can test against), a digit string over
             # 4,300 characters raises plain ``ValueError`` (the integer-string
             # limit, of which ``JSONDecodeError`` is only a subclass), and an
             # envelope whose ``result`` is ``null`` or a list hands the extractor
