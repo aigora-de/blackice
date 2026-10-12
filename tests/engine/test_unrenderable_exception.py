@@ -265,6 +265,15 @@ def test_a_gate_returning_an_object_with_a_hostile_type_name_is_reported_as_that
 
 # --- the helper -------------------------------------------------------------
 
+
+class OwnFormat(Exception):
+    """Healthy, and rendered through its own ``__format__``: the f-string the
+    guards used called ``format``, not ``str``, so the helper must too."""
+
+    def __format__(self, spec):
+        return "formatted by the exception itself"
+
+
 HEALTHY = [
     RuntimeError("RuntimeError: boom"),
     ValueError("invalid literal for int() with base 10: '~120'"),
@@ -273,6 +282,7 @@ HEALTHY = [
     EOFError(),
     KeyError("missing"),
     Exception("multi\nline\tmessage"),
+    OwnFormat("message"),
 ]
 
 
