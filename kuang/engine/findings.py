@@ -129,10 +129,11 @@ def _rendered(exc: BaseException, render: Callable[[BaseException], str]) -> str
     """``render(exc)`` as an exact ``str``, or a fallback that says it failed.
 
     The one guarded core under ``render_exception`` and ``repr_exception`` (#142).
-    Every seam guard (#85, #25, #129, and #148's ``_call_seam``) renders the exception it caught INSIDE its
-    own ``except``, so an exception that cannot be rendered used to raise from the
-    handler and discard the run the guard exists to keep. Three local ``try``s
-    would be the patched table; this is the one place the rule is applied.
+    Every seam guard (#85, #25, #129, and #148's ``_call_seam``) renders the
+    exception it caught INSIDE its own ``except``, so an exception that cannot be
+    rendered used to raise from the handler and discard the run the guard exists to
+    keep. Three local ``try``s would be the patched table; this is the one place the
+    rule is applied.
 
     **What the fallback says, decided rather than left blank.** A blank record is
     #111's defect — a record that does not say what it could not keep — and a

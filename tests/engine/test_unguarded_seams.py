@@ -530,8 +530,11 @@ def test_an_adjudication_that_is_not_exactly_a_bool_is_no_answer(value):
     dropped, the run halted ``converged`` and nothing was recorded. Measured. A verdict
     is ``True`` or ``False`` exactly; anything else is a failed read, so the finding
     stays unadjudicated, open, and on the breaker's count. On main the HALT was already
-    right — the raw value was kept and counted open by accident — so main is red here
-    only on the missing record (measured); this fix's first shape is red on the halt.
+    right (the raw value counted open by accident), but main is red here on
+    ``verified is None``, because it STORED the raw value. On this fix's first shape the
+    falsy rows are red on the halt and the truthy ones (``1``, ``"yes"``) on
+    ``verified``, which ``bool`` turned into ``True``. Both measured, the second time
+    by the second pre-merge review after the first wording was wrong.
     """
     review_run = _run(severity=Severity.UGLY, verdict="YES",
                       adjudicate=_returns(value))
@@ -560,7 +563,9 @@ def test_a_non_finite_clock_reading_is_unknown(value):
     """REGRESSION found at the pre-merge review: NaN compares false with every ceiling.
 
     So it read as a measurement that never reaches one, silently disarming an armed
-    time budget — on main as on this fix's first shape.
+    time budget — on main as on this fix's first shape. ``inf`` fails the other way on
+    the first shape: it halted ``budget``, a ceiling reported reached that nobody
+    measured.
     """
     values = iter([0.0, value, value, value])
     review_run = _run(halting=HaltingSet(time_budget_s=1, max_epochs=3, stall_patience=5),
@@ -620,3 +625,45 @@ def test_a_non_finite_first_clock_reading_fails_before_anything_is_spent():
             spawn=_spawn_for(Severity.BLOCKER, calls=calls),
             gather=lambda epoch: "s", parallel=False, clock=lambda: float("nan"))
     assert calls == []
+
+
+# --- found by the second pre-merge review -------------------------------------------
+
+def test_an_int_subclass_token_count_is_a_measurement():
+    """The pair: an ``int`` subclass is a real count, and on ``9819101`` an exact-type
+    check halted a healthy run ``unmeasured`` on one (measured by the second review).
+    Main compared it as a count, as this does, and is red here only on the missing
+    record (measured)."""
+    class Tokens(int):
+        pass
+
+    review_run = _run(halting=HaltingSet(token_budget=100, max_epochs=3, stall_patience=5),
+                      budget_spent=_returns(Tokens(5)))
+
+    assert review_run.halt_reason is HaltReason.EPOCH
+    assert _seams(review_run) == [[], [], []]
+
+
+@pytest.mark.parametrize("value", ["5", True], ids=["str", "bool"])
+def test_a_clock_reading_that_is_not_a_number_is_unknown(value):
+    """REGRESSION found at the second review: ``float(...)`` admitted ``"5"`` and
+    ``True`` as readings, a looser rule than the token count's for the same kind of
+    input. Main raised on ``"5"`` after the spend."""
+    values = iter([0.0, value, value, value])
+    review_run = _run(halting=HaltingSet(time_budget_s=60, max_epochs=3, stall_patience=5),
+                      clock=lambda: next(values))
+
+    assert review_run.halt_reason is HaltReason.UNMEASURED
+    assert _seams(review_run) == [["clock"]]
+
+
+def test_an_elapsed_interval_that_overflows_is_unknown():
+    """REGRESSION found at the second review: two finite readings ``1e308`` apart in
+    each direction subtract to ``-inf``, which disarmed the time ceiling on main and on
+    every earlier shape of this fix."""
+    values = iter([1e308, -1e308, -1e308, -1e308])
+    review_run = _run(halting=HaltingSet(time_budget_s=60, max_epochs=3, stall_patience=5),
+                      clock=lambda: next(values))
+
+    assert review_run.halt_reason is HaltReason.UNMEASURED
+    assert _seams(review_run) == [["clock"]]

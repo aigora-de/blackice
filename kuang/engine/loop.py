@@ -59,6 +59,7 @@ sibling holds what.
 from __future__ import annotations
 
 import math
+import operator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Sequence, TypeVar
@@ -181,33 +182,50 @@ def _as_scope(value: object) -> bool:
 
 
 def _as_token_count(value: object) -> int:
-    """A token count is a non-negative ``int`` — not a ``bool``, a float or a negative.
+    """A token count is a non-negative integer, returned as an exact ``int``.
 
-    Each excluded value converted cleanly under ``operator.index`` or arithmetic and was
-    read as a MEASUREMENT: ``True`` as one token, and a negative count as one that can
-    never reach the ceiling, which silently disarms the operator's spend bound for the
-    rest of the run. A healthy counter cannot produce any of them, so excluding them
-    cannot fire on a healthy run.
+    Excluded: a ``bool`` (``True`` read as one token), anything that is not an ``int``
+    (a float, a string, ``None``), and a negative, which can never reach the ceiling and
+    so silently disarms the operator's spend bound for the rest of the run. An ``int``
+    SUBCLASS is admitted and normalised by ``operator.index``: it is a real count, and
+    the second pre-merge review measured an exact-type check halting a healthy run
+    ``unmeasured`` on one. No healthy counter produces an excluded value.
     """
-    if type(value) is not int or value < 0:
-        raise ValueError(f"budget_spent returned {type_name(value)}"
-                         + ("" if type(value) is not int else " below zero")
-                         + ", not a token count")
-    return value
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"budget_spent returned {type_name(value)}, not a token count")
+    count = operator.index(value)
+    if count < 0:
+        raise ValueError("budget_spent returned a negative token count")
+    return count
 
 
 def _as_clock_reading(value: object) -> float:
-    """A clock reading is a FINITE float. NaN compares false with every ceiling, so it
-    read as a measurement that never reaches one: the same silent disarm.
+    """A clock reading is a FINITE ``int`` or ``float`` (not a ``bool``), as a ``float``.
+
+    The same rule as the token count, so one kind of input meets one rule: the second
+    pre-merge review measured ``float(...)`` admitting ``"5"`` and ``True`` as readings.
+    NaN compares false with every ceiling, so it read as a measurement that never
+    reaches one (the same silent disarm), and ``inf`` as one that reached it at once.
 
     A reading BELOW the start is still a measurement and is kept: an injected wall
     clock can step backwards, and refusing it would fire on a healthy run. It can delay
     the time ceiling by the size of the step; it cannot disarm it.
     """
-    reading = float(value)  # type: ignore[arg-type]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"clock returned {type_name(value)}, not a reading")
+    reading = float(value)
     if not math.isfinite(reading):
         raise ValueError("clock returned a non-finite reading")
     return reading
+
+
+def _elapsed(value: object, start: float) -> float:
+    """Seconds since ``start``, which must itself be finite: two finite readings far
+    enough apart overflow to ``inf`` (measured at ``1e308`` then ``-1e308``)."""
+    elapsed = _as_clock_reading(value) - start
+    if not math.isfinite(elapsed):
+        raise ValueError("clock readings differ by a non-finite interval")
+    return elapsed
 
 
 def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Cluster]:
@@ -218,8 +236,10 @@ def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Clus
     ``Finding`` (looked up by key). So nothing the loop reads afterwards — ``members``,
     ``key``, ``severity`` — can raise from a foreign object. The title is carried as
     given: the loop never reads it, and requiring an exact ``str`` here recorded the
-    engine's OWN identity reduce as a failed seam whenever a finding's title was not one
-    (the pre-merge review). What a title may be is the findings contract's question. A member the ledger does not hold is a ``KeyError`` here, never a phantom
+    engine's OWN identity reduce as a failed seam whenever a finding's title was not
+    one (the pre-merge review). What a title may be is the findings contract's
+    question, so ``Cluster.title``'s annotation is a contract on reducers, not a
+    guarantee this function adds. A member the ledger does not hold is a ``KeyError`` here, never a phantom
     finding. Whether a reduce that leaves a ledger finding OUT is a failure is #150's to
     rule, and this does not pre-empt it.
     """
@@ -512,7 +532,7 @@ def run(
         _, tokens_spent = _call_seam(
             "budget_spent", result.seam_failures, lambda: _as_token_count(budget_spent()))
         _, elapsed_s = _call_seam(
-            "clock", result.seam_failures, lambda: _as_clock_reading(clock()) - start)
+            "clock", result.seam_failures, lambda: _elapsed(clock(), start))
         _, scope_known = _call_seam(
             "scope_complete", result.seam_failures, lambda: _as_scope(scope_complete(result)))
         result.halt = _evaluate_halt(
