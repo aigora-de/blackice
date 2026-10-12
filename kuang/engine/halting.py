@@ -32,6 +32,7 @@ class HaltReason(Enum):
     ABORTED = "aborted"                # the human gate stopped the loop
     NO_REVIEW = "no_review"            # no persona reviewed: there is no verdict
     SURFACE_LOST = "surface_lost"      # the surface could not be re-assembled
+    UNMEASURED = "unmeasured"          # an armed ceiling's input could not be read
 
     # NO_REVIEW is for a state the loop cannot usefully CONTINUE from, which is the
     # rule that keeps this vocabulary from growing once per issue. Nothing was
@@ -53,6 +54,17 @@ class HaltReason(Enum):
     # here they reviewed, and their findings print two lines below the halt line.
     # Which channel failed is the distinction #30 drew between SPAWN_FAILED and
     # AGENT_ERROR, and folding the two together would lose it.
+    #
+    # UNMEASURED passes the rule on its merits too, by the maintainer's ruling on #148
+    # (2026-10-12). An operator who ARMS a token or time ceiling has set the run's spend
+    # bound. If its input cannot be read, ``BUDGET`` would claim a ceiling was REACHED
+    # that nobody measured, and continuing would claim one was NOT, so the run spends
+    # past a bound it can no longer see. The loop cannot continue within the operator's
+    # bound, which is "a state it cannot usefully continue from". #129's ruling to
+    # continue past a failed gate does not carry here: part of its argument was that the
+    # token budget still bounds the run, and here that is what is down. A DISARMED
+    # ceiling's input cannot change the halt, so its failure is recorded and the run
+    # continues. #32 was told, because the vocabulary is its subject too.
 
 
 @dataclass
@@ -77,8 +89,8 @@ def _evaluate_halt(
     *,
     epochs_done: int,
     stall_epochs: int,
-    tokens_spent: int,
-    elapsed_s: float,
+    tokens_spent: int | None,
+    elapsed_s: float | None,
     scope_complete: bool,
     quorum_met: bool,
     no_persona_reviewed: bool,
@@ -90,6 +102,11 @@ def _evaluate_halt(
     blocker AND (optionally) scope complete AND quorum — and every one of those
     three conjuncts is satisfied by ABSENCE, which is why NO_REVIEW is evaluated
     ahead of it (#72).
+
+    ``tokens_spent`` or ``elapsed_s`` is ``None`` where its injected input could not be
+    read (#148). ``None`` is UNKNOWN, never zero: it fires no ceiling, and where its
+    ceiling is armed it halts ``UNMEASURED``, last, so that every exactly-knowable
+    reason is preferred to it.
     """
     # 1. Circuit-breaker: a ruin-class finding halts and escalates immediately.
     if result.open_uglies > 0:
@@ -111,9 +128,11 @@ def _evaluate_halt(
         return HaltReason.CONVERGED
 
     # 4. Resource ceilings (partial halts — BADs may remain, but must be tracked).
-    if halting.token_budget is not None and tokens_spent >= halting.token_budget:
+    if (halting.token_budget is not None and tokens_spent is not None
+            and tokens_spent >= halting.token_budget):
         return HaltReason.BUDGET
-    if halting.time_budget_s is not None and elapsed_s >= halting.time_budget_s:
+    if (halting.time_budget_s is not None and elapsed_s is not None
+            and elapsed_s >= halting.time_budget_s):
         return HaltReason.BUDGET
     if epochs_done >= halting.max_epochs:
         return HaltReason.EPOCH
@@ -121,5 +140,13 @@ def _evaluate_halt(
     # 5. Stall: no new material findings for K epochs while blockers persist.
     if stall_epochs >= halting.stall_patience and result.open_blockers > 0:
         return HaltReason.STALL
+
+    # 6. An armed ceiling that could not be read (#148). LAST, because continuing is the
+    #    one action it forbids: anything above that halts the run for a reason the run
+    #    actually measured is the truer reason. A disarmed ceiling's unknown is no
+    #    obstacle to continuing, so it is not consulted.
+    if ((halting.token_budget is not None and tokens_spent is None)
+            or (halting.time_budget_s is not None and elapsed_s is None)):
+        return HaltReason.UNMEASURED
 
     return None
