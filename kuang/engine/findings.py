@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 # Imported at run time, not only for typing: ``ReviewRun.converged`` compares
 # against ``HaltReason.CONVERGED`` in its body. The dependency stays one-way —
@@ -89,6 +89,82 @@ def bounded_diagnosis(text: str, limit: int = DIAGNOSIS_BOUND) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}… [truncated: {limit} of {len(text)} characters]"
+
+
+# The C-level slot ``type.__name__`` reads, reached without attribute lookup on the
+# class: a metaclass ``__name__`` property, or a metaclass ``__getattribute__``,
+# cannot intercept it (measured, #142). It can still hand back a ``str`` SUBCLASS
+# — ``cls.__name__ = <subclass>`` is accepted — which is why ``type_name`` coerces.
+_TYPE_NAME = type.__dict__["__name__"]
+
+
+def type_name(obj: object) -> str:
+    """The name of ``obj``'s type, as an exact ``str``, by a route that cannot raise.
+
+    ``type(obj).__name__`` is not that route: a metaclass property makes it raise,
+    and a name assigned a ``str`` subclass carries whatever that subclass
+    overrides into every f-string it reaches. ``str.__str__`` sheds the subclass
+    without calling a method it could override. Unguarded, because nothing here
+    runs code the object's author wrote.
+    """
+    return str.__str__(_TYPE_NAME.__get__(type(obj), type))
+
+
+def _rendered(exc: BaseException, render: Callable[[BaseException], str]) -> str:
+    """``render(exc)`` as an exact ``str``, or a fallback that says it failed.
+
+    The one guarded core under ``render_exception`` and ``repr_exception`` (#142).
+    Every seam guard (#85, #25, #129) renders the exception it caught INSIDE its
+    own ``except``, so an exception that cannot be rendered used to raise from the
+    handler and discard the run the guard exists to keep. Three local ``try``s
+    would be the patched table; this is the one place the rule is applied.
+
+    **What the fallback says, decided rather than left blank.** A blank record is
+    #111's defect — a record that does not say what it could not keep — and a
+    generic string hides which type failed. So it names the two things exactly
+    knowable when the message is not: the type that could not be rendered, and
+    the type of what was raised trying. NEVER the secondary exception's MESSAGE:
+    it can be hostile too, and rendering it reopens the defect one level down.
+    Not ``object.__repr__``, which never raises but embeds a memory address and
+    would put non-determinism into the artefact.
+
+    ``Exception``, never ``BaseException``, for the reason every guard states: a
+    ``KeyboardInterrupt`` raised while rendering cannot be told from an operator's
+    Ctrl-C, and swallowing it would make Ctrl-C unreliable at the moment it is
+    needed.
+
+    **What it under-reports, stated rather than left to be found.** A ``__str__``
+    that HANGS is not contained — that needs a timeout, #66's territory — and one
+    that returns an enormous string is bounded by ``bounded_diagnosis`` only after
+    it has been built, so the memory is spent first.
+    """
+    try:
+        return str.__str__(render(exc))
+    except Exception as failure:  # noqa: BLE001
+        return (f"{type_name(exc)}: "
+                f"<unrenderable: {type_name(failure)} raised while rendering it>")
+
+
+def render_exception(exc: BaseException) -> str:
+    """``Name: message``, exactly as ``f"{type(exc).__name__}: {exc}"`` renders a
+    healthy exception, and a stated fallback for one that cannot be (#142).
+
+    ``format(exc, "")`` is what the f-string called, so a healthy exception renders
+    to the byte as it did. Its result is coerced BEFORE it is interpolated:
+    ``format`` passes a ``str`` subclass through, and interpolating that would call
+    the subclass's own ``__format__``.
+    """
+    return _rendered(
+        exc, lambda e: f"{type_name(e)}: {str.__str__(format(e, ''))}")
+
+
+def repr_exception(exc: BaseException) -> str:
+    """``repr(exc)`` as an exact ``str``, with ``render_exception``'s fallback.
+
+    ``repr`` passes a ``str`` subclass through unchanged, and the caller hands the
+    result to ``bounded_diagnosis``, which calls ``len`` and slices it.
+    """
+    return _rendered(exc, repr)
 
 
 class Severity(IntEnum):

@@ -64,7 +64,8 @@ from typing import Callable, Sequence
 
 from .findings import (EpochResult, Finding, GateFailure, PersonaReport,
                        PersonaStatus, ReviewRun, Severity, Suppression,
-                       SurfaceFailure, bounded_diagnosis)
+                       SurfaceFailure, bounded_diagnosis, render_exception,
+                       repr_exception, type_name)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -215,7 +216,11 @@ def run(
             # operator was ever going to be shown; measuring the raw exception
             # would report whitespace as loss. ``bounded_diagnosis`` carries the
             # marker doctrine and its citation.
-            collapsed = " ".join(f"{type(exc).__name__}: {exc}".split())
+            #
+            # Rendered by ``render_exception``, never by interpolating ``exc``
+            # here: an exception that cannot be rendered raised from inside this
+            # handler and discarded the run it exists to keep (#142).
+            collapsed = " ".join(render_exception(exc).split())
             review_run.surface_failure = SurfaceFailure(
                 epoch=epoch, detail=bounded_diagnosis(collapsed),
                 detail_chars=len(collapsed))
@@ -237,14 +242,15 @@ def run(
                 # The status is set HERE, at the source, and is the engine's own:
                 # ``SPAWN_FAILED`` means our code raised, against a backend's
                 # ``AGENT_ERROR`` for a runtime that ran and returned no review.
-                # A run must be able to tell those apart (#30).
+                # A run must be able to tell those apart (#30). Both strings come
+                # from the guarded helpers, never from ``exc`` directly (#142).
                 return PersonaReport(
                     persona=pm[0], verdict=None,
                     status=PersonaStatus.SPAWN_FAILED,
                     findings=[
-                        Finding(pm[0], f"persona failed: {type(exc).__name__}: {exc}",
+                        Finding(pm[0], f"persona failed: {render_exception(exc)}",
                                 Severity.NOTE, "meta",
-                                evidence=bounded_diagnosis(repr(exc)),
+                                evidence=bounded_diagnosis(repr_exception(exc)),
                                 about_run=True)])
 
         if parallel and len(panel.personas) > 1:
@@ -413,7 +419,7 @@ def run(
                 # The diagnosis names the TYPE and stops there: ``repr`` of what came
                 # back is unbounded text authored outside this codebase, on its way
                 # to a published artefact (``GateFailure`` states that in full).
-                diagnosis = f"gate returned {type(returned).__name__}, not GateDecision"
+                diagnosis = f"gate returned {type_name(returned)}, not GateDecision"
         except Exception as exc:  # noqa: BLE001
             # The third of three injected seams, and the last to be guarded (#129).
             # ``gather`` has had this treatment since #85 and ``spawn`` since #25,
@@ -430,7 +436,10 @@ def run(
             # its own ``input()`` call, so what reaches here in practice is a stdout
             # fault (where the entry point does not absorb it, as ``kuang``'s has
             # since #141), a foreign gate, or a bug in a gate's branch logic.
-            diagnosis = f"{type(exc).__name__}: {exc}"
+            #
+            # Rendered by the guarded helper, as at the other two seams: this line
+            # is OUTSIDE the ``try`` it follows, so nothing contains it (#142).
+            diagnosis = render_exception(exc)
         # What the run does next is RULED, not decided here: see ``GateDecision.asked``,
         # which names "the seam itself failed (#129)" as one of ``None``'s three cases.
         # The run CONTINUES and records that no answer was resolved.
