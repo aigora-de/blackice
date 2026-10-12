@@ -296,10 +296,11 @@ class PanelSession:
     def reduce(self, findings: Sequence[Finding]) -> list[Cluster]:
         """Fold the deduped ledger into canonical clusters via one cheap model call.
 
-        A ``loop.Reduce`` implementation. Never raises: a call error, a missing
-        contract, or fewer than two findings all fall back to the deterministic
-        identity reduce, so the engine's control loop keeps working even when the
-        clusterer is unavailable.
+        A ``loop.Reduce`` implementation. Never raises: a call error, a call that
+        raises, a reply that cannot be read, a missing contract, or fewer than two
+        findings all fall back to the deterministic identity reduce, so the engine's
+        control loop keeps working even when the clusterer is unavailable. That
+        claim was false until #149, and every path now records exactly one state.
 
         Every one of those outcomes is now RECORDED on the session, in ``reduce_states``,
         one entry per epoch (#30). Falling back silently is what made a dead
@@ -318,8 +319,23 @@ class PanelSession:
             self.reduce_states.append(ReduceState.NOTHING_TO_REDUCE)
             return _identity_reduce(findings)
         model = self.cluster_model or self.default_model
-        call = self._run_claude(
-            build_cluster_prompt(findings), _CLUSTER_MANDATE, ["Read"], model)
+        try:
+            call = self._run_claude(
+                build_cluster_prompt(findings), _CLUSTER_MANDATE, ["Read"], model)
+        except Exception:  # noqa: BLE001
+            # A call that RAISED, as against one that returned an error: a
+            # ``claude`` binary that has gone, say, which ``subprocess.run`` reports
+            # by raising. It used to propagate out of a method documented "Never
+            # raises", and to do so BEFORE the state below was appended, leaving the
+            # record one short. The CLI numbers that record by position, so every
+            # later epoch would be reported against the wrong one (#149). It is the
+            # stage that failed, so it is ``CALL_FAILED``, and no tokens are counted
+            # because no result exists to count them from.
+            #
+            # ``Exception``, never ``BaseException``: an operator's Ctrl-C during the
+            # clusterer call must still stop the run.
+            self.reduce_states.append(ReduceState.CALL_FAILED)
+            return _identity_reduce(findings)
         self.tokens += call.output_tokens
         if call.error:
             self.reduce_states.append(ReduceState.CALL_FAILED)

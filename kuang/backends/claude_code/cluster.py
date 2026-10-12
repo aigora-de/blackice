@@ -50,7 +50,7 @@ class ReduceState(Enum):
     RAN = "ran"                              # answered; its grouping was used
     CALL_FAILED = "call_failed"              # DEGRADED: the call errored
     ECHOED_CONTRACT = "echoed_contract"      # DEGRADED: our example, restated (#61)
-    NO_GROUPING = "no_grouping"              # DEGRADED: nothing list-shaped in the reply
+    NO_GROUPING = "no_grouping"              # DEGRADED: no grouping could be read (#149)
 
     @property
     def degraded(self) -> bool:
@@ -158,7 +158,16 @@ def _extract_cluster_groups(
     raw = kept[-1]
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+    except Exception:  # noqa: BLE001
+        # The reply is untrusted text, so ANY failure to parse it means that no
+        # grouping could be read, and the rule is that, not a list of classes
+        # (#149). The list this replaced was measured incomplete twice: a reply
+        # nested 2,000 deep raises ``RecursionError``, and a digit string over
+        # 4,300 characters raises plain ``ValueError`` (the integer-string limit),
+        # of which ``JSONDecodeError`` is only a subclass. Each escaped a method
+        # documented "Never raises" and could be steered from the reviewed code.
+        #
+        # ``Exception``, never ``BaseException``: Ctrl-C still stops the run.
         return None, ReduceState.NO_GROUPING
     if isinstance(data, dict):
         groups = data.get("clusters", data.get("groups"))

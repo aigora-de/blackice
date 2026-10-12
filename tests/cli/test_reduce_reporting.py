@@ -191,3 +191,58 @@ def test_the_operator_is_told_in_prose_not_by_a_ratio(sourced_repo, capsys,
 
     assert "semantic reduce" in console.lower()
     assert "degraded" in console.lower()
+
+
+# --- a reply that cannot be read must not cost the run (#149) -------------------
+
+NESTED_REPLY = CallResult("```json\n" + "[" * 2000 + "]" * 2000 + "\n```\n", 0)
+
+
+def test_a_nested_cluster_reply_still_publishes_the_run(sourced_repo, capsys,
+                                                        monkeypatch):
+    """REGRESSION for #149: on main ``RecursionError`` escaped ``kuang.cli.main``.
+
+    No ``--- JSON ---`` block was printed, so every finding from a panel already paid
+    for was lost. The reply is model-authored, so this is a live trigger under
+    ``--semantic-dedup``.
+    """
+    _stub(monkeypatch, NESTED_REPLY)
+    try:
+        _run(sourced_repo, "--semantic-dedup")
+    except Exception as exc:  # noqa: BLE001
+        raise AssertionError(f"escaped main: {type(exc).__name__}") from None
+    payload = _artefact(capsys.readouterr().out)
+
+    assert payload["reduce"]["epochs"] == [
+        {"epoch": 1, "state": "no_grouping", "degraded": True}]
+    assert len(payload["findings"]) == 2
+
+
+def test_each_epoch_reports_its_own_reduce_state(sourced_repo, capsys, monkeypatch):
+    """REGRESSION for #149: the state list is numbered by POSITION, so it must not
+    be short.
+
+    Epoch 1's clusterer replies with something unreadable and epoch 2's answers.
+    A record left short by epoch 1 would publish epoch 2's ``ran`` as epoch 1's,
+    with no epoch 2 at all. Asserted on the whole list, so a shift cannot pass.
+    """
+    replies = iter([NESTED_REPLY, MERGED_NOTHING])
+    _stub(monkeypatch, None)
+    real = session_module.PanelSession._run_claude
+
+    def _fake(self, prompt, mandate, tools, model):  # noqa: ANN001
+        if "synthesiser" in mandate:
+            return next(replies)
+        return real(self, prompt, mandate, tools, model)
+
+    monkeypatch.setattr(session_module.PanelSession, "_run_claude", _fake)
+    try:
+        _run(sourced_repo, "--semantic-dedup", "--max-epochs", "2",
+             "--stall-patience", "2")
+    except Exception as exc:  # noqa: BLE001
+        raise AssertionError(f"escaped main: {type(exc).__name__}") from None
+    payload = _artefact(capsys.readouterr().out)
+
+    assert payload["reduce"]["epochs"] == [
+        {"epoch": 1, "state": "no_grouping", "degraded": True},
+        {"epoch": 2, "state": "ran", "degraded": False}]
