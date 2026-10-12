@@ -459,6 +459,27 @@ def test_the_fallback_is_deterministic():
     assert "0x" not in first
 
 
+class InterruptingMeta(type):
+    @property
+    def __name__(cls):
+        raise KeyboardInterrupt
+
+
+class NameInterrupts(Exception, metaclass=InterruptingMeta):
+    pass
+
+
+@pytest.mark.parametrize("seam", ["gather", "spawn", "gate"])
+def test_ctrl_c_raised_while_naming_the_type_still_stops_the_run(seam):
+    """GUARD, green on main. The type name is a SECOND place rendering runs
+    foreign code, with its own guard: kills ``type_name`` catching
+    ``BaseException``, which survived the matrix until this row existed."""
+    with pytest.raises(KeyboardInterrupt):
+        _drive(seam, NameInterrupts)
+    with pytest.raises(KeyboardInterrupt):
+        type_name(NameInterrupts())
+
+
 def test_ctrl_c_raised_while_rendering_escapes_the_helper():
     """GUARD, green on main: the helper catches ``Exception``, never more."""
     with pytest.raises(KeyboardInterrupt):
