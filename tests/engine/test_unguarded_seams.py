@@ -363,13 +363,16 @@ def test_a_healthy_predicate_never_halts_unmeasured():
 
 # --- the second door: hostile return values ---------------------------------------
 
-@pytest.mark.parametrize("value", ["x", None, 1.5, _BadBool()],
-                         ids=["str", "none", "float", "bad-bool"])
-def test_a_budget_counter_that_returns_no_integer_is_unknown(value):
+@pytest.mark.parametrize("value", ["x", None, 1.5, _BadBool(), True, -5],
+                         ids=["str", "none", "float", "bad-bool", "bool", "negative"])
+def test_a_budget_counter_that_returns_no_token_count_is_unknown(value):
     """REGRESSION for #148: ``"x"`` against an armed ceiling raised TypeError on main.
 
-    ``operator.index`` inside the guard: an ``int`` (or ``bool``, an ``int``) passes
-    exactly, and anything that is not one is a failed read rather than a measurement.
+    A token count is a non-negative ``int`` exactly. ``True`` and a negative were added
+    at the pre-merge review: both converted cleanly under this fix's first shape
+    (``operator.index``) and read as MEASUREMENTS — a negative one that can never reach
+    the ceiling, silently disarming it, as it does on main. A float counter, which main
+    compared, is unknown here too; the shipped counter is an ``int``.
     """
     review_run = _run(halting=HaltingSet(token_budget=100, max_epochs=3, stall_patience=5),
                       budget_spent=_returns(value))
@@ -513,3 +516,107 @@ def test_ctrl_c_from_any_guarded_seam_still_stops_the_run(seam):
         run(ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=2), PANEL,
             spawn=_spawn_for(Severity.BLOCKER), gather=lambda epoch: "s",
             parallel=False, **seams)
+
+
+# --- found by the pre-merge lens pass: categorical answers, and the mirror image ------
+
+@pytest.mark.parametrize("value", [None, 0, "", [], 1, "yes"],
+                         ids=["none", "zero", "empty-str", "empty-list", "one", "str"])
+def test_an_adjudication_that_is_not_exactly_a_bool_is_no_answer(value):
+    """REGRESSION for the UGLY the pre-merge review found in this fix's first shape.
+
+    ``bool(adjudicate(...))`` coerced ``None`` — ``Finding.verified``'s own word for
+    "not checked" — and every falsy value to ``False``, a REFUTATION: both UGLYs were
+    dropped, the run halted ``converged`` and nothing was recorded. Measured. A verdict
+    is ``True`` or ``False`` exactly; anything else is a failed read, so the finding
+    stays unadjudicated, open, and on the breaker's count. On main the HALT was already
+    right — the raw value was kept and counted open by accident — so main is red here
+    only on the missing record (measured); this fix's first shape is red on the halt.
+    """
+    review_run = _run(severity=Severity.UGLY, verdict="YES",
+                      adjudicate=_returns(value))
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert all(f.verified is None for f in review_run.ledger.values())
+    assert _seams(review_run) == [["adjudicate", "adjudicate"]]
+
+
+def test_an_exact_verdict_is_used_as_given():
+    """The pair: ``True`` confirms and ``False`` refutes, unrecorded.
+
+    Green on this fix's first shape; red on main only on the missing record (measured).
+    """
+    answers = iter([True, False, True, False])
+    review_run = _run(adjudicate=lambda f, s: next(answers))
+
+    epoch_one = review_run.epochs[0].reports
+    assert [f.verified for r in epoch_one for f in r.findings] == [True, False]
+    assert len(review_run.ledger) == 2
+    assert _seams(review_run) == [[], []]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")], ids=["nan", "inf"])
+def test_a_non_finite_clock_reading_is_unknown(value):
+    """REGRESSION found at the pre-merge review: NaN compares false with every ceiling.
+
+    So it read as a measurement that never reaches one, silently disarming an armed
+    time budget — on main as on this fix's first shape.
+    """
+    values = iter([0.0, value, value, value])
+    review_run = _run(halting=HaltingSet(time_budget_s=1, max_epochs=3, stall_patience=5),
+                      clock=lambda: next(values))
+
+    assert review_run.halt_reason is HaltReason.UNMEASURED
+    assert _seams(review_run) == [["clock"]]
+
+
+def test_a_clock_that_steps_backwards_is_still_a_measurement():
+    """The pair: an injected wall clock can step back, and refusing that reading would
+    fire on a healthy run. It delays the ceiling; it cannot disarm it. Green on this
+    fix's first shape; red on main only on the missing record (measured)."""
+    values = iter([100.0, 99.0, 250.0])
+    review_run = _run(halting=HaltingSet(time_budget_s=60, max_epochs=3, stall_patience=5),
+                      clock=lambda: next(values))
+
+    assert review_run.halt_reason is HaltReason.BUDGET
+    assert len(review_run.epochs) == 2
+    assert _seams(review_run) == [[], []]
+
+
+def test_a_scope_answer_that_is_not_exactly_a_bool_is_recorded():
+    """REGRESSION: ``None`` from a scope predicate read silently as "not complete"."""
+    review_run = _run(severity=None, verdict="YES", scope_complete=_returns(None))
+
+    assert review_run.halt_reason is HaltReason.EPOCH
+    assert _seams(review_run) == [["scope_complete"], ["scope_complete"]]
+
+
+def test_the_engines_own_reduce_is_never_recorded_as_a_failure():
+    """The mirror image the pre-merge review found. Red on main only on the missing record
+    (main has no guard to fire); red on this fix's first shape on the false record.
+
+    Requiring an exact ``str`` title while rebuilding recorded the engine's OWN identity
+    reduce as a failed seam whenever a finding's title was not one, and the fallback
+    then rebuilt the very title it had refused. The loop never reads a title.
+    """
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        return PersonaReport(persona=persona, verdict="NO", tokens=9,
+                             status=PersonaStatus.CONTRIBUTED,
+                             findings=[Finding(persona, None, Severity.BLOCKER,
+                                               f"{persona}-{epoch}", "a.py", epoch)])
+    review_run = _contained(lambda: run(
+        ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=2, stall_patience=5), PANEL,
+        spawn=spawn, gather=lambda epoch: "s", parallel=False))
+
+    assert _seams(review_run) == [[], []]
+
+
+def test_a_non_finite_first_clock_reading_fails_before_anything_is_spent():
+    """REGRESSION found at the pre-merge review: the start is checked like every
+    reading, at the one call where failing costs nothing."""
+    calls = []
+    with pytest.raises(ValueError):
+        run(ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=2), PANEL,
+            spawn=_spawn_for(Severity.BLOCKER, calls=calls),
+            gather=lambda epoch: "s", parallel=False, clock=lambda: float("nan"))
+    assert calls == []
