@@ -483,6 +483,22 @@ def test_the_first_clock_call_still_propagates():
     assert calls == []
 
 
+def test_a_first_clock_reading_that_is_no_number_fails_before_anything_is_spent():
+    """REGRESSION for #148: on main ``None`` was stored as the start, the panel was
+    paid for, and the subtraction raised afterwards.
+
+    Converted at the unguarded first call, so the failure lands where it costs nothing.
+    Without the conversion every later epoch's elapsed time would be unreadable, which
+    an armed time ceiling would halt ``UNMEASURED`` on, after the spend.
+    """
+    calls = []
+    with pytest.raises(TypeError):
+        run(ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=2), PANEL,
+            spawn=_spawn_for(Severity.BLOCKER, calls=calls),
+            gather=lambda epoch: "s", parallel=False, clock=lambda: None)
+    assert calls == []
+
+
 @pytest.mark.parametrize("seam", ["adjudicate", "reduce", "budget_spent", "clock",
                                   "scope_complete", "checkpoint"])
 def test_ctrl_c_from_any_guarded_seam_still_stops_the_run(seam):
