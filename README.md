@@ -44,7 +44,7 @@ Each **epoch** fans out the panel (independent within the epoch), adjudicates
 findings against source, and dedups against the running ledger — a coarse
 signature always, plus an opt-in **semantic reduce** (`--semantic-dedup`) that
 folds the same concept raised by several personas (differently worded or located)
-into one **canonical cluster**, so stall/convergence *and* the human summary count
+into one **canonical cluster**, so the stall counter *and* the human summary count
 issues, not raw restatements. A cluster's severity is the **max** of its members,
 so a merge can never hide an UGLY. Epoch *N>1* receives all prior findings
 (cross-epoch memory). **A human convenes and gates; the panel informs — it does
@@ -105,7 +105,7 @@ kuang --repo <root> --base <base> --head <head> \
 kuang --repo <root> --paths src/pkg/a.py src/pkg/b/ --max-epochs 2
 
 # Semantic dedup: fold the same concept (raised by several personas, worded or
-# located differently) into one canonical issue — sharpens stall/convergence and
+# located differently) into one canonical issue — sharpens the stall counter and
 # the summary. Opt-in: adds a cheap clustering call per epoch (--cluster-model to
 # pick a model); the default is a deterministic signature dedup.
 kuang --repo <root> --base <base> --head <head> \

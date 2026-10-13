@@ -297,7 +297,10 @@ class Cluster:
     every member finding (persona + evidence) stays visible, grouped. ``severity``
     is the ``max`` of its members (UGLY-preserving: a merge can never hide a
     ruin-class finding); ``open_severity`` — the max over members still *open* — is
-    what the halt gate reads, so a withdrawn UGLY does not keep the breaker latched.
+    what the published per-epoch counts read, so a withdrawn UGLY is not counted open.
+    The halt itself reads a snapshot of the ledger (#150). These counts agree with it
+    in zero-ness because the loop admits only clusters that partition the ledger,
+    unless a seam has written the epoch's record or a finding since (#155).
     """
 
     members: tuple[Finding, ...]
@@ -852,20 +855,31 @@ class ReviewRun:
     # --- raw, finding-level view (every panellist's claim stays visible) ---
     @property
     def open_uglies(self) -> list[Finding]:
-        return [f for f in self.ledger.values() if f.severity.is_ugly and f.counts_open]
+        # The halt's snapshot is taken from this list unguarded (#150), so ``counts_open``
+        # is read FIRST and the severity compared by ``is`` (the comparison ``is_ugly``
+        # makes) rather than by a method call on it. Neither raises on any VALUE a seam
+        # wrote into a finding's severity or verdict, and a withdrawn entry's severity is
+        # never read, as main's cluster counts never read it (the third pre-merge review
+        # measured the reverse order raising on a gate's duck-typed ledger entry). A seam
+        # that removes the attribute itself is #155, and main raises there too.
+        return [f for f in self.ledger.values()
+                if f.counts_open and f.severity is Severity.UGLY]
 
     @property
     def open_blockers(self) -> list[Finding]:
         return [
             f for f in self.ledger.values()
-            if f.severity is Severity.BLOCKER and f.counts_open
+            if f.counts_open and f.severity is Severity.BLOCKER   # ``open_uglies``' order
         ]
 
-    # --- canonical, cluster-level view (what the halt gate counts) ---
-    # ``open_severity`` is the max over a cluster's *open* members, so these are
-    # zero exactly when the finding-level lists above are (a withdrawn UGLY does
-    # not count) — the breaker/convergence *timing* is unchanged, only the reported
-    # magnitude collapses to canonical issues.
+    # --- canonical, cluster-level view (what the run publishes per epoch) ---
+    # ``open_severity`` is the max over a cluster's *open* members, so over clusters
+    # that PARTITION the ledger these are zero exactly when the finding-level lists
+    # above are (a withdrawn UGLY does not count; the BLOCKER list given no open UGLY).
+    # The halt reads a snapshot of the finding-level lists (#150), taken by the loop
+    # before ``reduce`` runs: a cluster is what an injected ``reduce`` returned, and
+    # the partition these counts rest on was doctrine the engine did not enforce until
+    # ``_as_partition``. Only the reported magnitude collapses to canonical issues.
     @property
     def open_ugly_clusters(self) -> list[Cluster]:
         return [c for c in self.clusters if c.open_severity is Severity.UGLY]

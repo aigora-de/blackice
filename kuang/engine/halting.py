@@ -7,18 +7,15 @@ is the doctrine: the UGLY circuit-breaker is checked first and short-circuits ev
 an unexhausted budget. ``_evaluate_halt`` is a pure function of its arguments —
 no clock, no randomness — so the engine's control flow is reproducible.
 
-Imports from ``findings`` are annotations only, which is what keeps the
-dependency one-way: ``findings`` imports ``HaltReason`` from here at run time.
+It imports nothing from ``findings`` (since #150 the predicate takes categorical
+values, not records), which is what keeps the dependency one-way: ``findings``
+imports ``HaltReason`` from here at run time.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:                    # annotations only — see the module docstring
-    from .findings import EpochResult, ReviewRun
 
 
 class HaltReason(Enum):
@@ -83,10 +80,10 @@ class HaltingSet:
 
 
 def _evaluate_halt(
-    result: EpochResult,
-    run: ReviewRun,
     halting: HaltingSet,
     *,
+    ugly_open: bool,
+    blocker_open: bool,
     epochs_done: int,
     stall_epochs: int,
     tokens_spent: int | None,
@@ -107,9 +104,24 @@ def _evaluate_halt(
     read (#148). ``None`` is UNKNOWN, never zero: it fires no ceiling, and where its
     ceiling is armed it halts ``UNMEASURED``, last, so that every exactly-knowable
     reason is preferred to it.
+
+    ``ugly_open`` and ``blocker_open`` are the open-severity zero-tests: "is any UGLY
+    open" for the breaker, and "is any BLOCKER open" for ``CONVERGED`` and ``STALL``
+    (#150). Categorical, and taken by ``loop.run`` from the LEDGER at the one point in
+    an epoch where no seam but ``spawn`` and ``adjudicate`` has touched it (see the
+    snapshot there). Never from the clusters, which are whatever an injected ``reduce``
+    returned: reading them, ``reduce -> []`` with open UGLYs in the ledger halted
+    ``epoch`` on ``f17c256``, or ``converged`` on a panel voting YES.
+
+    Values rather than records, because every record this could read is handed mutably
+    to a seam before the halt is taken. Each of the two pre-merge reviews measured one
+    such door converging an UGLY run: a ``scope_complete`` zeroing the epoch's published
+    counts (main), and one writing through the ledger's own frozen ``Finding`` objects
+    (this fix's second shape, which read the ledger live). A predicate handed two
+    booleans cannot be steered through anything.
     """
     # 1. Circuit-breaker: a ruin-class finding halts and escalates immediately.
-    if result.open_uglies > 0:
+    if ugly_open:
         return HaltReason.ESCALATE_UGLY
 
     # 2. Nothing was reviewed (#72). An epoch in which the run KNOWS no persona
@@ -124,7 +136,7 @@ def _evaluate_halt(
 
     # 3. Convergence (good): nothing dangerous or blocking is open.
     scope_ok = scope_complete or not halting.require_scope_complete
-    if result.open_blockers == 0 and scope_ok and quorum_met:
+    if not blocker_open and scope_ok and quorum_met:
         return HaltReason.CONVERGED
 
     # 4. Resource ceilings (partial halts — BADs may remain, but must be tracked).
@@ -138,7 +150,7 @@ def _evaluate_halt(
         return HaltReason.EPOCH
 
     # 5. Stall: no new material findings for K epochs while blockers persist.
-    if stall_epochs >= halting.stall_patience and result.open_blockers > 0:
+    if stall_epochs >= halting.stall_patience and blocker_open:
         return HaltReason.STALL
 
     # 6. An armed ceiling that could not be read (#148). LAST, because continuing is the

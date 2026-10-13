@@ -952,11 +952,18 @@ def _report(argv: list[str] | None) -> int:
                     "new_clusters": len(e.new_clusters),
                     "material_new_clusters": len(e.material_new_clusters),
                     "resighted": e.resighted,
-                    # The two counts the halt was actually TAKEN on, per epoch
-                    # (#117). The breaker reads ``open_uglies`` and both CONVERGED
-                    # and STALL read ``open_blockers`` — cluster-level, against the
-                    # ledger as it stood at that epoch — and their only reporter
-                    # was the gate, which never runs for the epoch a run halts on.
+                    # The published record of the halt's open-severity inputs, per
+                    # epoch (#117): the breaker's is whether any UGLY is open, and
+                    # CONVERGED's and STALL's whether any BLOCKER is. Cluster-level
+                    # counts, against the ledger as it stood at that epoch. Since
+                    # #150 the halt is not taken on these numbers but on a snapshot
+                    # of that ledger, and they agree with it in zero-ness because the
+                    # engine admits only clusters that partition it. The BLOCKER
+                    # count's agreement holds while no UGLY is open, which is the
+                    # only time it is consulted. Neither agrees where a seam has
+                    # written the record or a finding since; that is #155. Their
+                    # only reporter was the gate, which never runs for the epoch a
+                    # run halts on.
                     # The top-level pair is a DIFFERENT measurement: finding-level,
                     # over the ledger as it ENDS. Verified by execution: a
                     # two-epoch run publishes 2 there while epoch 1 decided on 1,

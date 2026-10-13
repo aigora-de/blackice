@@ -70,7 +70,7 @@ human. You are the *synthesiser, not the judge* — the human decides.
      failure is recorded in `seam_failures` and the run continues.
    - **`--semantic-dedup`** (opt-in) folds the same concern raised by multiple
      personas — differently worded, at different lines, or across files — into one
-     **canonical cluster**, so stall/convergence and your synthesis count *issues*,
+     **canonical cluster**, so the stall counter and your synthesis count *issues*,
      not restatements. A cluster's severity is the **max** of its members
      (UGLY-preserving: a merge never hides ruin). It adds one cheap clustering call
      per epoch (`--cluster-model` to choose the model); the default is a

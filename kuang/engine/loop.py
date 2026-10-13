@@ -26,7 +26,8 @@ offline — it does not itself depend on any particular LLM SDK):
                        evidence" step). Optional; defaults to "trust".
 * ``Reduce``         — fold an epoch's signature-deduped findings into canonical
                        *clusters* (the semantic dedup / synthesis step), feeding
-                       BOTH stall/convergence detection AND the human view.
+                       BOTH the stall counter AND the human view. No halt's
+                       zero-test reads them (#150): those are a ledger snapshot.
                        Deterministic default (identity = one cluster per
                        signature); an LLM clusterer is a backend concern.
 * ``GatherSurface``  — produce the review surface for an epoch (e.g. ``git diff``).
@@ -240,11 +241,58 @@ def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Clus
     one (the pre-merge review). What a title may be is the findings contract's
     question, so ``Cluster.title``'s annotation is a contract on reducers, not a
     guarantee this function adds. A member the ledger does not hold is a ``KeyError`` here, never a phantom
-    finding. Whether a reduce that leaves a ledger finding OUT is a failure is #150's to
-    rule, and this does not pre-empt it.
+    finding. A reduce that leaves a ledger finding OUT is ``_as_partition``'s to refuse.
     """
     return [Cluster(members=tuple(ledger[m.key] for m in c.members), title=c.title)
             for c in returned]  # type: ignore[attr-defined]
+
+
+def _as_partition(clusters: list[Cluster], ledger: dict[str, Finding]) -> list[Cluster]:
+    """The clusters, if they partition the ledger; otherwise the reduce failed (#150).
+
+    #61's rule, "a reduce must partition the findings", was doctrine in ``Reduce`` and
+    enforced only in one backend's clusterer. This makes it the ENGINE's rule: every
+    ledger finding in exactly one cluster, and no cluster empty. Called inside
+    ``_call_seam`` after ``_rebuilt_clusters``, so a non-partition is a failed reduce
+    and the identity follows. That is #148's rule unchanged, because the clusters the
+    engine counts are a conversion of what ``reduce`` returned.
+
+    Measured on ``f17c256``: ``reduce -> []`` with open UGLYs in the ledger halted
+    ``epoch`` on a panel voting NO and ``converged`` on one voting YES, recording
+    nothing. The breaker no longer depends on this (its zero-test is a snapshot of
+    the ledger, taken before ``reduce`` runs), but the COUNTS do. A cluster list that
+    omits, repeats or invents an issue publishes a number of canonical issues that is
+    not one, and with no failure recorded the run would halt correctly and say nothing
+    about the reducer that could not count.
+
+    An EMPTY cluster is a non-partition, by the maintainer's ruling of 2026-10-13. It
+    omits nothing and moves no halt (``severity`` defaults to NOTE, ``open_severity``
+    is ``None``), but ``all`` over no members is ``True``, so it was a NEW cluster in
+    every epoch, and as an issue in the change it is a claim about nothing.
+
+    Falling back rather than repairing, which is what ``_groups_to_clusters`` does one
+    layer down: the identity is the state before the call, and a reducer that has shown
+    it cannot count is trusted with nothing, including the merges it got right. On a
+    failed epoch, ``new_clusters`` and the stall counter are therefore exactly what a run
+    without a clusterer computes.
+
+    The detail is built from COUNTS. A title is model-authored text on its way to a
+    published artefact (#118, #121), and which findings went missing is not named, as
+    ``SeamFailure`` already states for ``adjudicate``.
+    """
+    placed: dict[str, int] = {}
+    for c in clusters:
+        for m in c.members:
+            placed[m.key] = placed.get(m.key, 0) + 1
+    missing = sum(1 for key in ledger if key not in placed)
+    repeated = sum(1 for n in placed.values() if n > 1)
+    empty = sum(1 for c in clusters if not c.members)
+    if missing or repeated or empty:
+        raise ValueError(
+            f"reduce did not partition the ledger: findings in no cluster: {missing} of "
+            f"{len(ledger)}; findings placed more than once: {repeated}; "
+            f"empty clusters: {empty}")
+    return clusters
 
 
 # =============================================================================
@@ -282,8 +330,10 @@ def run(
             surface that cannot be built is an operator error, never a review).
         adjudicate: Verifies a finding against source; False refutes/drops it.
         reduce: Folds the deduped ledger into canonical clusters (semantic dedup);
-            defaults to identity (one cluster per signature). Feeds stall/
-            convergence AND the human-facing grouping.
+            defaults to identity (one cluster per signature). Feeds the stall
+            counter AND the human-facing grouping. Its clusters must partition the
+            ledger, or the reduce has failed (#150). No zero-test on open severity
+            reads them: those are a snapshot of the ledger taken before it runs.
         human_gate: Called after each epoch; may stop the loop. May raise, and may
             return something that is not a ``GateDecision``: either is contained as a
             ``GateFailure`` on that epoch, a ``GateDecision(stop=False, asked=None)``
@@ -471,15 +521,39 @@ def run(
                     # no stall counter.
                     suppressed.append(Suppression(finding=f, holder=held))
 
+        # The halt's open-severity zero-tests, taken HERE (#150): from the LEDGER, after
+        # the insert, and before ``reduce`` or any halting input is called. The ledger is
+        # what the panel raised and adjudication kept; the clusters below are whatever an
+        # injected ``reduce`` returned, and reading them let ``reduce -> []`` switch the
+        # breaker off. Taken NOW rather than when the predicate runs, because every seam
+        # called between here and there is handed objects that alias the ledger's own
+        # findings (``reduce`` the findings, ``scope_complete`` the epoch's record), and a
+        # frozen dataclass without slots can still be written through ``__dict__``: the
+        # second pre-merge review measured a ``scope_complete`` doing exactly that
+        # converging an UGLY run when the ledger was read live. Main's cluster counts were
+        # taken before the halting inputs too. Neither read raises on any value a seam
+        # wrote into a finding's severity or verdict (see ``ReviewRun.open_uglies``).
+        # What this does NOT cover, all of it #155 and all of it as on main: a seam
+        # called after this point that writes a finding changes NEXT epoch's snapshot (an
+        # UGLY cannot be masked that way, because the breaker fires on the epoch it
+        # lands, but a BLOCKER can); ``adjudicate`` runs BEFORE this point, so what it
+        # writes into a finding is what the snapshot reads; and ``checkpoint`` can still
+        # rewrite the halt after it is taken.
+        ugly_open = bool(review_run.open_uglies)
+        blocker_open = bool(review_run.open_blockers)
+
         # Layer 2 (reduce/view): fold the whole deduped ledger into canonical
         # clusters. The default is identity (one cluster per signature); a semantic
         # reducer collapses re-worded / re-located dups of a single concept.
         #
-        # A failed reduce is the identity reduce, the state before the call (#148).
+        # A failed reduce is the identity reduce, the state before the call (#148), and
+        # one that does not partition the ledger has failed (#150).
         ledger_findings = list(review_run.ledger.values())
         reduced, clusters = _call_seam(
             "reduce", failures,
-            lambda: _rebuilt_clusters(reduce(ledger_findings), review_run.ledger))
+            lambda: _as_partition(_rebuilt_clusters(reduce(ledger_findings),
+                                                    review_run.ledger),
+                                  review_run.ledger))
         review_run.clusters = clusters if reduced else _identity_reduce(ledger_findings)
 
         # A cluster is *new this epoch* iff every member first appeared this epoch
@@ -536,7 +610,9 @@ def run(
         _, scope_known = _call_seam(
             "scope_complete", result.seam_failures, lambda: _as_scope(scope_complete(result)))
         result.halt = _evaluate_halt(
-            result, review_run, halting,
+            halting,
+            ugly_open=ugly_open,
+            blocker_open=blocker_open,
             epochs_done=epoch,
             stall_epochs=stall_epochs,
             tokens_spent=tokens_spent,

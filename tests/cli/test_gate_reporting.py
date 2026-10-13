@@ -548,12 +548,14 @@ def test_a_dry_run_keeps_the_half_of_the_line_that_is_true(sourced_repo,
         f"the true half of the line did not survive: {block[1]!r}"
 
 
-# --- 4. the counts the halt was actually taken on ----------------------------
+# --- 4. the published record of the halt's open-severity inputs -------------
 
 def test_the_artefact_records_the_two_counts_the_halt_was_taken_on(
         sourced_repo, monkeypatch, capsys):
-    """The circuit-breaker reads ``open_uglies``; CONVERGED and STALL read
-    ``open_blockers`` — both per epoch, and reported by nothing but the gate.
+    """The published record of the breaker's input (``open_uglies``) and of CONVERGED's
+    and STALL's (``open_blockers``) — both per epoch, and reported by nothing but the
+    gate. (Since #150 the halt is taken on a ledger snapshot, which these counts agree
+    with in zero-ness because the loop admits only clusters that partition the ledger.)
 
     The artefact's top-level counts are a different measurement: finding-level,
     over the ledger as it ENDS. Verified by execution while planning #117 — a
