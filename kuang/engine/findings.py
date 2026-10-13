@@ -298,8 +298,9 @@ class Cluster:
     is the ``max`` of its members (UGLY-preserving: a merge can never hide a
     ruin-class finding); ``open_severity`` — the max over members still *open* — is
     what the published per-epoch counts read, so a withdrawn UGLY is not counted open.
-    The halt itself reads the ledger (#150), which these counts agree with in zero-ness
-    because the loop admits only clusters that partition it.
+    The halt itself reads a snapshot of the ledger (#150). These counts agree with it
+    in zero-ness because the loop admits only clusters that partition the ledger,
+    unless a seam has written the epoch's record or a finding since (filed).
     """
 
     members: tuple[Finding, ...]
@@ -854,7 +855,11 @@ class ReviewRun:
     # --- raw, finding-level view (every panellist's claim stays visible) ---
     @property
     def open_uglies(self) -> list[Finding]:
-        return [f for f in self.ledger.values() if f.severity.is_ugly and f.counts_open]
+        # ``is``, never a method call on the severity: the halt's snapshot is taken from
+        # this list unguarded, and an identity test cannot raise whatever a seam wrote
+        # into a finding (#150). It is the same comparison ``is_ugly`` makes.
+        return [f for f in self.ledger.values()
+                if f.severity is Severity.UGLY and f.counts_open]
 
     @property
     def open_blockers(self) -> list[Finding]:
@@ -867,10 +872,10 @@ class ReviewRun:
     # ``open_severity`` is the max over a cluster's *open* members, so over clusters
     # that PARTITION the ledger these are zero exactly when the finding-level lists
     # above are (a withdrawn UGLY does not count; the BLOCKER list given no open UGLY).
-    # The halt reads the finding-level lists (#150): a cluster is what an injected
-    # ``reduce`` returned, and the partition these counts rest on was doctrine the
-    # engine did not enforce until ``_as_partition``. Only the reported magnitude
-    # collapses to canonical issues.
+    # The halt reads a snapshot of the finding-level lists (#150), taken by the loop
+    # before ``reduce`` runs: a cluster is what an injected ``reduce`` returned, and
+    # the partition these counts rest on was doctrine the engine did not enforce until
+    # ``_as_partition``. Only the reported magnitude collapses to canonical issues.
     @property
     def open_ugly_clusters(self) -> list[Cluster]:
         return [c for c in self.clusters if c.open_severity is Severity.UGLY]

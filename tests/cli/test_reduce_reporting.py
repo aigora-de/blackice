@@ -305,7 +305,7 @@ def test_a_healthy_clusterer_records_no_seam_failure_end_to_end(
     """GREEN ON MAIN, by design: #150's healthy twin through ``kuang.cli.main``. The
     engine's partition check must not fire on what the shipped clusterer returns — a
     genuine merge, or a reply it has already repaired — and the merge must survive into
-    the published clusters and the per-epoch count the halt is decided on.
+    the published clusters and the per-epoch count recording the halt's input.
     """
     reduce, payload = _reduce_of(sourced_repo, capsys, monkeypatch, reply)
 

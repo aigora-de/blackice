@@ -26,7 +26,8 @@ offline — it does not itself depend on any particular LLM SDK):
                        evidence" step). Optional; defaults to "trust".
 * ``Reduce``         — fold an epoch's signature-deduped findings into canonical
                        *clusters* (the semantic dedup / synthesis step), feeding
-                       BOTH stall/convergence detection AND the human view.
+                       BOTH the stall counter AND the human view. No halt's
+                       zero-test reads them (#150): those are a ledger snapshot.
                        Deterministic default (identity = one cluster per
                        signature); an LLM clusterer is a backend concern.
 * ``GatherSurface``  — produce the review surface for an epoch (e.g. ``git diff``).
@@ -258,8 +259,8 @@ def _as_partition(clusters: list[Cluster], ledger: dict[str, Finding]) -> list[C
 
     Measured on ``f17c256``: ``reduce -> []`` with open UGLYs in the ledger halted
     ``epoch`` on a panel voting NO and ``converged`` on one voting YES, recording
-    nothing. The breaker no longer depends on this (``_evaluate_halt`` reads the
-    ledger), but the COUNTS do. A cluster list that omits, repeats or invents an issue
+    nothing. The breaker no longer depends on this (its zero-test is a snapshot of
+    the ledger, taken before ``reduce`` runs), but the COUNTS do. A cluster list that omits, repeats or invents an issue
     publishes a number of canonical issues that is not one, and with no failure
     recorded the run would halt correctly and say nothing about the reducer that could
     not count.
@@ -332,7 +333,7 @@ def run(
             defaults to identity (one cluster per signature). Feeds the stall
             counter AND the human-facing grouping. Its clusters must partition the
             ledger, or the reduce has failed (#150). No zero-test on open severity
-            reads them: those read the ledger (``_evaluate_halt``).
+            reads them: those are a snapshot of the ledger taken before it runs.
         human_gate: Called after each epoch; may stop the loop. May raise, and may
             return something that is not a ``GateDecision``: either is contained as a
             ``GateFailure`` on that epoch, a ``GateDecision(stop=False, asked=None)``
@@ -520,6 +521,24 @@ def run(
                     # no stall counter.
                     suppressed.append(Suppression(finding=f, holder=held))
 
+        # The halt's open-severity zero-tests, taken HERE (#150): from the LEDGER, after
+        # the insert, and before ``reduce`` or any halting input is called. The ledger is
+        # what the panel raised and adjudication kept; the clusters below are whatever an
+        # injected ``reduce`` returned, and reading them let ``reduce -> []`` switch the
+        # breaker off. Taken NOW rather than when the predicate runs, because every seam
+        # called between here and there is handed objects that alias the ledger's own
+        # findings (``reduce`` the findings, ``scope_complete`` the epoch's record), and a
+        # frozen dataclass without slots can still be written through ``__dict__``: the
+        # second pre-merge review measured a ``scope_complete`` doing exactly that
+        # converging an UGLY run when the ledger was read live. Main's cluster counts were
+        # taken before the halting inputs too. Both reads are identity tests, so neither
+        # can raise on whatever a seam wrote last epoch. What this does NOT cover: a seam
+        # that writes a finding now changes NEXT epoch's snapshot, as it changed main's
+        # counts; an UGLY cannot be masked that way, because the breaker fires on the
+        # epoch it lands, but a BLOCKER can. That is the side-effect class, filed.
+        ugly_open = bool(review_run.open_uglies)
+        blocker_open = bool(review_run.open_blockers)
+
         # Layer 2 (reduce/view): fold the whole deduped ledger into canonical
         # clusters. The default is identity (one cluster per signature); a semantic
         # reducer collapses re-worded / re-located dups of a single concept.
@@ -588,7 +607,9 @@ def run(
         _, scope_known = _call_seam(
             "scope_complete", result.seam_failures, lambda: _as_scope(scope_complete(result)))
         result.halt = _evaluate_halt(
-            review_run, halting,
+            halting,
+            ugly_open=ugly_open,
+            blocker_open=blocker_open,
             epochs_done=epoch,
             stall_epochs=stall_epochs,
             tokens_spent=tokens_spent,

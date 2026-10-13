@@ -7,18 +7,15 @@ is the doctrine: the UGLY circuit-breaker is checked first and short-circuits ev
 an unexhausted budget. ``_evaluate_halt`` is a pure function of its arguments —
 no clock, no randomness — so the engine's control flow is reproducible.
 
-Imports from ``findings`` are annotations only, which is what keeps the
-dependency one-way: ``findings`` imports ``HaltReason`` from here at run time.
+It imports nothing from ``findings`` (since #150 the predicate takes categorical
+values, not records), which is what keeps the dependency one-way: ``findings``
+imports ``HaltReason`` from here at run time.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:                    # annotations only — see the module docstring
-    from .findings import ReviewRun
 
 
 class HaltReason(Enum):
@@ -83,9 +80,10 @@ class HaltingSet:
 
 
 def _evaluate_halt(
-    run: ReviewRun,
     halting: HaltingSet,
     *,
+    ugly_open: bool,
+    blocker_open: bool,
     epochs_done: int,
     stall_epochs: int,
     tokens_spent: int | None,
@@ -107,32 +105,24 @@ def _evaluate_halt(
     ceiling is armed it halts ``UNMEASURED``, last, so that every exactly-knowable
     reason is preferred to it.
 
-    Every zero-test on open severity reads the LEDGER, not the clusters (#150): "is any
-    UGLY open" for the breaker, and "is any BLOCKER open" for ``CONVERGED`` and
-    ``STALL``. The ledger holds what the panel raised and adjudication kept; a cluster is
-    whatever an injected ``reduce`` returned. So no value a reduce returns, and none of
-    the three halting inputs, can switch the breaker off. (The ledger is still made of
-    ``spawn``'s reports and ``adjudicate``'s verdicts, and a refutation withdrawing an
-    UGLY is the design, not a masking.) Measured on ``f17c256`` reading clusters:
-    ``reduce -> []`` with open UGLYs in the ledger halted ``epoch``, or ``converged`` on
-    a panel voting YES.
+    ``ugly_open`` and ``blocker_open`` are the open-severity zero-tests: "is any UGLY
+    open" for the breaker, and "is any BLOCKER open" for ``CONVERGED`` and ``STALL``
+    (#150). Categorical, and taken by ``loop.run`` from the LEDGER at the one point in
+    an epoch where no seam but ``spawn`` and ``adjudicate`` has touched it (see the
+    snapshot there). Never from the clusters, which are whatever an injected ``reduce``
+    returned: reading them, ``reduce -> []`` with open UGLYs in the ledger halted
+    ``epoch`` on ``f17c256``, or ``converged`` on a panel voting YES.
 
-    The epoch's ``EpochResult`` is deliberately NOT a parameter. Its ``open_uglies`` and
-    ``open_blockers`` are what the run PUBLISHES as these decisions' inputs (#117), and
-    they agree with the ledger in zero-ness wherever the loop built them, because it
-    admits only clusters that partition the ledger (``_as_partition``) and
-    ``Cluster.open_severity`` is the max over open members. The BLOCKER count agrees only
-    while no UGLY is open, since a cluster merging the two counts as UGLY, and while one
-    is open the breaker halts before either BLOCKER test is reached. But the record is
-    MUTABLE, and ``scope_complete`` is handed it before this runs: the pre-merge review
-    measured a scope check that zeroed the counts converging an UGLY run on ``f17c256``.
-    A predicate that cannot see the record cannot be steered through it.
+    Values rather than records, because every record this could read is handed mutably
+    to a seam before the halt is taken. Each of the two pre-merge reviews measured one
+    such door converging an UGLY run: a ``scope_complete`` zeroing the epoch's published
+    counts (main), and one writing through the ledger's own frozen ``Finding`` objects
+    (this fix's second shape, which read the ledger live). A predicate handed two
+    booleans cannot be steered through anything.
     """
     # 1. Circuit-breaker: a ruin-class finding halts and escalates immediately.
-    if run.open_uglies:
+    if ugly_open:
         return HaltReason.ESCALATE_UGLY
-
-    blocker_open = bool(run.open_blockers)
 
     # 2. Nothing was reviewed (#72). An epoch in which the run KNOWS no persona
     #    produced a review cannot converge, and repeating it cannot change that:

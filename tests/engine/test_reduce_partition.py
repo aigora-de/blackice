@@ -15,13 +15,16 @@ Two mechanisms, by the maintainer's ruling of 2026-10-13, and they kill differen
   finding in exactly one cluster, and no cluster empty. A non-partition is a failed
   reduce — a ``SeamFailure`` with an engine-authored, count-only detail — and the
   identity reduce follows: "the state before the call", never a repair.
-* **(b) the halting zero-tests read the LEDGER.** "Is any UGLY open" and "is any
-  BLOCKER open" are exactly knowable there, and no value ``reduce`` returns reaches
-  them. Under a partition they agree with the cluster counts by construction. (b) is
-  NOT only a backstop for (a): the epoch's record is mutable and ``scope_complete`` is
-  handed it before the halt is taken, and the pre-merge review measured a scope check
-  that zeroed the counts converging an UGLY run on main. The ``scope_complete`` tests
-  below are (b)'s loop-level regressions.
+* **(b) the halting zero-tests read the LEDGER**, as a snapshot taken after the insert
+  and before ``reduce`` or any halting input runs, and the predicate takes two booleans.
+  "Is any UGLY open" and "is any BLOCKER open" are exactly knowable there, and no value
+  ``reduce`` returns reaches them. Under a partition they agree with the cluster counts
+  by construction. (b) is NOT only a backstop for (a). The epoch's record is mutable,
+  and ``scope_complete`` is handed it before the halt is taken: the first pre-merge
+  review measured a scope check that zeroed the counts converging an UGLY run on main,
+  and the second measured one writing through the ledger's own findings doing the same
+  to this fix's second shape, which read the ledger live. The ``scope_complete`` and
+  ``reduce`` side-effect tests below are (b)'s loop-level regressions.
 
 The ruin row itself — an UGLY run halting ``converged`` on a non-partition — is killed
 by neither mechanism alone in the mutation matrix, and that is the design rather than a
@@ -33,24 +36,21 @@ No shipped reducer is known to trigger this: the identity makes singletons and t
 backend's clusterer repairs to a strict partition. The case is #89's premise.
 
 **Which are regressions, measured on main with this file in place.** It imports nothing
-main lacks, but ``_evaluate_halt`` no longer takes the epoch's record, so ``_decide`` was
-measured on main through a minimal SHIM handing main the record it read, with the counts
-taken from the clusters given (``test_unguarded_seams.py``'s ``_halt`` likewise). Tests
-green on main say so in their own docstrings.
+main lacks, but ``_evaluate_halt`` now takes two booleans where main took the epoch's
+record and the run, so ``test_unguarded_seams.py``'s ``_halt`` was measured on main
+through a minimal SHIM handing main the record it read. Tests green on main say so in
+their own docstrings.
 
 Stdlib + stub seams only: no network, no ``claude`` subprocess.
 """
 
 from __future__ import annotations
 
-from itertools import product
-
 import pytest
 
 from kuang.engine import (Cluster, Finding, HaltingSet, HaltReason,
                           PanelConfig, PersonaReport, PersonaStatus, ReviewRun,
                           ReviewSpec, Severity, run)
-from kuang.engine.halting import _evaluate_halt
 from kuang.engine.reduce import _identity_reduce
 
 PANEL = PanelConfig(personas=[("first", "mandate"), ("second", "mandate")])
@@ -377,64 +377,87 @@ def test_the_published_counts_decide_as_the_ledger_does_at_every_epoch(reduce):
     assert seen and all(ugly and blocker for ugly, blocker in seen)
 
 
-# --- (b) at the predicate: the zero-tests read the ledger ---------------------------
+# --- (b) the snapshot: taken from the ledger, before any seam can write it ---------
 
 def _finding(severity, verified=None, n=0):
     return Finding("p", f"{MARKER} {n}", severity, f"lens-{n}", "a.py", n, verified=verified)
 
 
-def _decide(ledger_findings, *, clusters=(), quorum_met=True, stall_epochs=0,
-            stall_patience=5):
-    """The predicate over a ledger, beside whatever clusters are given: the run's
-    ``clusters`` are the only cluster state it could still reach, and the epoch's counts
-    are no longer a parameter."""
-    review_run = ReviewRun(ledger={f.key: f for f in ledger_findings},
-                           clusters=list(clusters))
-    return _evaluate_halt(review_run,
-                          HaltingSet(max_epochs=9, stall_patience=stall_patience),
-                          epochs_done=1, stall_epochs=stall_epochs, tokens_spent=0,
-                          elapsed_s=0.0, scope_complete=True, quorum_met=quorum_met,
-                          no_persona_reviewed=False)
+def _writes_through(kind):
+    """A ``scope_complete`` that writes through the frozen ``Finding`` objects its record
+    aliases — the ledger's own — and then answers yes. ``Finding`` is frozen without
+    slots, so its ``__dict__`` is writable and ``object.__setattr__`` bypasses the freeze.
+    """
+    def scope(result):
+        for f in result.new_findings:
+            if kind == "refute":
+                f.__dict__["verified"] = False
+            elif kind == "downgrade":
+                object.__setattr__(f, "severity", Severity.NOTE)
+            else:
+                f.__dict__["severity"] = "corrupt"
+        return True
+    return scope
 
 
-def test_the_breaker_reads_the_ledger_whatever_the_cluster_count():
-    """REGRESSION for #150's mechanism (b): on main the breaker read only the cluster
-    count, so an open UGLY in the ledger with no cluster did not trip it."""
-    assert _decide([_finding(Severity.UGLY)]) is HaltReason.ESCALATE_UGLY
+@pytest.mark.parametrize("kind", ["refute", "downgrade", "corrupt"])
+def test_a_seam_writing_through_the_ledgers_findings_cannot_mask_the_breaker(kind):
+    """GREEN ON MAIN, by design: it guards the REJECTED second shape of this fix, which read
+    the ledger LIVE when the predicate ran. The second pre-merge review measured that
+    shape converging an UGLY run for ``refute`` and ``downgrade``, and raising out of
+    ``run`` for ``corrupt`` (``'str' object has no attribute 'is_ugly'``, #148's invariant
+    broken). Main decided on cluster counts taken before ``scope_complete``; the snapshot
+    restores that order and keeps the ledger as the source."""
+    review_run = _contained(lambda: run(
+        ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=3), PANEL,
+        spawn=_spawn_for(Severity.UGLY, verdict="YES"), gather=lambda epoch: "s",
+        scope_complete=_writes_through(kind), parallel=False))
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
 
 
-def test_convergence_reads_the_ledger_whatever_the_cluster_count():
-    """REGRESSION for #150 (b): an open BLOCKER with a cluster count of zero converged."""
-    assert _decide([_finding(Severity.BLOCKER)]) is None
+def _downgrades_its_input(findings):
+    for f in findings:
+        object.__setattr__(f, "severity", Severity.NOTE)
+    return _identity_reduce(findings)
 
 
-def test_a_stall_reads_the_ledger_whatever_the_cluster_count():
-    """REGRESSION for #150 (b): ``STALL`` needs blockers open, and read a count."""
-    assert _decide([_finding(Severity.BLOCKER)], quorum_met=False,
-                   stall_epochs=1, stall_patience=1) is HaltReason.STALL
+@pytest.mark.parametrize("verdict", ["YES", "NO"])
+def test_a_reduce_that_downgrades_its_input_cannot_mask_an_ugly(verdict):
+    """REGRESSION for #150: on main a ``reduce`` that rewrote its input's severity in place
+    converged (YES) or ran out its epochs (NO) with the panel's UGLYs downgraded, because
+    the cluster counts were taken AFTER it ran. The snapshot is taken before ``reduce`` is
+    called, so the breaker fires on the epoch the UGLY lands. (It does not undo the write:
+    that is the side-effect class, filed.)"""
+    review_run = _run(_downgrades_its_input, verdict=verdict, max_epochs=3)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert len(review_run.epochs) == 1
 
 
-def test_a_withdrawn_finding_in_the_ledger_opens_nothing():
-    """GREEN ON MAIN, by design: the pair to the three above. A refuted UGLY or BLOCKER
-    is not open, so it neither trips the breaker nor blocks convergence. It guards the
-    ledger read's other end: one that ignored ``counts_open`` would fire on a withdrawn
-    claim, which is the rule firing on a healthy run."""
-    withdrawn = [_finding(Severity.UGLY, verified=False, n=1),
-                 _finding(Severity.BLOCKER, verified=False, n=2)]
-
-    assert _decide(withdrawn) is HaltReason.CONVERGED
-
-
-def test_a_healthy_ledger_decides_as_its_cluster_counts_do():
-    """GREEN ON MAIN, by design: wherever the ledger and its identity clusters agree,
-    the decision is today's, for each zero-test."""
+def test_the_ledger_read_counts_only_open_findings():
+    """GREEN ON MAIN, by design: the snapshot's other end. A withdrawn UGLY or BLOCKER is
+    not open, so it neither trips the breaker nor blocks convergence; a read that ignored
+    ``counts_open`` would fire on a withdrawn claim, a rule firing on a healthy run."""
     ugly, blocker = _finding(Severity.UGLY, n=1), _finding(Severity.BLOCKER, n=2)
-    for uglies, blockers in product((0, 1), (0, 1)):
-        ledger = [ugly] * uglies + [blocker] * blockers
-        decided = _decide(ledger, clusters=_identity_reduce(ledger))
-        expected = (HaltReason.ESCALATE_UGLY if uglies else
-                    None if blockers else HaltReason.CONVERGED)
-        assert decided is expected, (uglies, blockers)
+    withdrawn = [_finding(Severity.UGLY, verified=False, n=3),
+                 _finding(Severity.BLOCKER, verified=False, n=4)]
+    review_run = ReviewRun(ledger={f.key: f for f in [ugly, blocker, *withdrawn]})
+
+    assert review_run.open_uglies == [ugly]
+    assert review_run.open_blockers == [blocker]
+
+
+def test_the_ledger_read_cannot_raise_on_a_corrupted_severity():
+    """REGRESSION for #150's snapshot: it is taken unguarded, so it must not raise on
+    whatever a seam wrote into a finding last epoch. On main ``open_uglies`` called
+    ``severity.is_ugly`` and raised on a non-``Severity``; the identity test cannot."""
+    corrupted = _finding(Severity.BLOCKER)
+    corrupted.__dict__["severity"] = "corrupt"
+    review_run = ReviewRun(ledger={"k": corrupted})
+
+    assert _contained(lambda: review_run.open_uglies) == []
+    assert _contained(lambda: review_run.open_blockers) == []
 
 
 # --- (b) at the loop: a seam handed the record cannot steer the halt through it -----
