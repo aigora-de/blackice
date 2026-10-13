@@ -16,16 +16,27 @@ Two mechanisms, by the maintainer's ruling of 2026-10-13, and they kill differen
   reduce — a ``SeamFailure`` with an engine-authored, count-only detail — and the
   identity reduce follows: "the state before the call", never a repair.
 * **(b) the halting zero-tests read the LEDGER.** "Is any UGLY open" and "is any
-  BLOCKER open" are exactly knowable there and depend on no seam. Under a partition
-  they agree with the cluster counts by construction; (a) guarantees the partition
-  inside the loop, so (b) is reached only by the predicate tests below, which hand it
-  the state (a) refuses to build.
+  BLOCKER open" are exactly knowable there, and no value ``reduce`` returns reaches
+  them. Under a partition they agree with the cluster counts by construction. (b) is
+  NOT only a backstop for (a): the epoch's record is mutable and ``scope_complete`` is
+  handed it before the halt is taken, and the pre-merge review measured a scope check
+  that zeroed the counts converging an UGLY run on main. The ``scope_complete`` tests
+  below are (b)'s loop-level regressions.
+
+The ruin row itself — an UGLY run halting ``converged`` on a non-partition — is killed
+by neither mechanism alone in the mutation matrix, and that is the design rather than a
+gap: (a) replaces the clusters, so the counts agree with the ledger, and (b) reads the
+ledger whatever the counts say. Each of the two is shown load-bearing by the rows only
+it kills.
 
 No shipped reducer is known to trigger this: the identity makes singletons and the
 backend's clusterer repairs to a strict partition. The case is #89's premise.
 
-**Which are regressions, measured on main with this file in place** (it imports nothing
-main lacks, so no shim). Tests green on main say so in their own docstrings.
+**Which are regressions, measured on main with this file in place.** It imports nothing
+main lacks, but ``_evaluate_halt`` no longer takes the epoch's record, so ``_decide`` was
+measured on main through a minimal SHIM handing main the record it read, with the counts
+taken from the clusters given (``test_unguarded_seams.py``'s ``_halt`` likewise). Tests
+green on main say so in their own docstrings.
 
 Stdlib + stub seams only: no network, no ``claude`` subprocess.
 """
@@ -36,7 +47,7 @@ from itertools import product
 
 import pytest
 
-from kuang.engine import (Cluster, EpochResult, Finding, HaltingSet, HaltReason,
+from kuang.engine import (Cluster, Finding, HaltingSet, HaltReason,
                           PanelConfig, PersonaReport, PersonaStatus, ReviewRun,
                           ReviewSpec, Severity, run)
 from kuang.engine.halting import _evaluate_halt
@@ -200,16 +211,16 @@ def test_an_empty_cluster_is_a_non_partition_and_inflates_nothing():
 # --- the detail: engine-authored, counts only --------------------------------------
 
 @pytest.mark.parametrize("reduce, detail", [
-    (_returns_nothing, "2 of 2 findings in no cluster, 0 placed more than once, "
-                       "0 empty clusters"),
-    (_drops_one, "1 of 2 findings in no cluster, 0 placed more than once, "
-                 "0 empty clusters"),
-    (_duplicates_one, "0 of 2 findings in no cluster, 1 placed more than once, "
-                      "0 empty clusters"),
-    (_twice_in_one_cluster, "0 of 2 findings in no cluster, 1 placed more than once, "
-                            "0 empty clusters"),
-    (_adds_an_empty_cluster, "0 of 2 findings in no cluster, 0 placed more than once, "
-                             "1 empty clusters"),
+    (_returns_nothing, "findings in no cluster: 2 of 2; "
+                       "findings placed more than once: 0; empty clusters: 0"),
+    (_drops_one, "findings in no cluster: 1 of 2; "
+                 "findings placed more than once: 0; empty clusters: 0"),
+    (_duplicates_one, "findings in no cluster: 0 of 2; "
+                      "findings placed more than once: 1; empty clusters: 0"),
+    (_twice_in_one_cluster, "findings in no cluster: 0 of 2; "
+                            "findings placed more than once: 1; empty clusters: 0"),
+    (_adds_an_empty_cluster, "findings in no cluster: 0 of 2; "
+                             "findings placed more than once: 0; empty clusters: 1"),
 ], ids=["nothing", "drops-one", "duplicates-one", "twice-in-one", "empty"])
 def test_the_failure_says_how_the_partition_failed_in_counts(reduce, detail):
     """REGRESSION for #150: on main nothing was recorded at all.
@@ -372,14 +383,14 @@ def _finding(severity, verified=None, n=0):
     return Finding("p", f"{MARKER} {n}", severity, f"lens-{n}", "a.py", n, verified=verified)
 
 
-def _decide(ledger_findings, *, open_uglies=0, open_blockers=0, quorum_met=True,
-            stall_epochs=0, stall_patience=5):
-    """The predicate over a ledger and the cluster counts given — which (a) never lets
-    disagree inside the loop, so this is the only place (b) can be shown to act."""
-    review_run = ReviewRun(ledger={f.key: f for f in ledger_findings})
-    result = EpochResult(index=1, reports=[], new_findings=[],
-                         open_blockers=open_blockers, open_uglies=open_uglies)
-    return _evaluate_halt(result, review_run,
+def _decide(ledger_findings, *, clusters=(), quorum_met=True, stall_epochs=0,
+            stall_patience=5):
+    """The predicate over a ledger, beside whatever clusters are given: the run's
+    ``clusters`` are the only cluster state it could still reach, and the epoch's counts
+    are no longer a parameter."""
+    review_run = ReviewRun(ledger={f.key: f for f in ledger_findings},
+                           clusters=list(clusters))
+    return _evaluate_halt(review_run,
                           HaltingSet(max_epochs=9, stall_patience=stall_patience),
                           epochs_done=1, stall_epochs=stall_epochs, tokens_spent=0,
                           elapsed_s=0.0, scope_complete=True, quorum_met=quorum_met,
@@ -388,7 +399,7 @@ def _decide(ledger_findings, *, open_uglies=0, open_blockers=0, quorum_met=True,
 
 def test_the_breaker_reads_the_ledger_whatever_the_cluster_count():
     """REGRESSION for #150's mechanism (b): on main the breaker read only the cluster
-    count, so an open UGLY in the ledger with a count of zero did not trip it."""
+    count, so an open UGLY in the ledger with no cluster did not trip it."""
     assert _decide([_finding(Severity.UGLY)]) is HaltReason.ESCALATE_UGLY
 
 
@@ -415,12 +426,59 @@ def test_a_withdrawn_finding_in_the_ledger_opens_nothing():
 
 
 def test_a_healthy_ledger_decides_as_its_cluster_counts_do():
-    """GREEN ON MAIN, by design: wherever the ledger and the counts agree — which is
-    every loop-built state — the decision is today's, for each zero-test."""
+    """GREEN ON MAIN, by design: wherever the ledger and its identity clusters agree,
+    the decision is today's, for each zero-test."""
     ugly, blocker = _finding(Severity.UGLY, n=1), _finding(Severity.BLOCKER, n=2)
     for uglies, blockers in product((0, 1), (0, 1)):
         ledger = [ugly] * uglies + [blocker] * blockers
-        decided = _decide(ledger, open_uglies=uglies, open_blockers=blockers)
+        decided = _decide(ledger, clusters=_identity_reduce(ledger))
         expected = (HaltReason.ESCALATE_UGLY if uglies else
                     None if blockers else HaltReason.CONVERGED)
         assert decided is expected, (uglies, blockers)
+
+
+# --- (b) at the loop: a seam handed the record cannot steer the halt through it -----
+
+def _zeroes(field):
+    """A ``scope_complete`` that writes the record it is handed, then answers yes."""
+    def scope(result):
+        setattr(result, field, 0)
+        return True
+    return scope
+
+
+def _scoped_run(severity, field, *, verdict="YES", max_epochs=3, stall_patience=5,
+                repeat=False):
+    return _contained(lambda: run(
+        ReviewSpec(why="w", what="x"),
+        HaltingSet(max_epochs=max_epochs, stall_patience=stall_patience), PANEL,
+        spawn=_spawn_for(severity, verdict=verdict, repeat=repeat),
+        gather=lambda epoch: "s", scope_complete=_zeroes(field), parallel=False))
+
+
+def test_a_seam_that_zeroes_the_ugly_count_cannot_converge_the_run():
+    """REGRESSION for #150 (b), found by the pre-merge review: on main the breaker read
+    ``result.open_uglies``, which ``scope_complete`` is handed mutably, so a scope check
+    that zeroed it converged a run with open UGLYs in the ledger. (a) cannot see this:
+    the clusters partition, and the count was overwritten after they were taken."""
+    review_run = _scoped_run(Severity.UGLY, "open_uglies")
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+
+
+def test_a_seam_that_zeroes_the_blocker_count_cannot_converge_the_run():
+    """REGRESSION for #150 (b): the same door for ``CONVERGED`` — main converged at
+    epoch 1 with an open BLOCKER; here the run is the identity's, halted ``epoch``."""
+    review_run = _scoped_run(Severity.BLOCKER, "open_blockers")
+
+    assert review_run.halt_reason is HaltReason.EPOCH
+    assert len(review_run.epochs) == 3
+
+
+def test_a_seam_that_zeroes_the_blocker_count_cannot_mask_a_stall():
+    """REGRESSION for #150 (b): and for ``STALL`` — main ran to ``epoch`` at 6."""
+    review_run = _scoped_run(Severity.BLOCKER, "open_blockers", verdict="NO",
+                             max_epochs=6, stall_patience=2, repeat=True)
+
+    assert review_run.halt_reason is HaltReason.STALL
+    assert len(review_run.epochs) == 3

@@ -288,8 +288,9 @@ def _as_partition(clusters: list[Cluster], ledger: dict[str, Finding]) -> list[C
     empty = sum(1 for c in clusters if not c.members)
     if missing or repeated or empty:
         raise ValueError(
-            f"reduce did not partition the ledger: {missing} of {len(ledger)} findings in "
-            f"no cluster, {repeated} placed more than once, {empty} empty clusters")
+            f"reduce did not partition the ledger: findings in no cluster: {missing} of "
+            f"{len(ledger)}; findings placed more than once: {repeated}; "
+            f"empty clusters: {empty}")
     return clusters
 
 
@@ -587,7 +588,7 @@ def run(
         _, scope_known = _call_seam(
             "scope_complete", result.seam_failures, lambda: _as_scope(scope_complete(result)))
         result.halt = _evaluate_halt(
-            result, review_run, halting,
+            review_run, halting,
             epochs_done=epoch,
             stall_epochs=stall_epochs,
             tokens_spent=tokens_spent,

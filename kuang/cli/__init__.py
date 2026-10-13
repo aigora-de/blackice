@@ -958,8 +958,9 @@ def _report(argv: list[str] | None) -> int:
                     # against the ledger as it stood at that epoch. Since #150 the
                     # engine reads the zero-tests off that ledger and admits only
                     # clusters that partition it, so these are zero exactly when the
-                    # decisions' inputs are (BLOCKERs given no open UGLY, when the
-                    # breaker has halted first). Their only reporter
+                    # decisions' inputs are. The BLOCKER count's agreement holds while
+                    # no UGLY is open, which is the only time it is consulted: an open
+                    # UGLY halts the run first. Their only reporter
                     # was the gate, which never runs for the epoch a run halts on.
                     # The top-level pair is a DIFFERENT measurement: finding-level,
                     # over the ledger as it ENDS. Verified by execution: a

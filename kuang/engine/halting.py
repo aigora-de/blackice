@@ -18,7 +18,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:                    # annotations only — see the module docstring
-    from .findings import EpochResult, ReviewRun
+    from .findings import ReviewRun
 
 
 class HaltReason(Enum):
@@ -83,7 +83,6 @@ class HaltingSet:
 
 
 def _evaluate_halt(
-    result: EpochResult,
     run: ReviewRun,
     halting: HaltingSet,
     *,
@@ -110,26 +109,30 @@ def _evaluate_halt(
 
     Every zero-test on open severity reads the LEDGER, not the clusters (#150): "is any
     UGLY open" for the breaker, and "is any BLOCKER open" for ``CONVERGED`` and
-    ``STALL``. Those are exactly knowable from the ledger and depend on no seam, where a
-    cluster is whatever an injected ``reduce`` returned. So no value a reduce returns can
-    switch the breaker off. Measured on ``f17c256`` reading clusters: ``reduce -> []``
-    with open UGLYs in the ledger halted ``epoch``, or ``converged`` on a panel voting YES.
+    ``STALL``. The ledger holds what the panel raised and adjudication kept; a cluster is
+    whatever an injected ``reduce`` returned. So no value a reduce returns, and none of
+    the three halting inputs, can switch the breaker off. (The ledger is still made of
+    ``spawn``'s reports and ``adjudicate``'s verdicts, and a refutation withdrawing an
+    UGLY is the design, not a masking.) Measured on ``f17c256`` reading clusters:
+    ``reduce -> []`` with open UGLYs in the ledger halted ``epoch``, or ``converged`` on
+    a panel voting YES.
 
-    ``result.open_uglies`` and ``open_blockers`` stay what the run PUBLISHES as these
-    decisions' inputs (#117): canonical-issue magnitudes. They are zero exactly when these
-    tests are, because the loop admits only clusters that partition the ledger
-    (``_as_partition``) and ``Cluster.open_severity`` is the max over open members. The
-    BLOCKER count is conditional on no UGLY being open, since a cluster merging the two
-    counts as UGLY, and while one is open the breaker halts before either BLOCKER test is
-    reached. Passed counts that disagree with the ledger are a state the loop never builds.
-    So ``result`` is no longer read here; it stays in the signature because it is the
-    record these inputs are published on, and the predicate is still taken per epoch.
+    The epoch's ``EpochResult`` is deliberately NOT a parameter. Its ``open_uglies`` and
+    ``open_blockers`` are what the run PUBLISHES as these decisions' inputs (#117), and
+    they agree with the ledger in zero-ness wherever the loop built them, because it
+    admits only clusters that partition the ledger (``_as_partition``) and
+    ``Cluster.open_severity`` is the max over open members. The BLOCKER count agrees only
+    while no UGLY is open, since a cluster merging the two counts as UGLY, and while one
+    is open the breaker halts before either BLOCKER test is reached. But the record is
+    MUTABLE, and ``scope_complete`` is handed it before this runs: the pre-merge review
+    measured a scope check that zeroed the counts converging an UGLY run on ``f17c256``.
+    A predicate that cannot see the record cannot be steered through it.
     """
-    blocker_open = bool(run.open_blockers)
-
     # 1. Circuit-breaker: a ruin-class finding halts and escalates immediately.
     if run.open_uglies:
         return HaltReason.ESCALATE_UGLY
+
+    blocker_open = bool(run.open_blockers)
 
     # 2. Nothing was reviewed (#72). An epoch in which the run KNOWS no persona
     #    produced a review cannot converge, and repeating it cannot change that:
