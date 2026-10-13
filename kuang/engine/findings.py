@@ -300,7 +300,7 @@ class Cluster:
     what the published per-epoch counts read, so a withdrawn UGLY is not counted open.
     The halt itself reads a snapshot of the ledger (#150). These counts agree with it
     in zero-ness because the loop admits only clusters that partition the ledger,
-    unless a seam has written the epoch's record or a finding since (filed).
+    unless a seam has written the epoch's record or a finding since (#155).
     """
 
     members: tuple[Finding, ...]
@@ -855,17 +855,21 @@ class ReviewRun:
     # --- raw, finding-level view (every panellist's claim stays visible) ---
     @property
     def open_uglies(self) -> list[Finding]:
-        # ``is``, never a method call on the severity: the halt's snapshot is taken from
-        # this list unguarded, and an identity test cannot raise whatever a seam wrote
-        # into a finding (#150). It is the same comparison ``is_ugly`` makes.
+        # The halt's snapshot is taken from this list unguarded (#150), so ``counts_open``
+        # is read FIRST and the severity compared by ``is`` (the comparison ``is_ugly``
+        # makes) rather than by a method call on it. Neither raises on any VALUE a seam
+        # wrote into a finding's severity or verdict, and a withdrawn entry's severity is
+        # never read, as main's cluster counts never read it (the third pre-merge review
+        # measured the reverse order raising on a gate's duck-typed ledger entry). A seam
+        # that removes the attribute itself is #155, and main raises there too.
         return [f for f in self.ledger.values()
-                if f.severity is Severity.UGLY and f.counts_open]
+                if f.counts_open and f.severity is Severity.UGLY]
 
     @property
     def open_blockers(self) -> list[Finding]:
         return [
             f for f in self.ledger.values()
-            if f.severity is Severity.BLOCKER and f.counts_open
+            if f.counts_open and f.severity is Severity.BLOCKER   # ``open_uglies``' order
         ]
 
     # --- canonical, cluster-level view (what the run publishes per epoch) ---

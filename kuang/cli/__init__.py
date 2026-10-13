@@ -961,7 +961,7 @@ def _report(argv: list[str] | None) -> int:
                     # engine admits only clusters that partition it. The BLOCKER
                     # count's agreement holds while no UGLY is open, which is the
                     # only time it is consulted. Neither agrees where a seam has
-                    # written the record or a finding since; that is filed. Their
+                    # written the record or a finding since; that is #155. Their
                     # only reporter was the gate, which never runs for the epoch a
                     # run halts on.
                     # The top-level pair is a DIFFERENT measurement: finding-level,

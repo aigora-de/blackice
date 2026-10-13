@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import pytest
 
-from kuang.engine import (Cluster, Finding, HaltingSet, HaltReason,
+from kuang.engine import (Cluster, Finding, GateDecision, HaltingSet, HaltReason,
                           PanelConfig, PersonaReport, PersonaStatus, ReviewRun,
                           ReviewSpec, Severity, run)
 from kuang.engine.reduce import _identity_reduce
@@ -428,7 +428,7 @@ def test_a_reduce_that_downgrades_its_input_cannot_mask_an_ugly(verdict):
     converged (YES) or ran out its epochs (NO) with the panel's UGLYs downgraded, because
     the cluster counts were taken AFTER it ran. The snapshot is taken before ``reduce`` is
     called, so the breaker fires on the epoch the UGLY lands. (It does not undo the write:
-    that is the side-effect class, filed.)"""
+    that is #155.)"""
     review_run = _run(_downgrades_its_input, verdict=verdict, max_epochs=3)
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
@@ -449,9 +449,10 @@ def test_the_ledger_read_counts_only_open_findings():
 
 
 def test_the_ledger_read_cannot_raise_on_a_corrupted_severity():
-    """REGRESSION for #150's snapshot: it is taken unguarded, so it must not raise on
-    whatever a seam wrote into a finding last epoch. On main ``open_uglies`` called
-    ``severity.is_ugly`` and raised on a non-``Severity``; the identity test cannot."""
+    """A PROPERTY test of the read the snapshot is taken from, not of ``run``: red on
+    main, where ``open_uglies`` called ``severity.is_ugly``, but main's loop never read
+    ``open_uglies``, and a corrupted severity raises at the next ``Finding.key`` in the
+    same epoch on both (#155). It pins that the snapshot itself adds no new raise."""
     corrupted = _finding(Severity.BLOCKER)
     corrupted.__dict__["severity"] = "corrupt"
     review_run = ReviewRun(ledger={"k": corrupted})
@@ -505,3 +506,29 @@ def test_a_seam_that_zeroes_the_blocker_count_cannot_mask_a_stall():
 
     assert review_run.halt_reason is HaltReason.STALL
     assert len(review_run.epochs) == 3
+
+
+class _DuckEntry:
+    """Not a ``Finding``: what a gate writing into ``dict[str, Finding]`` can leave there."""
+
+    key = "duck"
+    title = "a withdrawn entry"
+    counts_open = False
+
+
+def test_a_withdrawn_entry_a_gate_left_in_the_ledger_is_never_read_for_severity():
+    """GREEN ON MAIN, by design: it guards a regression this fix's third shape introduced,
+    found by the third pre-merge review. Main's cluster counts read the severity only of
+    OPEN members, so a gate that left a withdrawn, duck-typed entry in the ledger raised
+    nothing; the snapshot read ``severity`` before ``counts_open`` and raised out of
+    ``run`` (#148's invariant). Now ``counts_open`` is read first."""
+    def gate(result, review_run):
+        review_run.ledger["duck"] = _DuckEntry()
+        return GateDecision(stop=False)
+
+    review_run = _contained(lambda: run(
+        ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=2, stall_patience=5), PANEL,
+        spawn=_spawn_for(Severity.BLOCKER), gather=lambda epoch: "s", human_gate=gate,
+        parallel=False))
+
+    assert review_run.halt_reason is HaltReason.EPOCH

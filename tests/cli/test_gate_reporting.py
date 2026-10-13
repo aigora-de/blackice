@@ -548,7 +548,7 @@ def test_a_dry_run_keeps_the_half_of_the_line_that_is_true(sourced_repo,
         f"the true half of the line did not survive: {block[1]!r}"
 
 
-# --- 4. the counts the halt was actually taken on ----------------------------
+# --- 4. the published record of the halt's open-severity inputs -------------
 
 def test_the_artefact_records_the_two_counts_the_halt_was_taken_on(
         sourced_repo, monkeypatch, capsys):

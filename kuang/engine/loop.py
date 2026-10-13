@@ -260,10 +260,10 @@ def _as_partition(clusters: list[Cluster], ledger: dict[str, Finding]) -> list[C
     Measured on ``f17c256``: ``reduce -> []`` with open UGLYs in the ledger halted
     ``epoch`` on a panel voting NO and ``converged`` on one voting YES, recording
     nothing. The breaker no longer depends on this (its zero-test is a snapshot of
-    the ledger, taken before ``reduce`` runs), but the COUNTS do. A cluster list that omits, repeats or invents an issue
-    publishes a number of canonical issues that is not one, and with no failure
-    recorded the run would halt correctly and say nothing about the reducer that could
-    not count.
+    the ledger, taken before ``reduce`` runs), but the COUNTS do. A cluster list that
+    omits, repeats or invents an issue publishes a number of canonical issues that is
+    not one, and with no failure recorded the run would halt correctly and say nothing
+    about the reducer that could not count.
 
     An EMPTY cluster is a non-partition, by the maintainer's ruling of 2026-10-13. It
     omits nothing and moves no halt (``severity`` defaults to NOTE, ``open_severity``
@@ -531,11 +531,14 @@ def run(
         # frozen dataclass without slots can still be written through ``__dict__``: the
         # second pre-merge review measured a ``scope_complete`` doing exactly that
         # converging an UGLY run when the ledger was read live. Main's cluster counts were
-        # taken before the halting inputs too. Both reads are identity tests, so neither
-        # can raise on whatever a seam wrote last epoch. What this does NOT cover: a seam
-        # that writes a finding now changes NEXT epoch's snapshot, as it changed main's
-        # counts; an UGLY cannot be masked that way, because the breaker fires on the
-        # epoch it lands, but a BLOCKER can. That is the side-effect class, filed.
+        # taken before the halting inputs too. Neither read raises on any value a seam
+        # wrote into a finding's severity or verdict (see ``ReviewRun.open_uglies``).
+        # What this does NOT cover, all of it #155 and all of it as on main: a seam
+        # called after this point that writes a finding changes NEXT epoch's snapshot (an
+        # UGLY cannot be masked that way, because the breaker fires on the epoch it
+        # lands, but a BLOCKER can); ``adjudicate`` runs BEFORE this point, so what it
+        # writes into a finding is what the snapshot reads; and ``checkpoint`` can still
+        # rewrite the halt after it is taken.
         ugly_open = bool(review_run.open_uglies)
         blocker_open = bool(review_run.open_blockers)
 
