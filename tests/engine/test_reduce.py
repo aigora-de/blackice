@@ -208,7 +208,11 @@ def test_resolved_ugly_does_not_count_as_open_ugly():
     [_f("a", Severity.BLOCKER), _f("b", Severity.UGLY)],           # separate concepts
 ])
 def test_cluster_open_counts_match_finding_open_counts_in_zeroness(findings):
-    """The zero-ness invariants that let the halt gate move to cluster level.
+    """The zero-ness invariants that let the published counts move to cluster level.
+
+    The halt gate itself moved back to the ledger at #150, because these invariants hold
+    only over a PARTITION, which the engine did not enforce. They are now what makes the
+    published per-epoch counts agree with the decision taken off the ledger.
 
     * UGLY (unconditional): an open UGLY cluster exists iff an open UGLY finding
       does — so the circuit-breaker (checked first) fires identically.

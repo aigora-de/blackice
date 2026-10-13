@@ -552,8 +552,10 @@ def test_a_dry_run_keeps_the_half_of_the_line_that_is_true(sourced_repo,
 
 def test_the_artefact_records_the_two_counts_the_halt_was_taken_on(
         sourced_repo, monkeypatch, capsys):
-    """The circuit-breaker reads ``open_uglies``; CONVERGED and STALL read
-    ``open_blockers`` — both per epoch, and reported by nothing but the gate.
+    """The circuit-breaker is decided on ``open_uglies``'s zero-ness, CONVERGED and
+    STALL on ``open_blockers``'s — both per epoch, and reported by nothing but the gate.
+    (Since #150 the engine reads that zero-ness off the ledger, which these counts agree
+    with because the loop admits only clusters that partition it.)
 
     The artefact's top-level counts are a different measurement: finding-level,
     over the ledger as it ENDS. Verified by execution while planning #117 — a

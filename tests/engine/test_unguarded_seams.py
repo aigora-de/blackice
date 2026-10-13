@@ -24,7 +24,8 @@ whose justification needs the unknown input. Every outcome falls out of it:
 * an ARMED ceiling's input -> neither ``BUDGET`` ("reached") nor continuing ("not
   reached") is justified, so the run halts ``UNMEASURED`` — the maintainer's ruling of
   2026-10-12, recorded on #148. Evaluated last, so any exactly-knowable reason wins,
-  and always behind the breaker, which reads no injected input.
+  and always behind the breaker, which reads no injected input (true since #150, which
+  moved its zero-test to the ledger; at #148 it read ``reduce``'s clusters).
 
 The first ``clock()`` is NOT guarded: it precedes any spend, so a raise there loses
 nothing (#18's doctrine, as ``gather`` applies it).
@@ -308,8 +309,9 @@ def test_a_knowable_halt_wins_over_an_unknown_ceiling():
 def test_the_breaker_fires_whatever_halting_input_fails(seam):
     """REGRESSION for #148, one per halting input: on main the UGLY was lost with the run.
 
-    The breaker reads ``result.open_uglies`` and nothing injected, so no failed input
-    can mask it — including an ARMED ceiling, whose ``UNMEASURED`` sits behind it.
+    The breaker reads the ledger and nothing injected (since #150: at #148 this
+    docstring said so while it read ``reduce``'s clusters), so no failed input can mask
+    it — including an ARMED ceiling, whose ``UNMEASURED`` sits behind it.
     """
     seams = {"clock": _clock_failing_on(2)} if seam == "clock" else {seam: _raises()}
     review_run = _run(severity=Severity.UGLY,
@@ -324,16 +326,22 @@ def test_the_breaker_fires_whatever_halting_input_fails(seam):
 # --- the predicate itself ---------------------------------------------------------
 
 def _halt(**over):
+    """The predicate over a ledger that AGREES with the counts given, as every
+    loop-built state does: since #150 the zero-tests read the ledger."""
     from kuang.engine import EpochResult, ReviewRun
+    blockers, uglies = over.pop("open_blockers", 1), over.pop("open_uglies", 0)
     result = EpochResult(index=1, reports=[], new_findings=[],
-                         open_blockers=over.pop("open_blockers", 1),
-                         open_uglies=over.pop("open_uglies", 0))
+                         open_blockers=blockers, open_uglies=uglies)
+    ledger = [Finding("p", "t", sev, f"{sev.name}-{i}", "a.py", i)
+              for sev, n in ((Severity.BLOCKER, blockers), (Severity.UGLY, uglies))
+              for i in range(n)]
     kwargs = dict(epochs_done=1, stall_epochs=0, tokens_spent=0, elapsed_s=0.0,
                   scope_complete=True, quorum_met=False, no_persona_reviewed=False)
     halting = over.pop("halting", HaltingSet(token_budget=100, time_budget_s=60,
                                              max_epochs=3))
     kwargs.update(over)
-    return _evaluate_halt(result, ReviewRun(), halting, **kwargs)
+    return _evaluate_halt(result, ReviewRun(ledger={f.key: f for f in ledger}), halting,
+                          **kwargs)
 
 
 def test_the_predicate_reads_an_unknown_input_as_unknown():
@@ -406,8 +414,8 @@ def test_a_reduce_that_returns_no_usable_clusters_falls_back(value):
 
     The engine rebuilds every cluster from the ledger's OWN findings by key, inside the
     guard, so a member the ledger does not hold is a failed reduce, not a phantom
-    finding. Whether a reduce that DROPS a ledger finding is a failure is #150's to
-    rule, not this guard's.
+    finding. A reduce that DROPS a ledger finding is #150's, in
+    ``test_reduce_partition.py``.
     """
     review_run = _run(reduce=_returns(value))
 

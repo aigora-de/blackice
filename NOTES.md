@@ -129,6 +129,10 @@ always-on Layer 1; the cluster is a reduce/*view* over the deduped ledger, so ra
 findings stay visible. New-material and the breaker/convergence counts moved to the
 cluster level (severity = max of members → UGLY-preserving; the breaker reads
 max-over-*open*-members, provably zero-equivalent to the old finding-level gate).
+*Corrected at #150:* the proof assumed a partition the engine never enforced, and a reduce
+that dropped a finding switched the breaker off. The zero-tests now read the ledger again,
+the engine refuses a non-partition (`_as_partition`, identity fallback), and the cluster
+counts are the published magnitude only.
 The clusterer forces its output into a strict partition (never drops a finding) and
 degrades to the identity reduce on any failure. Not done: on-by-default (kept opt-in
 for reproducibility/cost); revisiting merge aggressiveness once dogfood evidence

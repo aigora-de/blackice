@@ -276,8 +276,9 @@ def test_the_artefact_records_what_each_epoch_raised(
     this expectation moved rather than being loosened to a subset check.
 
     #117 added the fifth and sixth, and this pin is what made that a decision: the
-    two counts the halt is actually TAKEN on — the breaker reads ``open_uglies``,
-    CONVERGED and STALL read ``open_blockers`` — were reported by nothing but the
+    two counts the halt is actually TAKEN on — the breaker is decided on
+    ``open_uglies``'s zero-ness, CONVERGED and STALL on ``open_blockers``'s (read off the
+    ledger since #150, which they agree with) — were reported by nothing but the
     gate, which never runs for the epoch a run halts on. They are cluster-level and
     per-epoch, where the artefact's top-level pair is finding-level over the ledger
     as it ENDS, so neither was recoverable from the other. One BLOCKER and one NOTE

@@ -285,3 +285,32 @@ def test_a_clusterer_call_that_raises_still_publishes_the_run(sourced_repo, caps
     assert payload["reduce"]["epochs"] == [
         {"epoch": 1, "state": "call_failed", "degraded": True}]
     assert len(payload["findings"]) == 2
+
+
+# --- #150: a clusterer that genuinely merges is never a failed reduce -------------
+
+MERGED_BOTH = CallResult(
+    f"Grouped.\n\n```json\n{json.dumps({'clusters': [[0, 1]]})}\n```\n", 0)
+# Index 1 placed twice and 0 nowhere: the BACKEND repairs this to a partition
+# (``_groups_to_clusters``), so the engine's check must never see it.
+REPAIRED_BY_THE_BACKEND = CallResult(
+    f"Grouped.\n\n```json\n{json.dumps({'clusters': [[1], [1]]})}\n```\n", 0)
+
+
+@pytest.mark.parametrize("reply, sizes", [(MERGED_BOTH, [2]),
+                                          (REPAIRED_BY_THE_BACKEND, [1, 1])],
+                         ids=["merges", "repaired-by-the-backend"])
+def test_a_healthy_clusterer_records_no_seam_failure_end_to_end(
+        sourced_repo, capsys, monkeypatch, reply, sizes):
+    """GREEN ON MAIN, by design: #150's healthy twin through ``kuang.cli.main``. The
+    engine's partition check must not fire on what the shipped clusterer returns — a
+    genuine merge, or a reply it has already repaired — and the merge must survive into
+    the published clusters and the per-epoch count the halt is decided on.
+    """
+    reduce, payload = _reduce_of(sourced_repo, capsys, monkeypatch, reply)
+
+    assert [e["state"] for e in reduce["epochs"]] == ["ran"]
+    assert payload["seam_failures"] == []
+    assert sorted(c["size"] for c in payload["clusters"]) == sizes
+    assert [e["open_blockers"] for e in payload["raised"]["epochs"]] == [len(sizes)]
+    assert payload["halt_reason"] == "epoch"

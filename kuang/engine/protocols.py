@@ -54,7 +54,9 @@ class Reduce(Protocol):
     Must be a *pure function of its input* so the engine's control logic stays
     reproducible given the seam's output (CLAUDE.md — "the engine is deterministic;
     only the agents are not"). It must be a **partition**: every input finding
-    appears in exactly one output cluster (never drop a panellist's claim). The
+    appears in exactly one output cluster (never drop a panellist's claim), and no
+    cluster is empty. The ENGINE enforces this (#150): a return that is not a
+    partition is a failed reduce, recorded, and the identity is used instead. The
     default is deterministic identity; an LLM implementation lives in a backend.
     """
 

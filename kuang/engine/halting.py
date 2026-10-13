@@ -107,9 +107,28 @@ def _evaluate_halt(
     read (#148). ``None`` is UNKNOWN, never zero: it fires no ceiling, and where its
     ceiling is armed it halts ``UNMEASURED``, last, so that every exactly-knowable
     reason is preferred to it.
+
+    Every zero-test on open severity reads the LEDGER, not the clusters (#150): "is any
+    UGLY open" for the breaker, and "is any BLOCKER open" for ``CONVERGED`` and
+    ``STALL``. Those are exactly knowable from the ledger and depend on no seam, where a
+    cluster is whatever an injected ``reduce`` returned. So no value a reduce returns can
+    switch the breaker off. Measured on ``f17c256`` reading clusters: ``reduce -> []``
+    with open UGLYs in the ledger halted ``epoch``, or ``converged`` on a panel voting YES.
+
+    ``result.open_uglies`` and ``open_blockers`` stay what the run PUBLISHES as these
+    decisions' inputs (#117): canonical-issue magnitudes. They are zero exactly when these
+    tests are, because the loop admits only clusters that partition the ledger
+    (``_as_partition``) and ``Cluster.open_severity`` is the max over open members. The
+    BLOCKER count is conditional on no UGLY being open, since a cluster merging the two
+    counts as UGLY, and while one is open the breaker halts before either BLOCKER test is
+    reached. Passed counts that disagree with the ledger are a state the loop never builds.
+    So ``result`` is no longer read here; it stays in the signature because it is the
+    record these inputs are published on, and the predicate is still taken per epoch.
     """
+    blocker_open = bool(run.open_blockers)
+
     # 1. Circuit-breaker: a ruin-class finding halts and escalates immediately.
-    if result.open_uglies > 0:
+    if run.open_uglies:
         return HaltReason.ESCALATE_UGLY
 
     # 2. Nothing was reviewed (#72). An epoch in which the run KNOWS no persona
@@ -124,7 +143,7 @@ def _evaluate_halt(
 
     # 3. Convergence (good): nothing dangerous or blocking is open.
     scope_ok = scope_complete or not halting.require_scope_complete
-    if result.open_blockers == 0 and scope_ok and quorum_met:
+    if not blocker_open and scope_ok and quorum_met:
         return HaltReason.CONVERGED
 
     # 4. Resource ceilings (partial halts — BADs may remain, but must be tracked).
@@ -138,7 +157,7 @@ def _evaluate_halt(
         return HaltReason.EPOCH
 
     # 5. Stall: no new material findings for K epochs while blockers persist.
-    if stall_epochs >= halting.stall_patience and result.open_blockers > 0:
+    if stall_epochs >= halting.stall_patience and blocker_open:
         return HaltReason.STALL
 
     # 6. An armed ceiling that could not be read (#148). LAST, because continuing is the
