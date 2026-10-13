@@ -663,6 +663,13 @@ def _report(argv: list[str] | None) -> int:
     if review_run.surface_failure is not None:
         print(f"surface lost: epoch {review_run.surface_failure.epoch} could not be "
               f"reassembled — {review_run.surface_failure.detail}")
+    # Every other injected callable that failed (#148). An EXCEPTION section: it prints
+    # only when something failed, so its absence on a healthy run is a complete claim.
+    # Above the findings for the reason the line above is: a run halted ``unmeasured``
+    # is explained here, not two screens later.
+    for e in review_run.epochs:
+        for f in e.seam_failures:
+            print(f"seam failed: epoch {e.index}, {f.seam} — {f.detail}")
     # What the good verdict rests on (#82). ``converged`` is satisfied by ABSENCE
     # on every conjunct, and quorum is trivially met at n=1 — so a panel of one
     # whose sole reviewer called no tool printed the good verdict with nothing
@@ -1268,6 +1275,14 @@ def _report(argv: list[str] | None) -> int:
                            "detail_chars": e.gate_failure.detail_chars}
                           for e in review_run.epochs
                           if e.gate_failure is not None],
+        # Every other injected callable that failed, and which (#148): ``gate_failures``'
+        # shape, with ``seam`` naming the callable, for the reasons given above, which are
+        # not restated. One row per failed CALL, so an ``adjudicate`` that failed on two
+        # findings in one epoch is two rows, and the count is the information: the
+        # artefact names no finding key for a row to point at.
+        "seam_failures": [{"epoch": e.index, "seam": f.seam,
+                           "detail": f.detail, "detail_chars": f.detail_chars}
+                          for e in review_run.epochs for f in e.seam_failures],
         # What the panel could DO: the policy the run actually used, the granted
         # tools the deny-list cancelled, and the calls the agent was refused (#67).
         # The policy is recorded beside the verdict because "unavailable: []" is a
@@ -1462,6 +1477,10 @@ def _report(argv: list[str] | None) -> int:
     # which is the defect #32 exists to settle rather than one to add to it. An UGLY
     # cannot reach here: the breaker is checked first and unconditionally, so an open
     # UGLY halts the epoch it appears in and no later epoch exists to lose a surface.
-    if review_run.halt_reason is HaltReason.SURFACE_LOST:
+    #
+    # ``UNMEASURED`` (#148) takes the same 2 on the same argument: a run that stopped
+    # because it could no longer read the ceiling its operator set would otherwise fall
+    # through to 0 and read as a success. #32 was told, and owns the mapping.
+    if review_run.halt_reason in (HaltReason.SURFACE_LOST, HaltReason.UNMEASURED):
         return 2
     return 3 if review_run.halt_reason.value == "escalate_ugly" else 0

@@ -129,10 +129,11 @@ def _rendered(exc: BaseException, render: Callable[[BaseException], str]) -> str
     """``render(exc)`` as an exact ``str``, or a fallback that says it failed.
 
     The one guarded core under ``render_exception`` and ``repr_exception`` (#142).
-    Every seam guard (#85, #25, #129) renders the exception it caught INSIDE its
-    own ``except``, so an exception that cannot be rendered used to raise from the
-    handler and discard the run the guard exists to keep. Three local ``try``s
-    would be the patched table; this is the one place the rule is applied.
+    Every seam guard (#85, #25, #129, and #148's ``_call_seam``) renders the
+    exception it caught INSIDE its own ``except``, so an exception that cannot be
+    rendered used to raise from the handler and discard the run the guard exists to
+    keep. Three local ``try``s would be the patched table; this is the one place the
+    rule is applied.
 
     **What the fallback says, decided rather than left blank.** A blank record is
     #111's defect — a record that does not say what it could not keep — and a
@@ -628,6 +629,11 @@ class EpochResult:
     # distinction between "no gate" and "a gate that failed" is ``gate``'s presence
     # beside this, and neither field is derivable from the other.
     gate_failure: GateFailure | None = None
+    # Every injected callable that failed during this epoch, in call order (#148). Empty
+    # on every ordinary epoch. A list rather than ``gate_failure``'s singleton because
+    # ``adjudicate`` is contained PER CALL, so one epoch can hold several, and because a
+    # seam that fails once usually fails at every call after. Appended last (#74).
+    seam_failures: list[SeamFailure] = field(default_factory=list)
 
     @property
     def material_new_clusters(self) -> list[Cluster]:
@@ -776,6 +782,41 @@ class GateFailure:
     Frozen, like every other record a run stores.
     """
 
+    detail: str
+    detail_chars: int
+
+
+@dataclass(frozen=True)
+class SeamFailure:
+    """An injected callable failed, and the engine substituted UNKNOWN for it (#148).
+
+    The family's fourth record, for the six callables #85, #25 and #129 did not name:
+    ``adjudicate``, ``reduce``, ``budget_spent``, ``clock`` (after its first call),
+    ``scope_complete`` and ``checkpoint``. **One shape that names the callable**, not six
+    record types: what differs between them is the OUTCOME, and that is stated once in
+    ``loop.run``, not encoded per record.
+
+    ``GateFailure``'s arguments apply unchanged and are not restated. It is a field and
+    not a ``Finding``, because no persona produced it. It hangs off the epoch it belongs
+    to, so it carries no ``epoch`` of its own. ``detail`` is collapsed, measured and
+    bounded where it is built, and ``detail_chars`` is the collapsed length, so "was this
+    cut" is ``detail_chars > DIAGNOSIS_BOUND`` (#111). It is a channel of #121's class,
+    bounded in length and not in content.
+
+    **Per epoch, and every guarded call is inside one.** The only call with no epoch is
+    the FIRST ``clock()``, and that is deliberately unguarded: it precedes any spend.
+
+    **What it does not say: WHICH finding a failed ``adjudicate`` left unadjudicated.**
+    The artefact publishes no finding key to point at, and a stored copy of a
+    model-authored title would be #118's unbounded channel again. The finding itself
+    stays ``verified=None``, which is exactly what it is, and the count of failures says
+    how many.
+
+    ``seam`` is the callable's parameter name on ``run``, from a fixed set, never text
+    from outside the engine.
+    """
+
+    seam: str
     detail: str
     detail_chars: int
 

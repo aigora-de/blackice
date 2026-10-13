@@ -58,12 +58,14 @@ sibling holds what.
 
 from __future__ import annotations
 
+import math
+import operator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Sequence, TypeVar
 
-from .findings import (EpochResult, Finding, GateFailure, PersonaReport,
-                       PersonaStatus, ReviewRun, Severity, Suppression,
+from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport,
+                       PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
@@ -123,6 +125,128 @@ def _auto_continue(result: EpochResult, run: ReviewRun) -> GateDecision:  # noqa
     return GateDecision(stop=False)
 
 
+_T = TypeVar("_T")
+
+
+def _call_seam(seam: str, failures: list[SeamFailure],
+               call: Callable[[], _T]) -> tuple[bool, _T | None]:
+    """Call one injected callable; a failure is UNKNOWN, recorded, never a value (#148).
+
+    ONE guard for the six callables #85, #25 and #129 did not name, rather than six local
+    ``try``s each with its own outcome: the outcome is the CALLER's, and every caller
+    states it beside the call. What is uniform is everything else — the catch, the
+    record, and #129's rule that the engine never reads an unvalidated value off a seam's
+    return outside the guard. So ``call`` is the seam's call AND the conversion of what
+    it returned, and both run in here. Measured on ``0fd8ebb``: a raise from any of the
+    six, and a hostile RETURN from five, escaped ``run`` after the panel was paid for.
+
+    Returns ``(True, value)``, or ``(False, None)`` where the call failed, so that no
+    value a seam can return is mistaken for the failure marker. Sites that discard the
+    flag and read ``None`` as UNKNOWN may do so only because their conversion never
+    returns ``None``: each of the ``_as_*`` conversions below returns its type or raises.
+
+    ``Exception``, never ``BaseException``: Ctrl-C still stops the run. The diagnosis is
+    rendered by #142's helper — never by interpolating ``exc``, which reopened #142 at
+    every guard written the old way — then collapsed, measured and bounded, in the order
+    ``SurfaceFailure`` and ``GateFailure`` use (#111).
+    """
+    try:
+        return True, call()
+    except Exception as exc:  # noqa: BLE001
+        collapsed = " ".join(render_exception(exc).split())
+        failures.append(SeamFailure(seam, bounded_diagnosis(collapsed), len(collapsed)))
+        return False, None
+
+
+def _as_verdict(value: object) -> bool:
+    """An adjudication is ``True`` or ``False`` EXACTLY; anything else is no answer.
+
+    Categorical, never truthiness. ``bool(...)`` was this fix's first shape, and the
+    pre-merge review measured what it did: an adjudicator returning ``None`` — which is
+    ``Finding.verified``'s own word for "not checked" — or ``0``, ``""`` or ``[]`` was
+    coerced to ``False``, a REFUTATION, so an UGLY was dropped, the run halted
+    ``converged``, and nothing was recorded. Main had kept the raw value, which counted
+    open by accident. ``bool`` cannot be subclassed, so ``type(...) is bool`` admits
+    exactly the two values a verdict can be.
+    """
+    if type(value) is not bool:
+        raise TypeError(f"adjudicate returned {type_name(value)}, not bool")
+    return value
+
+
+def _as_scope(value: object) -> bool:
+    """A scope answer is ``True`` or ``False`` exactly, for ``_as_verdict``'s reason."""
+    if type(value) is not bool:
+        raise TypeError(f"scope_complete returned {type_name(value)}, not bool")
+    return value
+
+
+def _as_token_count(value: object) -> int:
+    """A token count is a non-negative integer, returned as an exact ``int``.
+
+    Excluded: a ``bool`` (``True`` read as one token), anything that is not an ``int``
+    (a float, a string, ``None``), and a negative, which can never reach the ceiling and
+    so silently disarms the operator's spend bound for the rest of the run. An ``int``
+    SUBCLASS is admitted and normalised by ``operator.index``: it is a real count, and
+    the second pre-merge review measured an exact-type check halting a healthy run
+    ``unmeasured`` on one. No healthy counter produces an excluded value.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"budget_spent returned {type_name(value)}, not a token count")
+    count = operator.index(value)
+    if count < 0:
+        raise ValueError("budget_spent returned a negative token count")
+    return count
+
+
+def _as_clock_reading(value: object) -> float:
+    """A clock reading is a FINITE ``int`` or ``float`` (not a ``bool``), as a ``float``.
+
+    The same rule as the token count, so one kind of input meets one rule: the second
+    pre-merge review measured ``float(...)`` admitting ``"5"`` and ``True`` as readings.
+    NaN compares false with every ceiling, so it read as a measurement that never
+    reaches one (the same silent disarm), and ``inf`` as one that reached it at once.
+
+    A reading BELOW the start is still a measurement and is kept: an injected wall
+    clock can step backwards, and refusing it would fire on a healthy run. It can delay
+    the time ceiling by the size of the step; it cannot disarm it.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"clock returned {type_name(value)}, not a reading")
+    reading = float(value)
+    if not math.isfinite(reading):
+        raise ValueError("clock returned a non-finite reading")
+    return reading
+
+
+def _elapsed(value: object, start: float) -> float:
+    """Seconds since ``start``, which must itself be finite: two finite readings far
+    enough apart overflow to ``inf`` (measured at ``1e308`` then ``-1e308``)."""
+    elapsed = _as_clock_reading(value) - start
+    if not math.isfinite(elapsed):
+        raise ValueError("clock readings differ by a non-finite interval")
+    return elapsed
+
+
+def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Cluster]:
+    """What ``reduce`` returned, rebuilt by the engine from the ledger's OWN findings.
+
+    Called inside ``_call_seam``, so anything this cannot read is a failed reduce. The
+    clusters the engine stores are the engine's own, every member is the ledger's own
+    ``Finding`` (looked up by key). So nothing the loop reads afterwards — ``members``,
+    ``key``, ``severity`` — can raise from a foreign object. The title is carried as
+    given: the loop never reads it, and requiring an exact ``str`` here recorded the
+    engine's OWN identity reduce as a failed seam whenever a finding's title was not
+    one (the pre-merge review). What a title may be is the findings contract's
+    question, so ``Cluster.title``'s annotation is a contract on reducers, not a
+    guarantee this function adds. A member the ledger does not hold is a ``KeyError`` here, never a phantom
+    finding. Whether a reduce that leaves a ledger finding OUT is a failure is #150's to
+    rule, and this does not pre-empt it.
+    """
+    return [Cluster(members=tuple(ledger[m.key] for m in c.members), title=c.title)
+            for c in returned]  # type: ignore[attr-defined]
+
+
 # =============================================================================
 # The loop
 # =============================================================================
@@ -170,13 +294,28 @@ def run(
         checkpoint: Optional persistence hook, called each epoch for resumability.
         scope_complete: Predicate: has the in-scope surface been fully covered?
 
+    ``adjudicate``, ``reduce``, ``budget_spent``, ``clock`` (after its first call),
+    ``scope_complete`` and ``checkpoint`` may each raise, or return something unusable,
+    and neither discards the run (#148). The failure is recorded as a ``SeamFailure`` on
+    the epoch and its value is UNKNOWN, never substituted by a measurement: a finding
+    stays unadjudicated (``verified=None``, still open), the reduce is the identity, an
+    unknown scope cannot support ``CONVERGED``, nothing is persisted, and an unknown
+    token or time reading halts the run ``UNMEASURED`` where that ceiling is armed and is
+    only recorded where it is not. The FIRST ``clock()`` precedes any spend and is not
+    guarded, so a failure there propagates.
+
     Returns:
         A ``ReviewRun`` with per-epoch results, the deduped findings ledger, and
         the halt reason.
     """
     review_run = ReviewRun()
     quorum = panel.effective_quorum
-    start = clock()
+    # NOT guarded, deliberately (#148): this precedes any spend, so a raise loses nothing,
+    # which is #18's doctrine as ``gather`` applies it with no completed epoch. Guarding it
+    # for symmetry would fabricate a run in which nothing happened. ``float`` here so a
+    # hostile return fails HERE, before the panel is paid for, rather than at every
+    # epoch's subtraction after it.
+    start = _as_clock_reading(clock())
     stall_epochs = 0
 
     epoch = 0
@@ -259,13 +398,27 @@ def run(
         else:
             reports = [_run(pm) for pm in panel.personas]
 
+        # Every injected callable that fails from here on is recorded on this epoch (#148).
+        failures: list[SeamFailure] = []
+
         # Adjudicate BLOCKER/UGLY claims against source; refuted -> dropped.
+        #
+        # Contained PER CALL, so one finding's failure does not leave the rest of the
+        # epoch unadjudicated. A failed call leaves ``verified=None``: unadjudicated,
+        # which is exactly what it is, so it still counts open and still trips the
+        # breaker. ``False`` would need a refutation, and substituting it for an UNKNOWN
+        # would drop the finding, which on an UGLY silences the circuit-breaker. So the
+        # verdict is CATEGORICAL (``_as_verdict``), never truthiness: a ``None`` coerced to
+        # ``False`` was exactly that ruin, measured on this fix's first shape.
         for report in reports:
             checked: list[Finding] = []
             for f in report.findings:
                 if f.severity >= Severity.BLOCKER and f.verified is None:
-                    ok = adjudicate(f, surface)
-                    f = Finding(**{**f.__dict__, "verified": ok})
+                    adjudicated, verdict = _call_seam(
+                        "adjudicate", failures,
+                        lambda f=f: _as_verdict(adjudicate(f, surface)))
+                    if adjudicated:
+                        f = Finding(**{**f.__dict__, "verified": verdict})
                 checked.append(f)
             report.findings = checked
 
@@ -321,7 +474,13 @@ def run(
         # Layer 2 (reduce/view): fold the whole deduped ledger into canonical
         # clusters. The default is identity (one cluster per signature); a semantic
         # reducer collapses re-worded / re-located dups of a single concept.
-        review_run.clusters = reduce(list(review_run.ledger.values()))
+        #
+        # A failed reduce is the identity reduce, the state before the call (#148).
+        ledger_findings = list(review_run.ledger.values())
+        reduced, clusters = _call_seam(
+            "reduce", failures,
+            lambda: _rebuilt_clusters(reduce(ledger_findings), review_run.ledger))
+        review_run.clusters = clusters if reduced else _identity_reduce(ledger_findings)
 
         # A cluster is *new this epoch* iff every member first appeared this epoch
         # (no member key was seen before). A cluster that merges a new finding into
@@ -339,6 +498,7 @@ def run(
             open_uglies=len(review_run.open_ugly_clusters),
             suppressed=suppressed,
             resighted=resighted,
+            seam_failures=failures,
         )
 
         # Stall accounting: only *material* (blocker/ugly) new clusters reset it.
@@ -361,19 +521,37 @@ def run(
         # verdict from the same absence, reached by arithmetic instead.
         no_persona_reviewed = all(r.status.did_not_review for r in reports)
 
+        # The three halting INPUTS (#148). A failed read is ``None``, which the predicate
+        # reads as UNKNOWN, never as a measurement: it fires no ceiling, a disarmed
+        # ceiling's unknown lets the run continue, and an armed one's halts it
+        # ``UNMEASURED`` (the maintainer's ruling; see ``HaltReason``). An unknown scope
+        # cannot support ``CONVERGED``, which needs it KNOWN complete, so it reads as
+        # ``False`` — inert where convergence does not require it. The breaker reads none
+        # of the three. Called in the order they always were, and every one is still
+        # called where its predicate is disarmed, so a healthy run's calls are unchanged.
+        _, tokens_spent = _call_seam(
+            "budget_spent", result.seam_failures, lambda: _as_token_count(budget_spent()))
+        _, elapsed_s = _call_seam(
+            "clock", result.seam_failures, lambda: _elapsed(clock(), start))
+        _, scope_known = _call_seam(
+            "scope_complete", result.seam_failures, lambda: _as_scope(scope_complete(result)))
         result.halt = _evaluate_halt(
             result, review_run, halting,
             epochs_done=epoch,
             stall_epochs=stall_epochs,
-            tokens_spent=budget_spent(),
-            elapsed_s=clock() - start,
-            scope_complete=scope_complete(result),
+            tokens_spent=tokens_spent,
+            elapsed_s=elapsed_s,
+            scope_complete=scope_known is True,
             quorum_met=quorum_met,
             no_persona_reviewed=no_persona_reviewed,
         )
         review_run.epochs.append(result)
         if checkpoint is not None:
-            checkpoint(review_run)
+            # Nothing persisted, and the record says so (#148). #31 makes this a durable
+            # write and states its own outcome; the guard is what it goes behind. The
+            # failure is recorded AFTER the call, so a checkpoint never sees its own.
+            _call_seam("checkpoint", result.seam_failures,
+                       lambda: checkpoint(review_run))
 
         if result.halt is not None:
             review_run.halt_reason = result.halt
@@ -421,7 +599,8 @@ def run(
                 # to a published artefact (``GateFailure`` states that in full).
                 diagnosis = f"gate returned {type_name(returned)}, not GateDecision"
         except Exception as exc:  # noqa: BLE001
-            # The third of three injected seams, and the last to be guarded (#129).
+            # The third of three injected seams guarded before #148, which guarded the six
+            # #129 did not name (``_call_seam``).
             # ``gather`` has had this treatment since #85 and ``spawn`` since #25,
             # and both paragraphs apply here unchanged: a fallible black box must
             # not take the whole ``ReviewRun`` with it — every finding,

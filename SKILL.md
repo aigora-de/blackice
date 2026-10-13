@@ -64,6 +64,10 @@ human. You are the *synthesiser, not the judge* — the human decides.
      and the artefact), names the epoch it could not reassemble, and exits `2`. The
      first epoch is different: with nothing reviewed there is nothing to report, so
      it stays an operator error on stderr with no halt line.
+   - With **`--token-budget`** set, a run whose token count cannot be read halts
+     **`unmeasured`** and exits `2`: it cannot tell whether the ceiling you set was
+     reached, and it neither claims `budget` nor spends past it. Without a budget, the
+     failure is recorded in `seam_failures` and the run continues.
    - **`--semantic-dedup`** (opt-in) folds the same concern raised by multiple
      personas — differently worded, at different lines, or across files — into one
      **canonical cluster**, so stall/convergence and your synthesis count *issues*,
