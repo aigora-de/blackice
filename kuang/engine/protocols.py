@@ -45,9 +45,10 @@ class SpawnPersona(Protocol):
     the panel has already been paid for (#25). It is contained, not hidden — the
     exception reaches the run artefact as a finding.
 
-    What it returns is copied as it enters the run (#155), so a backend that keeps the
-    report writes nothing the run holds afterwards. A return the engine cannot copy, or
-    that is not a ``PersonaReport``, is contained exactly as a raise is, and the
+    What it returns is copied as it enters the run (#155), once the panel's fan-out has
+    returned, so a backend that keeps the report writes nothing the run holds after that.
+    A return the engine cannot copy, or that is not a ``PersonaReport``, is contained
+    exactly as a raise is, and the
     failure's finding carries the highest severity the report claimed, or UGLY where
     what it claimed cannot be read (fail closed); its title says which.
     """

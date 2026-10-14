@@ -70,7 +70,7 @@ from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
-from ._handed import (Claim, UncopiableRecord, claimed_severity, handed,
+from ._handed import (REPORT_DEPTH, Claim, UncopiableRecord, claimed_severity, handed,
                       is_immutable_value)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
@@ -405,7 +405,7 @@ def run(
     # copy of the run, and every report a healthy spawn returned under it. Checked here,
     # before anything is spent, so it is an operator error that propagates (#18), as the
     # first ``clock()`` below is. The shipped CLI's names are always exact ``str``.
-    if not all(type(name) is str for name, _ in panel.personas):
+    if not all(type(pm[0]) is str for pm in panel.personas):
         raise TypeError("every persona name in the panel must be an exact str")
     # NOT guarded, deliberately (#148): this precedes any spend, so a raise loses nothing,
     # which is #18's doctrine as ``gather`` applies it with no completed epoch. Guarding it
@@ -466,60 +466,78 @@ def run(
         # Fan out: one persona per subagent. Real backends spawn a subprocess
         # per persona, so run them concurrently (subprocess calls release the
         # GIL, so threads parallelise fine).
-        def _run(pm: tuple[str, str]) -> PersonaReport:
-            returned: object = None
+        def _run(pm: tuple[str, str]) -> tuple[object, Exception | None]:
             try:
-                # Copied ONCE, here, as it enters the run (#155, by the maintainer's
-                # ruling of 2026-10-14), so the run's record holds only values the
-                # engine built (a reduce's cluster titles are checked where they are
-                # rebuilt, and a gate's foreign ``asked`` is copied as ``None``). A
-                # value the engine cannot copy, kept in the record, was measured
-                # refusing EVERY later copy of the run, so the gate was
-                # never reached again; refused here, it costs this persona's report
-                # and nothing after it. And a backend that kept a reference to what it
-                # returned and wrote it later now writes nothing the run holds. What
-                # comes back must be exactly a ``PersonaReport`` (the copy refuses a
-                # subclass, and copies any other exact record it is given), or the
-                # spawn has failed like any other.
-                returned = spawn(pm[0], pm[1], surface, epoch)
-                report = handed(returned)
-                if type(report) is not PersonaReport:
-                    raise UncopiableRecord("spawn returned a value that is not a report")
-                return report
+                return spawn(pm[0], pm[1], surface, epoch), None
             except Exception as exc:  # noqa: BLE001
-                # A persona is a fallible black box, and one that raises must not
-                # take the panel's other reviews with it (#25): the exception used
-                # to propagate out of pool.map and end a run that had already paid
-                # for everyone. Recorded as a finding rather than swallowed, and
-                # deliberately not BaseException — a human's Ctrl-C still stops it.
-                # The status is set HERE, at the source, and is the engine's own:
-                # ``SPAWN_FAILED`` means our code raised, or returned what the engine
-                # refused (#155), against a backend's
-                # ``AGENT_ERROR`` for a runtime that ran and returned no review.
-                # A run must be able to tell those apart (#30). Both strings come
-                # from the guarded helpers, never from ``exc`` directly (#142).
-                #
-                # NOTE where the seam raised. Where it RETURNED a report the engine
-                # refused (#155), the highest severity that report claimed, or UGLY
-                # where that cannot be read, so an UGLY in it still trips the breaker:
-                # see ``claimed_severity``. The title says which, in fixed words; where
-                # the seam raised it is exactly what it always was.
-                claim = claimed_severity(returned)
-                return PersonaReport(
-                    persona=pm[0], verdict=None,
-                    status=PersonaStatus.SPAWN_FAILED,
-                    findings=[
-                        Finding(pm[0], f"persona failed: {render_exception(exc)}"
-                                       f"{_claim_note(claim)}",
-                                claim.severity, "meta",
-                                evidence=bounded_diagnosis(repr_exception(exc)),
-                                about_run=True)])
+                return None, exc
+
+        def _entered(pm: tuple[str, str], returned: object,
+                     raised: Exception | None) -> PersonaReport:
+            if raised is None:
+                try:
+                    # Copied ONCE, here, as it enters the run (#155, by the maintainer's
+                    # ruling of 2026-10-14), so the run's record holds only values the
+                    # engine built (a reduce's cluster titles are checked where they are
+                    # rebuilt, and a gate's foreign ``asked`` is copied as ``None``).
+                    #
+                    # AFTER the fan-out has joined, never inside a worker: main read
+                    # every report only once all had returned, so a backend that wrote
+                    # into an earlier report from a later ``spawn`` call was read, and
+                    # an UGLY written that way escalated. Copied inside the worker, the
+                    # seventh pre-merge review measured it lost and the run converged,
+                    # and in parallel the halt depended on thread scheduling. Copied
+                    # here, the engine reads exactly what main read, deterministically.
+                    # Anything a backend writes into a report AFTER this point reaches
+                    # nothing the run holds.
+                    #
+                    # A value the engine cannot copy, kept in the record, was measured
+                    # refusing EVERY later copy of the run, so the gate was never
+                    # reached again; refused here, it costs this persona's report. What
+                    # comes back must be exactly a ``PersonaReport`` (the copy refuses
+                    # a subclass, and copies any other exact record it is given), or
+                    # the spawn has failed like any other.
+                    report = handed(returned, depth=REPORT_DEPTH)
+                    if type(report) is not PersonaReport:
+                        raise UncopiableRecord("spawn returned a value that is not a report")
+                    return report
+                except Exception as exc:  # noqa: BLE001
+                    raised = exc
+            # A persona is a fallible black box, and one that raises must not
+            # take the panel's other reviews with it (#25): the exception used
+            # to propagate out of pool.map and end a run that had already paid
+            # for everyone. Recorded as a finding rather than swallowed, and
+            # deliberately not BaseException — a human's Ctrl-C still stops it.
+            # The status is set HERE, at the source, and is the engine's own:
+            # ``SPAWN_FAILED`` means our code raised, or returned what the engine
+            # refused (#155), against a backend's
+            # ``AGENT_ERROR`` for a runtime that ran and returned no review.
+            # A run must be able to tell those apart (#30). Both strings come
+            # from the guarded helpers, never from ``exc`` directly (#142).
+            #
+            # NOTE where the seam raised. Where it RETURNED a report the engine
+            # refused (#155), the highest severity that report claimed, or UGLY
+            # where that cannot be read, so an UGLY in it still trips the breaker:
+            # see ``claimed_severity``. The title says which, in fixed words; where
+            # the seam raised it is exactly what it always was.
+            claim = claimed_severity(returned)
+            return PersonaReport(
+                persona=pm[0], verdict=None,
+                status=PersonaStatus.SPAWN_FAILED,
+                findings=[
+                    Finding(pm[0], f"persona failed: {render_exception(raised)}"
+                                   f"{_claim_note(claim)}",
+                            claim.severity, "meta",
+                            evidence=bounded_diagnosis(repr_exception(raised)),
+                            about_run=True)])
 
         if parallel and len(panel.personas) > 1:
             with ThreadPoolExecutor(max_workers=len(panel.personas)) as pool:
-                reports = list(pool.map(_run, panel.personas))
+                returns = list(pool.map(_run, panel.personas))
         else:
-            reports = [_run(pm) for pm in panel.personas]
+            returns = [_run(pm) for pm in panel.personas]
+        reports = [_entered(pm, returned, raised)
+                   for pm, (returned, raised) in zip(panel.personas, returns)]
 
         # Every injected callable that fails from here on is recorded on this epoch (#148).
         failures: list[SeamFailure] = []

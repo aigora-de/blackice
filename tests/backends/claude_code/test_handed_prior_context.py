@@ -43,6 +43,7 @@ def _memory(review_run):
 
 
 def test_the_checkpoint_builds_the_same_prior_context_from_its_copy(monkeypatch):
+    """GREEN ON MAIN, by design (see the module docstring): the fidelity guard."""
     made: list[ReviewRun] = []
 
     def construct():

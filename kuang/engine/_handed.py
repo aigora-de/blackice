@@ -58,9 +58,10 @@ keyed by ``id()``, so a backend thread freeing and replacing an object WHILE it 
 could alias the wrong one; that needs a concurrent writer, and main is no less racy there.
 
 **At entry, too (the maintainer's ruling of 2026-10-14).** ``spawn``'s report is copied
-ONCE, as it enters the run, so the record holds only values the engine built, and a
-backend that kept a reference to a report it returned and writes it later writes nothing
-the run holds. A report the engine refuses there is that persona's contained spawn failure
+ONCE, as it enters the run (once the whole fan-out has returned, which is when main read
+it), so the record holds only values the engine built, and a backend that kept a
+reference to a report and writes it after that writes nothing the run holds. The entry
+copy starts at ``REPORT_DEPTH``, so a report it admits is admitted by every later copy. A report the engine refuses there is that persona's contained spawn failure
 (#25), whose finding carries the highest severity the report claimed, or UGLY where what
 it claimed cannot be read (``claimed_severity``), so an UGLY in it still trips the breaker
 and the title says which of the two it is. Refused at every SEAM
@@ -108,6 +109,14 @@ _SCALARS: tuple[type, ...] = (str, int, float, bool, type(None), Severity, HaltR
                               PersonaStatus)
 # Far above any record the engine builds (a run is eight levels deep to a finding's field).
 MAX_DEPTH = 64
+# How deep a ``spawn`` report sits inside every later copy of the run: run, ``epochs``,
+# the epoch, ``reports``, the report. The bound is counted from where a copy STARTS, so
+# the entry copy starts here: a report the entry admits is then admitted by every later
+# copy too. Counted from 0, the seventh pre-merge review measured a report nested 60 deep
+# admitted at entry and refused by every later copy, losing the gate for the run. Nothing
+# a report reaches sits deeper in any other copy (``scope_complete``'s epoch holds it at 2,
+# and a cluster's members are findings, which carry only scalars).
+REPORT_DEPTH = 4
 
 
 def is_immutable_value(value: object) -> bool:
@@ -120,14 +129,14 @@ class UncopiableRecord(Exception):
     """The engine could not build the copy a seam is handed, so the seam is not called."""
 
 
-def handed(value: _T) -> _T:
+def handed(value: _T, depth: int = 0) -> _T:
     """A copy of ``value`` sharing nothing a seam can write with the live record.
 
     Raises ``UncopiableRecord`` where no such copy exists. The caller is always inside the
     seam's guard, and the diagnosis says it was the copy, not the seam, that failed.
     """
     try:
-        return _copied(value, {}, 0)
+        return _copied(value, {}, depth)
     except UncopiableRecord:
         raise
     except Exception:  # noqa: BLE001

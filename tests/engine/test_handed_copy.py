@@ -322,7 +322,8 @@ def test_the_highest_readable_claim_is_carried():
                          ids=["none", "str", "int", "a-report-claiming-nothing"])
 def test_a_return_that_claims_nothing_is_note(returned):
     """The fail-closed rule's other end: nothing claimed is nothing unknown. Without this
-    pair a function returning UGLY for everything would pass the tests above."""
+    pair a function returning UGLY for everything would pass the tests above. GREEN UNDER
+    THE SHIM, by design: the shim claims NOTE for everything, which is this end."""
     assert claimed_severity(returned) == (Severity.NOTE, True)
 
 

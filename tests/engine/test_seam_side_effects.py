@@ -907,7 +907,8 @@ def test_an_adjudicator_cannot_refute_a_refused_reports_ugly():
     """REGRESSION for the third review's second UGLY: the refused report's failure is an
     UGLY naming no file, and was handed to ``adjudicate``; one checking claims against
     source refuted it and the run converged. An instrument finding is never adjudicated:
-    on main none is above NOTE, so none ever was."""
+    on main none is above NOTE, so none ever was. GREEN ON MAIN in its halt, by design: it
+    guards the third repair's shape, not main."""
     seen: list[bool] = []
 
     def adjudicate(finding, surface):  # noqa: ARG001
@@ -1037,7 +1038,8 @@ class _PresentsFindings(list):
 def test_an_ugly_presented_by_a_findings_container_subclass_escalates():
     """REGRESSION for the fifth review's UGLY: main walks ``findings`` through its own
     ``__iter__`` and escalated; the previous shape read the empty storage, claimed nothing,
-    and a quorum-of-two-of-three panel converged."""
+    and a quorum-of-two-of-three panel converged. GREEN ON MAIN, by design: it guards the
+    fifth repair's shape, not main."""
     def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
         if persona == "p":
             return PersonaReport(persona="p", verdict="NO", status=PersonaStatus.CONTRIBUTED,
@@ -1167,3 +1169,77 @@ def test_a_persona_name_the_copy_cannot_keep_is_an_operator_error_before_any_spe
             PanelConfig(personas=[(_Lens("p"), "m")]), spawn=spawn,
             gather=lambda epoch: "s", parallel=False)
     assert calls == []
+
+
+# --- the seventh review: when the entry copy is taken, and from what depth ---------------
+
+def test_a_write_into_an_earlier_report_before_the_fan_out_joins_is_read_as_main_read_it():
+    """REGRESSION for the seventh review's UGLY: main read every report only once the whole
+    fan-out had returned, so a backend writing an UGLY into an earlier persona's report
+    from a later ``spawn`` call escalated. Copied inside the worker as each returned, the
+    branch lost it and converged (and in parallel, the halt hung on thread scheduling).
+    The entry copy is now taken after the join, so it reads exactly what main read."""
+    held: dict[str, PersonaReport] = {}
+
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        report = PersonaReport(persona=persona, verdict="YES",
+                               status=PersonaStatus.FOUND_NOTHING)
+        held[persona] = report
+        if persona == "q":
+            held["p"].findings.append(Finding("p", "ruin", U, "c", "a.py", 1))
+        return report
+
+    review_run = _malformed_run(spawn, panel=PAIR)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+
+
+def _nested(n):
+    out: list = []
+    cur = out
+    for _ in range(n):
+        cur.append([])
+        cur = cur[0]
+    return out
+
+
+@pytest.mark.parametrize("n", range(50, 66))
+def test_a_report_the_entry_copy_admits_is_admitted_by_every_later_copy(n):
+    """REGRESSION for the seventh review's BLOCKER, as a property across the bound: the
+    depth bound counted from wherever a copy started, so a report nested 60-63 deep was
+    admitted at entry (depth 0) and refused by every later copy of the run (where it sits
+    four levels down), so the gate was never reached and nothing checkpointed. For every
+    nesting either side of the bound: refused at entry, or no later copy refuses it."""
+    gates: list[int] = []
+    checkpoints: list[int] = []
+
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        return PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                             denied_tools=_nested(n) if (epoch, persona) == (1, "p") else [],
+                             findings=[Finding(persona, f"t{epoch}", B, f"c{epoch}", "a.py",
+                                               epoch * 100)])
+
+    def gate(result, review_run):  # noqa: ARG001
+        gates.append(result.index)
+        return GateDecision(stop=False)
+
+    review_run = _malformed_run(
+        spawn, panel=PAIR, human_gate=gate,
+        checkpoint=lambda r: checkpoints.append(len(r.epochs)))
+
+    refused = bool(_refused_at_entry(review_run))
+    assert _copy_refusals(review_run) == [], f"n={n}: a later copy refused (entry refused={refused})"
+    assert all(e.gate_failure is None for e in review_run.epochs)
+    assert gates == [1, 2] and checkpoints == [1, 2, 3]
+
+
+def test_a_persona_entry_with_more_than_a_name_and_a_mandate_is_not_refused():
+    """The persona-name check reads the NAME only (``pm[0]``), as the loop does: a panel
+    entry carrying more than two values ran on main, and still runs. GREEN ON MAIN; red on
+    the previous shape of the check, which unpacked pairs (the seventh review's NIT)."""
+    review_run = _contained(lambda: run(
+        ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=1),
+        PanelConfig(personas=[("p", "m", "extra")]),  # type: ignore[list-item]
+        spawn=_malformed_spawn(B, "NO"), gather=lambda epoch: "s", parallel=False))
+
+    assert review_run.halt_reason is HaltReason.EPOCH
