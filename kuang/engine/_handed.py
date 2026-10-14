@@ -52,8 +52,8 @@ depend on the interpreter's recursion limit.
 twice is copied once, so a ledger ``Finding`` that is also in ``new_findings`` and a
 cluster's ``members`` is still one object in the copy. Nothing shipped relies on that, as
 every match is by ``key``, but a copy that changed it would hand a reading seam a different
-structure from today's. A tuple enters the memo only once its members are built, so a cycle
-running through a tuple would be copied unaliased; no record can form one. The memo is
+structure from today's. A tuple enters the memo, as still being built, before its members are,
+so a value reached again through itself is refused (see ``_copied``). The memo is
 keyed by ``id()``, so a backend thread freeing and replacing an object WHILE it is copied
 could alias the wrong one; that needs a concurrent writer, and main is no less racy there.
 

@@ -906,9 +906,9 @@ def test_a_refused_reports_ugly_escalates_however_its_findings_are_held(shape):
 def test_an_adjudicator_cannot_refute_a_refused_reports_ugly():
     """REGRESSION for the third review's second UGLY: the refused report's failure is an
     UGLY naming no file, and was handed to ``adjudicate``; one checking claims against
-    source refuted it and the run converged. An instrument finding is never adjudicated:
-    on main none is above NOTE, so none ever was. GREEN ON MAIN in its halt, by design: it
-    guards the third repair's shape, not main."""
+    source refuted it and the run converged. The failure the ENGINE builds is never
+    adjudicated (a backend's own ``about_run`` finding still is, as on main). GREEN ON MAIN
+    in its halt, by design: it guards the third repair's shape, not main."""
     seen: list[bool] = []
 
     def adjudicate(finding, surface):  # noqa: ARG001
@@ -1247,3 +1247,49 @@ def test_a_persona_entry_with_more_than_a_name_and_a_mandate_is_not_refused():
         spawn=_malformed_spawn(B, "NO"), gather=lambda epoch: "s", parallel=False))
 
     assert review_run.halt_reason is HaltReason.EPOCH
+
+
+# --- the ninth review: only the engine's own failure skips adjudication; titles copied ---
+
+def test_a_backends_own_instrument_finding_is_adjudicated_as_on_main():
+    """REGRESSION for the ninth review's BAD: every ``about_run`` finding was excluded from
+    adjudication, which changed what a backend's RETURN does. A backend's instrument UGLY
+    that its adjudicator refutes converges, exactly as on main. GREEN ON MAIN, by design."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        return PersonaReport(persona=persona, verdict="YES", status=PersonaStatus.CONTRIBUTED,
+                             findings=[Finding(persona, "x", U, "c", about_run=True)])
+
+    review_run = _malformed_run(spawn, adjudicate=lambda f, s: False)
+
+    assert review_run.halt_reason is HaltReason.CONVERGED
+
+
+def test_a_refuted_instrument_finding_with_an_unusable_severity_does_not_end_the_run():
+    """REGRESSION for the ninth review's BAD (#148): excluded from adjudication, a backend's
+    ``about_run`` finding with a raw-int severity stayed open, and its key raised out of
+    ``run`` beside a real UGLY that main escalated on. Adjudicated as on main, it is
+    refuted, never keyed, and the run escalates."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        return PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                             findings=[Finding(persona, "real", U, "c", file="a.py"),
+                                       Finding(persona, "x", 3, "c",  # type: ignore[arg-type]
+                                               about_run=True)])
+
+    review_run = _malformed_run(spawn, adjudicate=lambda f, s: f.file is not None)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+
+
+@pytest.mark.parametrize("title", [None, ["t"], ("t",)], ids=["none", "list", "tuple"])
+def test_the_engines_own_reduce_never_fails_on_a_title_the_copy_admitted(title):
+    """REGRESSION for the ninth review's BAD (the ``none`` case GREEN ON MAIN, by design): the
+    cluster-title rule admitted scalars only while the copy admits lists and tuples, so the
+    engine's OWN identity reduce was recorded as failed on a list title main never failed.
+    The rule is now the copy itself."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        return PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                             findings=[Finding(persona, title, B, f"c{epoch}", "a.py", epoch)])
+
+    review_run = _malformed_run(spawn)
+
+    assert _seams(review_run) == [[], [], []]

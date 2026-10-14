@@ -70,8 +70,7 @@ from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
-from ._handed import (REPORT_DEPTH, Claim, UncopiableRecord, claimed_severity, handed,
-                      is_immutable_value)
+from ._handed import REPORT_DEPTH, Claim, UncopiableRecord, claimed_severity, handed
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -260,21 +259,19 @@ def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Clus
     guarantee this function adds. A member the ledger does not hold is a ``KeyError`` here, never a phantom
     finding. A reduce that leaves a ledger finding OUT is ``_as_partition``'s to refuse.
 
-    **Except where it is a value the copy cannot share (#155).** The title is stored in
-    the run's record (``EpochResult.new_clusters``), so a ``str`` subclass kept there was
-    in every later copy of the run, and each was refused: the fifth pre-merge review
-    measured the gate never reached again and nothing checkpointed. Such a title is a
-    failed reduce, recorded, and the identity follows. The rule is the COPY's
-    (``is_immutable_value``: an exact ``str``, ``None`` or other exact scalar), not "a
-    ``str``": the identity reduce's titles are a ledger finding's, which the copy admitted
-    by that same rule, so the engine's own reduce can never fail it (the objection
-    above, which an exact-``str`` rule reopened, measured on this repair's first shape).
+    **Kept as a COPY, and only if the copy can be built (#155).** The title is stored in
+    the run's record (``EpochResult.new_clusters``), so a value kept there that the copy
+    refuses (a ``str`` subclass, say) was in every later copy of the run, and each was
+    refused: the fifth pre-merge review measured the gate never reached again and nothing
+    checkpointed. So the title is put through ``handed`` here, inside the reduce's guard:
+    one the copy refuses is a failed reduce, recorded, and the identity follows. The rule
+    is the copy's own, so the engine's identity reduce can never fail it: its titles are
+    ledger findings', which the same copy admitted at entry (a scalars-only rule recorded
+    the engine's own reduce failing on a ``None``, then on a list, title). Storing the
+    copy also leaves ``reduce`` holding no reference to anything the run keeps.
     """
-    clusters = [Cluster(members=tuple(ledger[m.key] for m in c.members), title=c.title)
-                for c in returned]  # type: ignore[attr-defined]
-    if not all(is_immutable_value(c.title) for c in clusters):
-        raise TypeError("reduce returned a cluster title the engine cannot keep")
-    return clusters
+    return [Cluster(members=tuple(ledger[m.key] for m in c.members), title=handed(c.title))
+            for c in returned]  # type: ignore[attr-defined]
 
 
 def _as_partition(clusters: list[Cluster], ledger: dict[str, Finding]) -> list[Cluster]:
@@ -472,14 +469,20 @@ def run(
             except Exception as exc:  # noqa: BLE001
                 return None, exc
 
+        # The failure findings the ENGINE builds below, by identity: the only instrument
+        # findings never adjudicated (see the adjudication loop).
+        engine_built: set[int] = set()
+
         def _entered(pm: tuple[str, str], returned: object,
                      raised: Exception | None) -> PersonaReport:
             if raised is None:
                 try:
                     # Copied ONCE, here, as it enters the run (#155, by the maintainer's
                     # ruling of 2026-10-14), so the run's record holds only values the
-                    # engine built (a reduce's cluster titles are checked where they are
-                    # rebuilt, and a gate's foreign ``asked`` is copied as ``None``).
+                    # engine built (a reduce's cluster titles are copied where they are
+                    # rebuilt; a gate's foreign ``asked`` is the one value the record
+                    # keeps as handed back, by #131's ruling, and every copy carries
+                    # ``None`` for it).
                     #
                     # AFTER the fan-out has joined, never inside a worker: main read
                     # no report before all had returned, so a backend that wrote into
@@ -523,15 +526,14 @@ def run(
             # see ``claimed_severity``. The title says which, in fixed words; where
             # the seam raised it is exactly what it always was.
             claim = claimed_severity(returned)
-            return PersonaReport(
-                persona=pm[0], verdict=None,
-                status=PersonaStatus.SPAWN_FAILED,
-                findings=[
-                    Finding(pm[0], f"persona failed: {render_exception(raised)}"
-                                   f"{_claim_note(claim)}",
-                            claim.severity, "meta",
-                            evidence=bounded_diagnosis(repr_exception(raised)),
-                            about_run=True)])
+            failure = Finding(pm[0], f"persona failed: {render_exception(raised)}"
+                                     f"{_claim_note(claim)}",
+                              claim.severity, "meta",
+                              evidence=bounded_diagnosis(repr_exception(raised)),
+                              about_run=True)
+            engine_built.add(id(failure))
+            return PersonaReport(persona=pm[0], verdict=None,
+                                 status=PersonaStatus.SPAWN_FAILED, findings=[failure])
 
         if parallel and len(panel.personas) > 1:
             with ThreadPoolExecutor(max_workers=len(panel.personas)) as pool:
@@ -556,14 +558,17 @@ def run(
         for report in reports:
             checked: list[Finding] = []
             for f in report.findings:
-                # Never an instrument finding (#155), from any backend: it is a fact
-                # about the RUN, not a claim about the source, so there is nothing to
-                # verify. The engine's own that can be BLOCKER or above is a refused
-                # report's failure, carrying the severity that report claimed. Handed to an adjudicator, a claim
-                # naming no file was refuted and an UGLY run converged (the third
-                # pre-merge review). On main no instrument finding is above NOTE.
+                # Never the failure finding the ENGINE built for a refused report (#155):
+                # it carries the severity that report claimed, or UGLY unread, and is a
+                # fact about the run, not a claim about the source. Handed to an
+                # adjudicator, a claim naming no file was refuted and an UGLY run
+                # converged (the third pre-merge review). ONLY the engine's own: a
+                # backend's ``about_run`` finding is adjudicated exactly as on main.
+                # Excluding every ``about_run`` finding was the ninth review's BAD:
+                # it changed what a backend's RETURN does, and left a refutable
+                # finding open whose key then raised out of ``run`` (#148).
                 if (f.severity >= Severity.BLOCKER and f.verified is None
-                        and not f.about_run):
+                        and id(f) not in engine_built):
                     adjudicated, verdict = _call_seam(
                         "adjudicate", failures,
                         lambda f=f: _as_verdict(adjudicate(handed(f), surface)))
