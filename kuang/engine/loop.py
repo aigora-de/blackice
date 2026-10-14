@@ -492,7 +492,14 @@ def run(
         for report in reports:
             checked: list[Finding] = []
             for f in report.findings:
-                if f.severity >= Severity.BLOCKER and f.verified is None:
+                # Never an instrument finding (#155): it is a fact about the RUN, not a
+                # claim about the source, so there is nothing to verify, and the one
+                # that can be BLOCKER or above is a refused report's failure, carrying
+                # the severity that report claimed. Handed to an adjudicator, a claim
+                # naming no file was refuted and an UGLY run converged (the third
+                # pre-merge review). On main no instrument finding is above NOTE.
+                if (f.severity >= Severity.BLOCKER and f.verified is None
+                        and not f.about_run):
                     adjudicated, verdict = _call_seam(
                         "adjudicate", failures,
                         lambda f=f: _as_verdict(adjudicate(handed(f), surface)))

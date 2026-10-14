@@ -854,3 +854,64 @@ def test_a_foreign_key_in_an_instance_dict_has_no_code_run_by_the_copy():
     assert calls == []
     assert review_run.halt_reason is HaltReason.NO_REVIEW
     assert _refused_at_entry(review_run)
+
+
+# --- a refused report's UGLY survives however it is held (the third review) ----------
+
+class _List(list):
+    pass
+
+
+class _InstanceDict(dict):
+    pass
+
+
+def _refused_ugly(shape):
+    """``p`` returns one well-formed UGLY in a report the engine refuses; ``q`` votes YES."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        if persona == "q":
+            return PersonaReport(persona="q", verdict="YES", status=PersonaStatus.CONTRIBUTED)
+        f = Finding(persona, "t", U, "c", "a.py", 1)
+        report = PersonaReport(persona=persona, verdict="YES", status=PersonaStatus.CONTRIBUTED,
+                               findings=[f])
+        if shape == "list-subclass":
+            report.findings = _List([f])
+        elif shape == "tuple":
+            report.findings = (f,)
+            report.denied_tools = {"Bash"}
+        elif shape == "dict-subclass":
+            object.__setattr__(f, "__dict__", _InstanceDict(f.__dict__))
+            report.denied_tools = {"Bash"}
+        else:
+            report.tokens = _Tokens(5)
+        return report
+    return spawn
+
+
+@pytest.mark.parametrize("shape", ["tokens", "list-subclass", "tuple", "dict-subclass"])
+def test_a_refused_reports_ugly_escalates_however_its_findings_are_held(shape):
+    """REGRESSION for the third review's UGLY: the claimed severity was read only from an
+    exact ``list`` of findings with exact instance dicts, and returned NOTE otherwise, so a
+    quorum-below-panel run CONVERGED on an UGLY main escalated (all but ``tokens``)."""
+    review_run = _malformed_run(_refused_ugly(shape), panel=PAIR_QUORUM_ONE)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert _refused_at_entry(review_run)
+
+
+def test_an_adjudicator_cannot_refute_a_refused_reports_ugly():
+    """REGRESSION for the third review's second UGLY: the refused report's failure is an
+    UGLY naming no file, and was handed to ``adjudicate``; one checking claims against
+    source refuted it and the run converged. An instrument finding is never adjudicated:
+    on main none is above NOTE, so none ever was."""
+    seen: list[bool] = []
+
+    def adjudicate(finding, surface):  # noqa: ARG001
+        seen.append(finding.about_run)
+        return finding.file is not None
+
+    review_run = _malformed_run(_refused_ugly("tokens"), panel=PAIR_QUORUM_ONE,
+                                adjudicate=adjudicate)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert True not in seen

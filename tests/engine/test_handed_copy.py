@@ -15,7 +15,7 @@ import pytest
 
 from kuang.engine import (Cluster, EpochResult, Finding, GateDecision, PersonaReport,
                           PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression)
-from kuang.engine._handed import MAX_DEPTH, UncopiableRecord, handed
+from kuang.engine._handed import MAX_DEPTH, UncopiableRecord, claimed_severity, handed
 
 
 def _finding(n=1, severity=Severity.BLOCKER):
@@ -232,3 +232,126 @@ def test_a_structure_inside_the_bound_is_copied():
 def test_a_scalar_is_returned_unchanged(value):
     """GREEN UNDER THE SHIM, by design: nothing a seam can write is shared by sharing it."""
     assert handed(value) == value
+
+
+# --- what a REFUSED report claimed (#155's third review) -------------------------------
+#
+# The failure a refused report becomes carries the highest severity it claimed, read
+# running nothing the report carries, and FAILING CLOSED (UGLY) where a claim's severity
+# cannot be read: the maintainer's ruling of 2026-10-14.
+
+class _Seq(list):
+    def __iter__(self):
+        raise AssertionError("a list subclass's __iter__ ran")
+
+
+class _Dict(dict):
+    def items(self):
+        raise AssertionError("a dict subclass's items ran")
+
+    def get(self, *a):
+        raise AssertionError("a dict subclass's get ran")
+
+
+def _report_of(*findings, holder=list):
+    report = PersonaReport("p")
+    report.__dict__["findings"] = holder(findings)
+    return report
+
+
+@pytest.mark.parametrize("holder", [list, tuple, _Seq], ids=["list", "tuple", "list-subclass"])
+def test_a_refused_reports_ugly_is_read_through_any_list_or_tuple(holder):
+    """REGRESSION for the third review's UGLY: the first shape read only an exact ``list``
+    and returned NOTE for a tuple or a list subclass, so a quorum-below-panel run converged
+    on an UGLY main escalated. Read through the underlying storage, no hook runs."""
+    report = _report_of(_finding(1, Severity.NOTE), _finding(2, Severity.UGLY), holder=holder)
+
+    assert claimed_severity(report) is Severity.UGLY
+
+
+def test_a_finding_whose_instance_dict_is_a_dict_subclass_is_read_without_its_hooks():
+    """REGRESSION for the third review's UGLY, the dict-subclass shape."""
+    f = _finding(1, Severity.UGLY)
+    object.__setattr__(f, "__dict__", _Dict(f.__dict__))
+
+    assert claimed_severity(_report_of(f)) is Severity.UGLY
+
+
+def test_the_highest_readable_claim_is_carried():
+    """The max, not the first or the last: a BLOCKER beside NOTEs blocks convergence."""
+    report = _report_of(_finding(1, Severity.NOTE), _finding(2, Severity.BLOCKER),
+                        _finding(3, Severity.NON_BLOCKING))
+
+    assert claimed_severity(report) is Severity.BLOCKER
+
+
+@pytest.mark.parametrize("returned", [None, "text", 7, _report_of()],
+                         ids=["none", "str", "int", "a-report-claiming-nothing"])
+def test_a_return_that_claims_nothing_is_note(returned):
+    """The fail-closed rule's other end: nothing claimed is nothing unknown. Without this
+    pair a function returning UGLY for everything would pass the tests above."""
+    assert claimed_severity(returned) is Severity.NOTE
+
+
+class _IntSeverity(int):
+    def __gt__(self, other):
+        raise AssertionError("a foreign __gt__ ran")
+
+    def __eq__(self, other):
+        raise AssertionError("a foreign __eq__ ran")
+
+    __hash__ = int.__hash__
+
+
+class _CollidingKey:
+    armed = False   # inserting it compares it with "severity" in the TEST's own setup
+
+    def __hash__(self):
+        return hash("severity")
+
+    def __eq__(self, other):
+        if self.armed:
+            raise AssertionError("a foreign key's __eq__ ran")
+        return False
+
+
+def _with_state(f, **state):
+    f.__dict__.update(state)
+    return f
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _report_of(_with_state(_finding(), severity="UGLY")),
+    lambda: _report_of(_with_state(_finding(), severity=_IntSeverity(4))),
+    lambda: _report_of(_finding()).__dict__.__setitem__("findings", {_finding()}) or None,
+    lambda: _report_of(object()),
+], ids=["severity-a-str", "severity-an-int-subclass", "findings-a-set", "a-non-finding-claim"])
+def test_a_claim_that_cannot_be_read_fails_closed(make):
+    """Fail closed, by the maintainer's ruling: a claim whose severity cannot be read leaves
+    "is an UGLY open?" unknown, and the breaker fires. The int-subclass case is the third
+    review's surviving mutation M7 (an ``isinstance`` check would run its ``__gt__``)."""
+    report = make()
+    if report is None:
+        report = PersonaReport("p")
+        report.__dict__["findings"] = {_finding()}
+
+    assert claimed_severity(report) is Severity.UGLY
+
+
+def test_a_report_with_no_findings_attribute_fails_closed():
+    """Nothing to read is not the same as nothing claimed: closed."""
+    report = PersonaReport("p")
+    del report.__dict__["findings"]
+
+    assert claimed_severity(report) is Severity.UGLY
+
+
+def test_a_colliding_foreign_key_beside_the_severity_has_no_code_run():
+    """The third review's surviving mutation M6: a key whose hash matches ``severity`` had
+    its ``__eq__`` run by a ``.get``. Keys are compared only once they are exact ``str``."""
+    f = _finding(1, Severity.UGLY)
+    key = _CollidingKey()
+    f.__dict__[key] = "x"
+    key.armed = True
+
+    assert claimed_severity(_report_of(f)) is Severity.UGLY

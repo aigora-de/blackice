@@ -113,15 +113,15 @@ def handed(value: _T) -> _T:
     except UncopiableRecord:
         raise
     except Exception:  # noqa: BLE001
-        # Unreachable by construction: every check above runs only the engine's own code,
-        # so nothing here can raise but a refusal. Kept so that a defect in this module is
-        # still recorded as the COPY failing, never against a seam that was not called,
-        # and with a fixed string, so even then nothing the value carries is rendered.
+        # Reached only by a defect in this module, or by a backend thread writing what it
+        # returned while it is being copied ("dict changed size during iteration"). Either
+        # way it is recorded as the COPY failing, never against a seam that was not
+        # called, and with a fixed string, so nothing the value carries is rendered.
         raise _refused("an unexpected error") from None
 
 
 def _refused(why: str) -> UncopiableRecord:
-    return UncopiableRecord(f"the engine could not copy what it hands this seam: {why}")
+    return UncopiableRecord(f"the engine could not copy a record: {why}")
 
 
 def _copied(value, memo: dict[int, object], depth: int):
@@ -183,43 +183,67 @@ def _copied(value, memo: dict[int, object], depth: int):
 
 
 def claimed_severity(returned: object) -> Severity:
-    """The highest severity a report the engine REFUSED claimed, read without trusting it.
+    """The highest severity a report the engine REFUSED claimed, failing CLOSED.
 
     A refused report is a contained spawn failure (#25), and its findings never enter the
     run. Without this, an UGLY in a report refused only for an odd value elsewhere (an
     ``int`` subclass in ``tokens``, a ``set`` of denied tools) was lost, and a panel with a
     quorum below its size could vote the run ``converged`` where main had escalated. So
-    the failure's own finding carries the highest severity the report claimed, and the
-    breaker still fires on it.
+    the failure's own finding carries the highest severity the report claimed.
 
-    Read with the copy's own discipline: base-class descriptors, exact types, identity, so
-    nothing the value carries runs. A severity that cannot be read that way is not
-    invented into one, and is stated as such: ``NOTE``, the failure's ordinary severity.
+    **Fails closed, by the maintainer's ruling of 2026-10-14.** A claim whose severity
+    cannot be read is UGLY, never NOTE: whether an UGLY is open is then UNKNOWN, and #148's
+    rule is that an unknown is never read as a measurement, so the breaker fires rather
+    than a quorum voting past it. The third pre-merge review measured the first shape of
+    this function returning NOTE for a ``findings`` that was a list subclass or a tuple and
+    for a finding whose instance dict was a ``dict`` subclass, each converging a run main
+    escalated. A report that claims nothing (no findings, or a return that is not a report
+    at all) is NOTE. No healthy run reaches this: the shipped backend's output is never
+    refused (measured over 42 reports).
+
+    Read with the copy's own discipline, running nothing the value carries: types by
+    ``type()`` and ``issubclass``, instance dicts through the BASE class's descriptor,
+    sequences through ``list.__iter__`` / ``tuple.__iter__`` and dicts through
+    ``dict.items`` (the underlying storage, so a subclass's own hooks are not called),
+    keys compared only once they are exact ``str``, and a severity by identity.
     """
     try:
         if not issubclass(type(returned), PersonaReport):
             return Severity.NOTE
         state = _INSTANCE_DICT[PersonaReport].__get__(returned, PersonaReport)
-        if type(state) is not dict or not all(type(k) is str for k in state):
-            return Severity.NOTE
-        findings = state.get("findings")
-        if type(findings) is not list:
-            return Severity.NOTE
+        found, findings = _stored(state, "findings")
+        if not found:
+            return Severity.UGLY
+        if issubclass(type(findings), list):
+            claims = list(list.__iter__(findings))
+        elif issubclass(type(findings), tuple):
+            claims = list(tuple.__iter__(findings))
+        else:
+            return Severity.UGLY
         highest = Severity.NOTE
-        for f in findings:
+        for f in claims:
             if not issubclass(type(f), Finding):
-                continue
-            fstate = _INSTANCE_DICT[Finding].__get__(f, Finding)
-            if type(fstate) is not dict or not all(type(k) is str for k in fstate):
-                continue
-            severity = fstate.get("severity")
-            if any(severity is s for s in Severity) and severity > highest:
+                return Severity.UGLY
+            found, severity = _stored(_INSTANCE_DICT[Finding].__get__(f, Finding), "severity")
+            if not found or not any(severity is s for s in Severity):
+                return Severity.UGLY
+            if severity > highest:
                 highest = severity
         return highest
     except Exception:  # noqa: BLE001
-        # Unreachable by construction, as in ``handed``: kept so a defect here cannot
-        # discard the run (#148).
-        return Severity.NOTE
+        # Reached only by a defect here, or by a backend thread writing what it returned
+        # while it is read ("dict changed size during iteration"). Closed, as above.
+        return Severity.UGLY
+
+
+def _stored(state: object, name: str) -> tuple[bool, object]:
+    """``state[name]`` from an instance dict, read through ``dict.items``: no hook runs."""
+    if not issubclass(type(state), dict):
+        return False, None
+    for key, value in dict.items(state):
+        if type(key) is str and key == name:
+            return True, value
+    return False, None
 
 
 def _is_answer(value: object) -> bool:
