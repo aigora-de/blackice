@@ -7,6 +7,21 @@ names the shape it needs and never the implementation. A backend supplies them
 (see ``kuang.backends.claude_code.session``); the defaults the loop falls back
 to are deliberately inert — trust every claim, continue at every gate, reduce to
 identity.
+
+**Two rules govern every seam, one for each direction a value can travel.**
+
+* What a seam RETURNS (#129): the engine never reads an unvalidated value off it
+  outside the guard. It converts the return categorically inside ``_call_seam``, or
+  re-makes it (the ``GateDecision`` the gate hands back).
+* What a seam DOES to what it is handed (#155): a seam's only channel into the run is
+  its return value. Every record a seam is handed is a copy the engine built
+  (``kuang.engine._handed``), so nothing it does to that object reaches the engine's
+  decisions or its record. That includes the gate: a human applying fixes, adjusting
+  scope or filing issues acts on the world, and retiring a fixed finding is a channel
+  into the run, #157's, on a return value.
+
+Neither rule says anything about what a seam does to the WORLD (the repository, the
+filesystem, the network). That is the permission policy (#76, #79, #96).
 """
 
 from __future__ import annotations
@@ -123,7 +138,8 @@ class HumanGate(Protocol):
     back: ``stop`` is coerced with ``bool`` because the loop halts on truthiness, and
     a subclass carrying its own state has that state dropped. An implementation
     needing to record something of its own has no channel here; #130 removed the one
-    that existed.
+    that existed. What it is HANDED is a copy (#155): one copy of the run, with
+    ``result`` as that copy's newest epoch, so writing either reaches nothing.
     """
 
     def __call__(self, result: EpochResult, run: ReviewRun) -> GateDecision: ...

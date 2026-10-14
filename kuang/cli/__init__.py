@@ -960,8 +960,8 @@ def _report(argv: list[str] | None) -> int:
                     # of that ledger, and they agree with it in zero-ness because the
                     # engine admits only clusters that partition it. The BLOCKER
                     # count's agreement holds while no UGLY is open, which is the
-                    # only time it is consulted. Neither agrees where a seam has
-                    # written the record or a finding since; that is #155. Their
+                    # only time it is consulted. Since #155 no seam can write the
+                    # record or a finding they are counted from. Their
                     # only reporter was the gate, which never runs for the epoch a
                     # run halts on.
                     # The top-level pair is a DIFFERENT measurement: finding-level,

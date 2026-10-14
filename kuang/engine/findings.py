@@ -299,8 +299,8 @@ class Cluster:
     ruin-class finding); ``open_severity`` — the max over members still *open* — is
     what the published per-epoch counts read, so a withdrawn UGLY is not counted open.
     The halt itself reads a snapshot of the ledger (#150). These counts agree with it
-    in zero-ness because the loop admits only clusters that partition the ledger,
-    unless a seam has written the epoch's record or a finding since (#155).
+    in zero-ness because the loop admits only clusters that partition the ledger, and
+    since #155 no seam can write the epoch's record or a finding the run holds.
     """
 
     members: tuple[Finding, ...]
@@ -543,12 +543,12 @@ class Suppression:
     persona's claim then reaches no ledger, no artefact and no count: a claim the
     panel was convened to produce, lost silently. This is the record of that loss.
 
-    **Recorded where the ledger decides, never recomputed by a reporter.** The
-    run is handed to ``HumanGate`` mutably, so a gate that *removes* a ledger key
-    would make a derived walk report a suppression that never happened — a rule
+    **Recorded where the ledger decides, never recomputed by a reporter.** Until
+    #155 the run was handed to ``HumanGate`` mutably, so a gate that *removed* a
+    ledger key made a derived walk report a suppression that never happened — a rule
     firing on a healthy run, which is the mirror image of the defect. "Set at the
-    source" (#30) governs: a fact this exact must not rest on a precondition the
-    seam does not enforce.
+    source" (#30) governs: a fact this exact must not rest on a precondition a seam
+    is trusted to keep, and the record stays where it is now that the engine keeps it.
 
     ``holder`` is the entry already in the ledger, kept so both sides of the
     collision are readable without recomputing a digest.
@@ -603,17 +603,18 @@ class EpochResult:
     # must state that rather than leave it implied (#30).
     #
     # STORED, not derived. ``gate is None`` and ``halt is not None`` coincide on
-    # any ordinary run, but a gate receives this object MUTABLY and the loop has
-    # already passed its own halt check by the time the gate is called — so a gate
-    # that writes ``halt`` would make a derived reporter describe an epoch the gate
-    # DID run on as one it never reached, a rule firing on a healthy run. #119's
-    # boundary on #103's forward rule: derive only where no seam can invalidate the
-    # derivation.
+    # any ordinary run, but until #155 a gate received this object MUTABLY after the
+    # loop had passed its own halt check — so a gate that wrote ``halt`` made a
+    # derived reporter describe an epoch the gate DID run on as one it never
+    # reached, a rule firing on a healthy run. #119's boundary on #103's forward
+    # rule: derive only where no seam can invalidate the derivation. Since #155 the
+    # gate is handed a copy and that door is shut; re-deriving this was no part of
+    # #155, so it stays stored.
     #
     # Written AFTER ``checkpoint`` fires for THIS epoch, so the epoch being
-    # persisted always carries None here — but ``checkpoint`` is handed the whole
-    # ``ReviewRun`` and ``epochs`` holds these objects mutably, so every call after
-    # the first sees the EARLIER epochs' records already written. Measured over
+    # persisted always carries None here — but ``checkpoint`` is handed a copy of
+    # the whole ``ReviewRun`` as it stands (#155), so every call after the first
+    # sees the EARLIER epochs' records already written. Measured over
     # three failing gates: epoch 1's snapshot has no record, epoch 2's has epoch 1's,
     # epoch 3's has both. So a durable write would persist the gate and the gate
     # failure for every epoch but the most recent one, and the record it is missing
@@ -860,8 +861,9 @@ class ReviewRun:
         # makes) rather than by a method call on it. Neither raises on any VALUE a seam
         # wrote into a finding's severity or verdict, and a withdrawn entry's severity is
         # never read, as main's cluster counts never read it (the third pre-merge review
-        # measured the reverse order raising on a gate's duck-typed ledger entry). A seam
-        # that removes the attribute itself is #155, and main raises there too.
+        # measured the reverse order raising on a gate's duck-typed ledger entry). Since
+        # #155 no seam can write a finding the ledger holds, so the order guards the read
+        # itself rather than a reachable state.
         return [f for f in self.ledger.values()
                 if f.counts_open and f.severity is Severity.UGLY]
 

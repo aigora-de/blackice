@@ -117,9 +117,9 @@ def test_the_record_agrees_with_the_halt_on_every_epoch_of_an_ordinary_run():
     the halt.
 
     This is the equivalence the artefact's ``reached`` key rests on, and it is
-    asserted rather than assumed. It is a property of ORDINARY runs, not an
-    invariant of the loop: the one way to break it is a gate that rewrites the
-    ``EpochResult`` it was handed, which the test below does deliberately.
+    asserted rather than assumed. The one way to break it was a gate rewriting the
+    ``EpochResult`` it was handed; since #155 the gate is handed a copy, and the
+    test below shows the write no longer lands.
     """
     for review in (_panel(_two_epochs()),
                    _panel(_two_epochs(), max_epochs=1),
@@ -131,17 +131,17 @@ def test_the_record_agrees_with_the_halt_on_every_epoch_of_an_ordinary_run():
 
 
 def test_a_gate_that_rewrites_the_halt_cannot_unsay_that_it_ran():
-    """Why the record is STORED rather than derived from ``halt is None``.
+    """Why the record was STORED rather than derived from ``halt is None``, and #155.
 
-    The gate receives the ``EpochResult`` mutably and the loop has already passed
-    its own halt check by the time the gate is called, so a gate can write
-    ``result.halt`` and the loop will still continue. A reporter deriving "was the
-    gate reached?" from that field would then report an epoch the gate DID run on
-    as one it never reached — a rule firing on a healthy run, which is the mirror
-    image of the defect #117 exists to fix.
+    Until #155 the gate received the ``EpochResult`` mutably, after the loop had
+    passed its own halt check, so a gate could write ``result.halt`` and the loop
+    would still continue. A reporter deriving "was the gate reached?" from that
+    field would then report an epoch the gate DID run on as one it never reached.
 
-    Reachable, not theoretical: the gate is where a human applies fixes, and
-    #119 established the same shape one field along for the ledger.
+    Since #155 the gate is handed a copy, so the write does not land: the published
+    halt is the engine's, and the stored record says the gate ran. REGRESSION for
+    #155 (red on main, where the meddling landed and this test asserted it did). The
+    record stays STORED: re-deriving it is no part of #155.
     """
     def meddling_gate(result, run):  # noqa: ANN001, ARG001
         result.halt = HaltReason.STALL
@@ -151,8 +151,8 @@ def test_a_gate_that_rewrites_the_halt_cannot_unsay_that_it_ran():
 
     assert review.epochs[0].gate is not None, \
         "a gate that rewrote the halt erased the record of its own decision"
-    assert review.epochs[0].halt is HaltReason.STALL, \
-        "the fixture did not actually meddle, so it cannot express the axis"
+    assert review.epochs[0].halt is None, \
+        "a write into what the gate was handed reached the published halt (#155)"
 
 
 # --- 3. silence is not a measurement -----------------------------------------

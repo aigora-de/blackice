@@ -210,19 +210,19 @@ def test_a_refuted_finding_is_neither_suppressed_nor_counted():
     assert len(review.ledger) == 1
 
 
-def test_a_gate_that_deletes_a_ledger_key_produces_no_false_suppression():
-    """The measured reason this is recorded at the insert, not derived after it.
+def test_a_gate_that_deletes_a_ledger_key_deletes_nothing():
+    """The measured reason this was recorded at the insert, and what #155 changed.
 
-    ``HumanGate`` receives the run mutably — the engine's own ``fakes._demo``
-    gate rewrites ledger entries — so a reporter walking the epochs against the
-    FINAL ledger can be wrong about the past: here epoch 1's finding **entered**
-    the ledger, the gate removed it, and epoch 2's different finding took the
-    same key. A derived walk reports epoch 1's claim as suppressed by a finding
-    that did not exist when it was inserted.
+    Until #155 ``HumanGate`` received the run mutably (the engine's own
+    ``fakes._demo`` gate rewrote ledger entries), so a gate could remove epoch 1's
+    finding and let epoch 2's different finding take the same key, and a reporter
+    walking the epochs against the FINAL ledger would report a suppression that
+    never happened. That is why the record is set at the source.
 
-    **GREEN on main + stubs, and it is the guard on the REJECTED option** (a
-    ``ReviewRun`` property computing this after the fact), not a regression test.
-    The mutation implementing that option turns it red.
+    Since #155 the gate is handed a copy, so the deletion does not land: the holder
+    stays, and epoch 2's colliding claim is suppressed by it, exactly as with no
+    gate at all. REGRESSION for #155 (red on main, where the deletion landed). The
+    record stays set at the source, which no longer rests on this door being open.
     """
     holder, lost = _holder(), _colliding()
 
@@ -234,10 +234,10 @@ def test_a_gate_that_deletes_a_ledger_key_produces_no_false_suppression():
                      2: {"B": _report("B", lost)}},
                     human_gate=gate, max_epochs=2)
 
-    assert review.epochs[0].suppressed == [], "the gate deleted it; nothing dropped it"
-    assert review.epochs[1].suppressed == [], \
-        "epoch 2 inserted its finding into a ledger that no longer held the key"
-    assert [f.title for f in review.epochs[1].new_findings] == [_LOST]
+    assert review.epochs[0].suppressed == []
+    assert [s.holder.title for s in review.epochs[1].suppressed] == [holder.title], \
+        "a deletion in what the gate was handed reached the ledger (#155)"
+    assert review.epochs[1].new_findings == []
 
 
 # --- 3. the three counts partition what the epoch emitted ---------------------

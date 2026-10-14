@@ -402,8 +402,9 @@ def _writes_through(kind):
 
 @pytest.mark.parametrize("kind", ["refute", "downgrade", "corrupt"])
 def test_a_seam_writing_through_the_ledgers_findings_cannot_mask_the_breaker(kind):
-    """GREEN ON MAIN, by design: it guards the REJECTED second shape of this fix, which read
-    the ledger LIVE when the predicate ran. The second pre-merge review measured that
+    """The halt is GREEN ON MAIN, by design: it guards the REJECTED second shape of #150, which
+    read the ledger LIVE when the predicate ran. The ledger assertion is RED ON MAIN, for
+    #155: there the halt held but the write landed. The second pre-merge review measured that
     shape converging an UGLY run for ``refute`` and ``downgrade``, and raising out of
     ``run`` for ``corrupt`` (``'str' object has no attribute 'is_ugly'``, #148's invariant
     broken). Main decided on cluster counts taken before ``scope_complete``; the snapshot
@@ -414,6 +415,10 @@ def test_a_seam_writing_through_the_ledgers_findings_cannot_mask_the_breaker(kin
         scope_complete=_writes_through(kind), parallel=False))
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    # Since #155 the write does not land at all: the seam was handed a copy. Red on main,
+    # where the halt held but the ledger kept what the seam wrote.
+    assert all((f.severity, f.verified) == (Severity.UGLY, True)
+               for f in review_run.ledger.values())
 
 
 def _downgrades_its_input(findings):
@@ -427,12 +432,13 @@ def test_a_reduce_that_downgrades_its_input_cannot_mask_an_ugly(verdict):
     """REGRESSION for #150: on main a ``reduce`` that rewrote its input's severity in place
     converged (YES) or ran out its epochs (NO) with the panel's UGLYs downgraded, because
     the cluster counts were taken AFTER it ran. The snapshot is taken before ``reduce`` is
-    called, so the breaker fires on the epoch the UGLY lands. (It does not undo the write:
-    that is #155.)"""
+    called, so the breaker fires on the epoch the UGLY lands. Since #155 the write does not
+    land either: ``reduce`` is handed copies, and the ledger keeps what the panel raised."""
     review_run = _run(_downgrades_its_input, verdict=verdict, max_epochs=3)
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
     assert len(review_run.epochs) == 1
+    assert all(f.severity is Severity.UGLY for f in review_run.ledger.values())
 
 
 def test_the_ledger_read_counts_only_open_findings():
@@ -451,8 +457,8 @@ def test_the_ledger_read_counts_only_open_findings():
 def test_the_ledger_read_cannot_raise_on_a_corrupted_severity():
     """A PROPERTY test of the read the snapshot is taken from, not of ``run``: red on
     main, where ``open_uglies`` called ``severity.is_ugly``, but main's loop never read
-    ``open_uglies``, and a corrupted severity raises at the next ``Finding.key`` in the
-    same epoch on both (#155). It pins that the snapshot itself adds no new raise."""
+    ``open_uglies``. Since #155 no seam can write a finding the ledger holds, so this guards
+    the read itself rather than a reachable state: it pins that the snapshot adds no raise."""
     corrupted = _finding(Severity.BLOCKER)
     corrupted.__dict__["severity"] = "corrupt"
     review_run = ReviewRun(ledger={"k": corrupted})
@@ -517,11 +523,13 @@ class _DuckEntry:
 
 
 def test_a_withdrawn_entry_a_gate_left_in_the_ledger_is_never_read_for_severity():
-    """GREEN ON MAIN, by design: it guards a regression this fix's third shape introduced,
+    """The halt is GREEN ON MAIN, by design; the ledger assertion is RED ON MAIN, for #155.
+    It guards a regression this fix's third shape introduced,
     found by the third pre-merge review. Main's cluster counts read the severity only of
     OPEN members, so a gate that left a withdrawn, duck-typed entry in the ledger raised
     nothing; the snapshot read ``severity`` before ``counts_open`` and raised out of
-    ``run`` (#148's invariant). Now ``counts_open`` is read first."""
+    ``run`` (#148's invariant). Since #155 the gate's write does not reach the ledger at
+    all, so the read order is guarded directly by the property test below."""
     def gate(result, review_run):
         review_run.ledger["duck"] = _DuckEntry()
         return GateDecision(stop=False)
@@ -532,3 +540,14 @@ def test_a_withdrawn_entry_a_gate_left_in_the_ledger_is_never_read_for_severity(
         parallel=False))
 
     assert review_run.halt_reason is HaltReason.EPOCH
+    assert "duck" not in review_run.ledger
+
+
+def test_the_ledger_read_never_reads_the_severity_of_a_withdrawn_entry():
+    """The read order, as a property of ``ReviewRun`` rather than of a gate's reach: a
+    withdrawn entry with no severity at all is skipped, not read. GREEN ON MAIN, by
+    design, for the reason the test above is."""
+    review_run = ReviewRun(ledger={"duck": _DuckEntry()})
+
+    assert _contained(lambda: review_run.open_uglies) == []
+    assert _contained(lambda: review_run.open_blockers) == []
