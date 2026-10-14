@@ -525,3 +525,24 @@ def test_a_seam_that_reads_is_handed_an_equal_record_with_equal_aliasing(live, s
     assert adjudicated and {"checkpoint", "reduce", "scope_complete"} <= set(checked)
     if shape == "blocker-no":
         assert "human_gate" in checked
+
+
+def test_each_seam_call_is_handed_its_own_copy(live):
+    """A copy shared between seams would let ``checkpoint`` write what the gate then reads.
+    The gate must see the live record whatever the checkpoint before it wrote. GREEN ON MAIN,
+    by design: main handed both the live record, which trivially equals itself. It guards
+    a copy made once per epoch and shared, which the mutation matrix turns red."""
+    problems: list[str] = []
+
+    def checkpoint(r):
+        r.ledger.clear()
+        r.epochs[-1].seam_failures.clear()
+
+    def gate(result, r):  # noqa: ARG001
+        if r != live[0]:
+            problems.append("the gate saw what the checkpoint wrote")
+        return GateDecision(stop=False)
+
+    _shaped("blocker-no", checkpoint=checkpoint, human_gate=gate)
+
+    assert problems == []
