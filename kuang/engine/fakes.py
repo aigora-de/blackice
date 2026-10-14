@@ -8,7 +8,7 @@ a dict. ``python -m kuang.engine.fakes`` runs the demo.
 
 from __future__ import annotations
 
-from .findings import (EpochResult, Finding, PersonaReport, PersonaStatus,
+from .findings import (Finding, PersonaReport, PersonaStatus,
                        ReviewRun, Severity)
 from .halting import HaltingSet, HaltReason
 from .loop import PanelConfig, ReviewSpec, run
@@ -37,10 +37,21 @@ class FakeEnsemble:
 
 
 def _demo() -> ReviewRun:
-    """Tiny end-to-end demo: epoch 1 finds a BLOCKER, it is fixed, epoch 2 converges."""
+    """Tiny end-to-end demo: epoch 1 raises a BLOCKER, adjudication refutes it, epoch 2
+    converges.
+
+    The demo used to "fix" the BLOCKER at the gate by rewriting ``run.ledger`` in place,
+    which is how it converged. Since #155 no seam can change the run through an object it
+    is handed, the gate included (the maintainer's ruling of 2026-10-14), so that write no
+    longer reaches anything. A finding is now closed through a channel the engine owns:
+    the adjudicator refutes it against source, "the author withdraws on the evidence".
+    Retiring a finding a human FIXED is #157's, on the gate's return value.
+    """
     panel = PanelConfig(personas=[("quant", "find wrong maths"), ("engineer", "find bugs")])
     spec = ReviewSpec(why="records-critical path", what="the guard")
-    halting = HaltingSet(max_epochs=5, stall_patience=1, require_scope_complete=False)
+    # Patience 2, not 1: a refuted finding never reaches the ledger, so epoch 1 adds no
+    # material cluster, and patience 1 would halt it ``stall`` before epoch 2 converges.
+    halting = HaltingSet(max_epochs=5, stall_patience=2, require_scope_complete=False)
 
     script = {
         1: {
@@ -52,29 +63,23 @@ def _demo() -> ReviewRun:
             ),
             "engineer": PersonaReport(persona="engineer", verdict="YES"),
         },
-        # epoch 2: the blocker was fixed between epochs, both personas clear.
+        # epoch 2: the blocker was refuted at epoch 1, both personas clear.
         2: {
             "quant": PersonaReport(persona="quant", verdict="YES"),
             "engineer": PersonaReport(persona="engineer", verdict="YES"),
         },
     }
 
-    # Human gate marks the blocker resolved before epoch 2 by refuting it via
-    # adjudication on re-look (here simulated: after epoch 1 we "fix" it, so on
-    # epoch 2 nobody re-raises it and the ledger blocker is retired by the gate).
-    fixed: dict[str, bool] = {}
-
-    def gate(result: EpochResult, run: ReviewRun) -> GateDecision:
-        for f in run.open_blockers:
-            fixed[f.key] = True
-            run.ledger[f.key] = Finding(**{**f.__dict__, "verified": False})  # resolved
-        return GateDecision(stop=False, asked=True)
+    def adjudicate(finding: Finding, surface: ReviewSurface) -> bool:  # noqa: ARG001
+        # The off-by-one does not reproduce against source: refuted, so dropped.
+        return finding.claim_class != "alloc"
 
     review_run = run(
         spec, halting, panel,
         spawn=FakeEnsemble(script),
         gather=lambda epoch: f"surface@{epoch}",
-        human_gate=gate,
+        adjudicate=adjudicate,
+        human_gate=lambda result, run_: GateDecision(stop=False, asked=True),
     )
     return review_run
 

@@ -52,7 +52,8 @@ Severity ladder maps onto the good/bad/ugly framing:
 
 This module is the loop itself. The vocabulary it works on lives in ``findings``,
 the halting predicate in ``halting``, the seams listed above in ``protocols``, the
-default reduce in ``reduce``, and the offline ensemble in ``fakes``. The package
+default reduce in ``reduce``, the copies a seam is handed in ``_handed`` (#155), and
+the offline ensemble in ``fakes``. The package
 ``kuang.engine`` re-exports all of it, so importers need not track which
 sibling holds what.
 """
@@ -69,6 +70,7 @@ from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
+from ._handed import REPORT_DEPTH, Claim, UncopiableRecord, claimed_severity, handed
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -229,6 +231,20 @@ def _elapsed(value: object, start: float) -> float:
     return elapsed
 
 
+def _claim_note(claim: Claim) -> str:
+    """What a refused report's failure carries, said in fixed words (#155, #30).
+
+    Empty where it claimed nothing above NOTE, so a spawn that RAISED is titled exactly
+    as it always was. An UGLY that was claimed and one carried because nothing could be
+    read are different facts, and a run must be able to tell them apart.
+    """
+    if not claim.read:
+        return " — what it claimed could not be read, so it is carried as UGLY (fail closed)"
+    if claim.severity > Severity.NOTE:
+        return f" — it claimed {claim.severity.name}"
+    return ""
+
+
 def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Cluster]:
     """What ``reduce`` returned, rebuilt by the engine from the ledger's OWN findings.
 
@@ -242,8 +258,19 @@ def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Clus
     question, so ``Cluster.title``'s annotation is a contract on reducers, not a
     guarantee this function adds. A member the ledger does not hold is a ``KeyError`` here, never a phantom
     finding. A reduce that leaves a ledger finding OUT is ``_as_partition``'s to refuse.
+
+    **Kept as a COPY, and only if the copy can be built (#155).** The title is stored in
+    the run's record (``EpochResult.new_clusters``), so a value kept there that the copy
+    refuses (a ``str`` subclass, say) was in every later copy of the run, and each was
+    refused: the fifth pre-merge review measured the gate never reached again and nothing
+    checkpointed. So the title is put through ``handed`` here, inside the reduce's guard:
+    one the copy refuses is a failed reduce, recorded, and the identity follows. The rule
+    is the copy's own, so the engine's identity reduce can never fail it: its titles are
+    ledger findings', which the same copy admitted at entry (a scalars-only rule recorded
+    the engine's own reduce failing on a ``None``, then on a list, title). Storing the
+    copy also leaves ``reduce`` holding no reference to anything the run keeps.
     """
-    return [Cluster(members=tuple(ledger[m.key] for m in c.members), title=c.title)
+    return [Cluster(members=tuple(ledger[m.key] for m in c.members), title=handed(c.title))
             for c in returned]  # type: ignore[attr-defined]
 
 
@@ -322,7 +349,10 @@ def run(
         halting: The halting set (budgets, max epochs, stall patience).
         panel: The reviewer ensemble (personas + mandates).
         spawn: Runs one persona subagent over the surface. May raise; an
-            exception is contained as a meta finding on that persona's report.
+            exception is contained as a meta finding on that persona's report. What it
+            returns is copied as it enters the run (#155); a return the engine cannot
+            copy is contained as a raise is, at the highest severity it claimed, or
+            UGLY where that cannot be read (fail closed).
         gather: Produces the review surface for each epoch. May raise; a failure
             after at least one epoch has completed halts the run as
             ``SURFACE_LOST`` and returns what those epochs produced, and a failure
@@ -354,12 +384,26 @@ def run(
     only recorded where it is not. The FIRST ``clock()`` precedes any spend and is not
     guarded, so a failure there propagates.
 
+    Every record a seam is handed is a copy the engine built (#155): ``adjudicate``'s
+    finding, ``reduce``'s findings, ``scope_complete``'s epoch, ``checkpoint``'s run and
+    the gate's run and epoch. A seam's only channel into the run is its return value. A
+    record that cannot be copied is never handed over live: the seam is not called, and
+    that is its recorded failure, with a detail naming the copy.
+
     Returns:
         A ``ReviewRun`` with per-epoch results, the deduped findings ledger, and
         the halt reason.
     """
     review_run = ReviewRun()
     quorum = panel.effective_quorum
+    # A persona's NAME is the one value the engine itself writes into the record from its
+    # caller (a contained spawn failure's ``persona``), so it must be one the copy can keep
+    # (#155): the sixth pre-merge review measured a ``StrEnum`` name refusing every later
+    # copy of the run, and every report a healthy spawn returned under it. Checked here,
+    # before anything is spent, so it is an operator error that propagates (#18), as the
+    # first ``clock()`` below is. The shipped CLI's names are always exact ``str``.
+    if not all(type(pm[0]) is str for pm in panel.personas):
+        raise TypeError("every persona name in the panel must be an exact str")
     # NOT guarded, deliberately (#148): this precedes any spend, so a raise loses nothing,
     # which is #18's doctrine as ``gather`` applies it with no completed epoch. Guarding it
     # for symmetry would fabricate a run in which nothing happened. ``float`` here so a
@@ -419,34 +463,85 @@ def run(
         # Fan out: one persona per subagent. Real backends spawn a subprocess
         # per persona, so run them concurrently (subprocess calls release the
         # GIL, so threads parallelise fine).
-        def _run(pm: tuple[str, str]) -> PersonaReport:
+        def _run(pm: tuple[str, str]) -> tuple[object, Exception | None]:
             try:
-                return spawn(pm[0], pm[1], surface, epoch)
+                return spawn(pm[0], pm[1], surface, epoch), None
             except Exception as exc:  # noqa: BLE001
-                # A persona is a fallible black box, and one that raises must not
-                # take the panel's other reviews with it (#25): the exception used
-                # to propagate out of pool.map and end a run that had already paid
-                # for everyone. Recorded as a finding rather than swallowed, and
-                # deliberately not BaseException — a human's Ctrl-C still stops it.
-                # The status is set HERE, at the source, and is the engine's own:
-                # ``SPAWN_FAILED`` means our code raised, against a backend's
-                # ``AGENT_ERROR`` for a runtime that ran and returned no review.
-                # A run must be able to tell those apart (#30). Both strings come
-                # from the guarded helpers, never from ``exc`` directly (#142).
-                return PersonaReport(
-                    persona=pm[0], verdict=None,
-                    status=PersonaStatus.SPAWN_FAILED,
-                    findings=[
-                        Finding(pm[0], f"persona failed: {render_exception(exc)}",
-                                Severity.NOTE, "meta",
-                                evidence=bounded_diagnosis(repr_exception(exc)),
-                                about_run=True)])
+                return None, exc
+
+        # The failure findings the ENGINE builds below, by identity: the only instrument
+        # findings never adjudicated (see the adjudication loop).
+        engine_built: set[int] = set()
+
+        def _entered(pm: tuple[str, str], returned: object,
+                     raised: Exception | None) -> PersonaReport:
+            if raised is None:
+                try:
+                    # Copied ONCE, here, as it enters the run (#155, by the maintainer's
+                    # ruling of 2026-10-14), so the run's record holds only values the
+                    # engine built (a reduce's cluster titles are copied where they are
+                    # rebuilt; a gate's foreign ``asked`` is the one value the record
+                    # keeps as handed back, by #131's ruling, and every copy carries
+                    # ``None`` for it).
+                    #
+                    # AFTER the fan-out has joined, never inside a worker: main read
+                    # no report before all had returned, so a backend that wrote into
+                    # an earlier report from a later ``spawn`` call was read, and an
+                    # UGLY written that way escalated. Copied inside the worker, the
+                    # seventh pre-merge review measured it lost and the run converged,
+                    # and in parallel the halt depended on thread scheduling. Here is
+                    # the latest point at which every report exists, and it is
+                    # deterministic. It is NOT everything main read: main held the live
+                    # objects for the whole run, so a write through a kept reference
+                    # after this point reached it; here it reaches nothing the run
+                    # holds, by #155's rule (see ``_handed``).
+                    #
+                    # A value the engine cannot copy, kept in the record, was measured
+                    # refusing EVERY later copy of the run, so the gate was never
+                    # reached again; refused here, it costs this persona's report. What
+                    # comes back must be exactly a ``PersonaReport`` (the copy refuses
+                    # a subclass, and copies any other exact record it is given), or
+                    # the spawn has failed like any other.
+                    report = handed(returned, depth=REPORT_DEPTH)
+                    if type(report) is not PersonaReport:
+                        raise UncopiableRecord("spawn returned a value that is not a report")
+                    return report
+                except Exception as exc:  # noqa: BLE001
+                    raised = exc
+            # A persona is a fallible black box, and one that raises must not
+            # take the panel's other reviews with it (#25): the exception used
+            # to propagate out of pool.map and end a run that had already paid
+            # for everyone. Recorded as a finding rather than swallowed, and
+            # deliberately not BaseException — a human's Ctrl-C still stops it.
+            # The status is set HERE, at the source, and is the engine's own:
+            # ``SPAWN_FAILED`` means our code raised, or returned what the engine
+            # refused (#155), against a backend's
+            # ``AGENT_ERROR`` for a runtime that ran and returned no review.
+            # A run must be able to tell those apart (#30). Both strings come
+            # from the guarded helpers, never from ``exc`` directly (#142).
+            #
+            # NOTE where the seam raised. Where it RETURNED a report the engine
+            # refused (#155), the highest severity that report claimed, or UGLY
+            # where that cannot be read, so an UGLY in it still trips the breaker:
+            # see ``claimed_severity``. The title says which, in fixed words; where
+            # the seam raised it is exactly what it always was.
+            claim = claimed_severity(returned)
+            failure = Finding(pm[0], f"persona failed: {render_exception(raised)}"
+                                     f"{_claim_note(claim)}",
+                              claim.severity, "meta",
+                              evidence=bounded_diagnosis(repr_exception(raised)),
+                              about_run=True)
+            engine_built.add(id(failure))
+            return PersonaReport(persona=pm[0], verdict=None,
+                                 status=PersonaStatus.SPAWN_FAILED, findings=[failure])
 
         if parallel and len(panel.personas) > 1:
             with ThreadPoolExecutor(max_workers=len(panel.personas)) as pool:
-                reports = list(pool.map(_run, panel.personas))
+                returns = list(pool.map(_run, panel.personas))
         else:
-            reports = [_run(pm) for pm in panel.personas]
+            returns = [_run(pm) for pm in panel.personas]
+        reports = [_entered(pm, returned, raised)
+                   for pm, (returned, raised) in zip(panel.personas, returns)]
 
         # Every injected callable that fails from here on is recorded on this epoch (#148).
         failures: list[SeamFailure] = []
@@ -463,11 +558,24 @@ def run(
         for report in reports:
             checked: list[Finding] = []
             for f in report.findings:
-                if f.severity >= Severity.BLOCKER and f.verified is None:
+                # Never the failure finding the ENGINE built for a refused report (#155):
+                # it carries the severity that report claimed, or UGLY unread, and is a
+                # fact about the run, not a claim about the source. Handed to an
+                # adjudicator, a claim naming no file was refuted and an UGLY run
+                # converged (the third pre-merge review). ONLY the engine's own: a
+                # backend's ``about_run`` finding is adjudicated exactly as on main.
+                # Excluding every ``about_run`` finding was the ninth review's BAD:
+                # it changed what a backend's RETURN does, and left a refutable
+                # finding open whose key then raised out of ``run`` (#148).
+                if (f.severity >= Severity.BLOCKER and f.verified is None
+                        and id(f) not in engine_built):
                     adjudicated, verdict = _call_seam(
                         "adjudicate", failures,
-                        lambda f=f: _as_verdict(adjudicate(f, surface)))
+                        lambda f=f: _as_verdict(adjudicate(handed(f), surface)))
                     if adjudicated:
+                        # Built from ``f``, which the seam never held (#155): on main
+                        # this read the handed object, so a severity it rewrote was
+                        # what the ledger kept, and an UGLY run converged.
                         f = Finding(**{**f.__dict__, "verified": verdict})
                 checked.append(f)
             report.findings = checked
@@ -507,12 +615,13 @@ def run(
                     # re-sighting above.
                     #
                     # Recorded HERE, where the ledger decides, rather than
-                    # derived by a reporter afterwards. ``HumanGate`` receives
-                    # the run mutably, so a later walk reads the ledger as it
-                    # ENDS — and a gate that removes a key would make it report a
+                    # derived by a reporter afterwards. ``HumanGate`` received
+                    # the run mutably until #155, so a later walk read the ledger
+                    # as it ENDED — and a gate that removed a key made it report a
                     # suppression that never happened, which is a rule firing on
                     # a healthy run. "Set at the source" (#30) governs: a fact
-                    # this exact must not rest on a precondition no seam enforces.
+                    # this exact must not rest on a precondition no seam enforces,
+                    # including the one #155 now enforces.
                     #
                     # Reported, not kept. Giving the claim a ledger place of its
                     # own means giving it a distinct key, which is #125 wearing a
@@ -533,12 +642,13 @@ def run(
         # converging an UGLY run when the ledger was read live. Main's cluster counts were
         # taken before the halting inputs too. Neither read raises on any value a seam
         # wrote into a finding's severity or verdict (see ``ReviewRun.open_uglies``).
-        # What this does NOT cover, all of it #155 and all of it as on main: a seam
-        # called after this point that writes a finding changes NEXT epoch's snapshot (an
-        # UGLY cannot be masked that way, because the breaker fires on the epoch it
-        # lands, but a BLOCKER can); ``adjudicate`` runs BEFORE this point, so what it
-        # writes into a finding is what the snapshot reads; and ``checkpoint`` can still
-        # rewrite the halt after it is taken.
+        # Since #155 no seam is handed the ledger's own findings at all, so no seam's
+        # write through what it is handed reaches this snapshot, this epoch's or the next
+        # (a seam reaching into this frame is outside any in-process guarantee): ``reduce``,
+        # ``scope_complete``, ``checkpoint`` and the gate are handed copies, and the
+        # ledger entry ``adjudicate`` verified is built from the finding it never held.
+        # The snapshot is kept: it is what makes the breaker independent of ``reduce``'s
+        # RETURN value, which a copy does nothing about.
         ugly_open = bool(review_run.open_uglies)
         blocker_open = bool(review_run.open_blockers)
 
@@ -551,7 +661,7 @@ def run(
         ledger_findings = list(review_run.ledger.values())
         reduced, clusters = _call_seam(
             "reduce", failures,
-            lambda: _as_partition(_rebuilt_clusters(reduce(ledger_findings),
+            lambda: _as_partition(_rebuilt_clusters(reduce(handed(ledger_findings)),
                                                     review_run.ledger),
                                   review_run.ledger))
         review_run.clusters = clusters if reduced else _identity_reduce(ledger_findings)
@@ -608,8 +718,12 @@ def run(
         _, elapsed_s = _call_seam(
             "clock", result.seam_failures, lambda: _elapsed(clock(), start))
         _, scope_known = _call_seam(
-            "scope_complete", result.seam_failures, lambda: _as_scope(scope_complete(result)))
-        result.halt = _evaluate_halt(
+            "scope_complete", result.seam_failures,
+            lambda: _as_scope(scope_complete(handed(result))))
+        # The decision is a LOCAL, and the loop acts on it, never on ``result.halt`` read
+        # back (#155). Every seam below is handed a copy, so nothing can write the field
+        # this publishes; the local is what states that the loop does not depend on it.
+        halt = _evaluate_halt(
             halting,
             ugly_open=ugly_open,
             blocker_open=blocker_open,
@@ -621,16 +735,17 @@ def run(
             quorum_met=quorum_met,
             no_persona_reviewed=no_persona_reviewed,
         )
+        result.halt = halt
         review_run.epochs.append(result)
         if checkpoint is not None:
             # Nothing persisted, and the record says so (#148). #31 makes this a durable
             # write and states its own outcome; the guard is what it goes behind. The
             # failure is recorded AFTER the call, so a checkpoint never sees its own.
             _call_seam("checkpoint", result.seam_failures,
-                       lambda: checkpoint(review_run))
+                       lambda: checkpoint(handed(review_run)))
 
-        if result.halt is not None:
-            review_run.halt_reason = result.halt
+        if halt is not None:
+            review_run.halt_reason = halt
             break
 
         # Between-epoch HITL gate: apply fixes / adjust scope / file issues / stop.
@@ -648,7 +763,11 @@ def run(
         # the two cases would have been the patched table this project refuses; the
         # rule above is the one principle both fall out of.
         try:
-            returned = human_gate(result, review_run)
+            # One copy for both arguments, so ``run.epochs[-1] is result`` holds for
+            # the gate as it always has (#155). It is built INSIDE the guard, so even a
+            # copy that failed would be a contained gate failure, never a lost run.
+            gate_run = handed(review_run)
+            returned = human_gate(gate_run.epochs[-1], gate_run)
             if isinstance(returned, GateDecision):
                 # Re-made rather than kept as handed back, which is what puts the
                 # two attribute reads inside the guard. A subclass's extra state is
@@ -719,11 +838,11 @@ def run(
         # the channel was gone. Ctrl-C remains the operator's unconditional stop.
         if diagnosis is None:
             # Set on BOTH paths, at the source, rather than left to the field's
-            # default: the gate holds this ``EpochResult`` mutably, so a gate that
-            # wrote a failure record itself and then answered normally would publish
-            # a decision AND a failure for the same epoch — a rule firing on a
-            # healthy run. The loop's suppression record is set at the source for
-            # the same reason (#30).
+            # default: until #155 the gate held this ``EpochResult`` mutably, so a
+            # gate that wrote a failure record itself and then answered normally
+            # published a decision AND a failure for the same epoch — a rule firing
+            # on a healthy run. The gate now writes a copy; this stays set at the
+            # source, as the loop's suppression record does (#30).
             result.gate_failure = None
         else:
             # Collapsed, then measured, then bounded — in that order, once, for both
@@ -743,7 +862,7 @@ def run(
         # nothing at all: a run could not say whether the gate was reached, what
         # was chosen, or at which epoch. The record's PRESENCE is what says the
         # gate was REACHED — see ``EpochResult.gate`` for why that is not derived
-        # from ``halt``, which this same seam can rewrite.
+        # from ``halt``, which this same seam could rewrite until #155.
         #
         # Below the guard rather than above it, which is where #129 found it: a
         # gate returning ``None`` was stored and only then read, so an epoch whose

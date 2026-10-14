@@ -89,7 +89,11 @@ def test_identity_default_is_one_cluster_per_signature():
 
 
 def test_demo_still_converges_under_default_reduce():
-    """The end-to-end demo (default reduce) is unchanged: converges in 2 epochs."""
+    """The end-to-end demo (default reduce) converges in 2 epochs.
+
+    Since #155 it converges through ``adjudicate`` refuting its BLOCKER, not through its
+    gate rewriting the ledger, which no longer reaches the run. Green on main too: the
+    halt and the epoch count are what they were, by a different channel."""
     from kuang.engine.fakes import _demo
     review = _demo()
     assert review.halt_reason is HaltReason.CONVERGED
