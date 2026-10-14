@@ -70,7 +70,7 @@ from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
-from ._handed import UncopiableRecord, claimed_severity, handed
+from ._handed import Claim, UncopiableRecord, claimed_severity, handed
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -231,6 +231,20 @@ def _elapsed(value: object, start: float) -> float:
     return elapsed
 
 
+def _claim_note(claim: Claim) -> str:
+    """What a refused report's failure carries, said in fixed words (#155, #30).
+
+    Empty where it claimed nothing above NOTE, so a spawn that RAISED is titled exactly
+    as it always was. An UGLY that was claimed and one carried because nothing could be
+    read are different facts, and a run must be able to tell them apart.
+    """
+    if not claim.read:
+        return " — what it claimed could not be read, so it is carried as UGLY (fail closed)"
+    if claim.severity > Severity.NOTE:
+        return f" — it claimed {claim.severity.name}"
+    return ""
+
+
 def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Cluster]:
     """What ``reduce`` returned, rebuilt by the engine from the ledger's OWN findings.
 
@@ -326,7 +340,8 @@ def run(
         spawn: Runs one persona subagent over the surface. May raise; an
             exception is contained as a meta finding on that persona's report. What it
             returns is copied as it enters the run (#155); a return the engine cannot
-            copy is contained as a raise is, at the highest severity it claimed.
+            copy is contained as a raise is, at the highest severity it claimed, or
+            UGLY where that cannot be read (fail closed).
         gather: Produces the review surface for each epoch. May raise; a failure
             after at least one epoch has completed halts the run as
             ``SURFACE_LOST`` and returns what those epochs produced, and a failure
@@ -460,14 +475,18 @@ def run(
                 # from the guarded helpers, never from ``exc`` directly (#142).
                 #
                 # NOTE where the seam raised. Where it RETURNED a report the engine
-                # refused (#155), the highest severity that report claimed, so an
-                # UGLY in it still trips the breaker: see ``claimed_severity``.
+                # refused (#155), the highest severity that report claimed, or UGLY
+                # where that cannot be read, so an UGLY in it still trips the breaker:
+                # see ``claimed_severity``. The title says which, in fixed words; where
+                # the seam raised it is exactly what it always was.
+                claim = claimed_severity(returned)
                 return PersonaReport(
                     persona=pm[0], verdict=None,
                     status=PersonaStatus.SPAWN_FAILED,
                     findings=[
-                        Finding(pm[0], f"persona failed: {render_exception(exc)}",
-                                claimed_severity(returned), "meta",
+                        Finding(pm[0], f"persona failed: {render_exception(exc)}"
+                                       f"{_claim_note(claim)}",
+                                claim.severity, "meta",
                                 evidence=bounded_diagnosis(repr_exception(exc)),
                                 about_run=True)])
 
@@ -492,10 +511,10 @@ def run(
         for report in reports:
             checked: list[Finding] = []
             for f in report.findings:
-                # Never an instrument finding (#155): it is a fact about the RUN, not a
-                # claim about the source, so there is nothing to verify, and the one
-                # that can be BLOCKER or above is a refused report's failure, carrying
-                # the severity that report claimed. Handed to an adjudicator, a claim
+                # Never an instrument finding (#155), from any backend: it is a fact
+                # about the RUN, not a claim about the source, so there is nothing to
+                # verify. The engine's own that can be BLOCKER or above is a refused
+                # report's failure, carrying the severity that report claimed. Handed to an adjudicator, a claim
                 # naming no file was refuted and an UGLY run converged (the third
                 # pre-merge review). On main no instrument finding is above NOTE.
                 if (f.severity >= Severity.BLOCKER and f.verified is None

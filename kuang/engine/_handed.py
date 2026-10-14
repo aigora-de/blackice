@@ -16,13 +16,17 @@ would call ``__deepcopy__`` and ``__reduce_ex__`` on every object in the graph, 
 whatever ``spawn`` returned, which is foreign code outside any guard (#129's subclass
 lesson). So:
 
-* a record is matched by ``issubclass(type(value), base)``, never ``isinstance``, which can
-  consult a foreign ``__class__``;
+* a record is matched by its EXACT type (``type(value) is base``), never ``isinstance``,
+  which can consult a foreign ``__class__``. A SUBCLASS is refused, as #129 admits a
+  verdict only as ``type(...) is bool``: what a subclass presents can come from its own
+  properties, which the engine will not run, while its instance dict holds something
+  else, so no copy of it is faithful. The fourth pre-merge review measured the previous
+  shape (read the base fields of a subclass) handing on a stale value where the object
+  presented an UGLY, or a NO vote, and the run converging where main escalated;
 * its fields are read from an instance dict that must be an EXACT ``dict`` keyed by EXACT
-  ``str``, through the BASE class's own descriptor, so no property, ``__getattr__``,
+  ``str``, through the class's own descriptor, so no property, ``__getattr__``,
   ``__getattribute__``, dict-subclass hook or foreign key's ``__eq__`` is called;
-* it is rebuilt as the BASE class without calling ``__init__``, so a subclass's extra
-  state is dropped, as #129's ``GateDecision`` is re-made;
+* it is rebuilt without calling ``__init__``;
 * a container is copied at an exact ``list``, ``tuple`` or ``dict`` type;
 * every other value must be an immutable scalar of an exact type (``str``, ``int``,
   ``float``, ``bool``, ``None``, or one of the engine's own enums), so sharing it shares
@@ -31,8 +35,8 @@ lesson). So:
 Nothing about a refused value is rendered into the refusal: its detail is a fixed string
 naming the engine's own record class, so refusing runs no code the value carries.
 
-**Copied, or refused: never handed live.** Anything else (a record missing a field, a set,
-a container subclass, a foreign object, a structure nested deeper than ``MAX_DEPTH``) raises
+**Copied, or refused: never handed live.** Anything else (a record missing a field, a record
+subclass, a set, a container subclass, a foreign object, a structure nested deeper than ``MAX_DEPTH``) raises
 ``UncopiableRecord``. The first shape of this module handed such a value over AS IT WAS,
 which is to say live, and the pre-merge review measured that reopening every door it
 shuts: a ``spawn`` finding missing one field was handed to ``adjudicate`` live, and an UGLY
@@ -55,8 +59,9 @@ running through a tuple would be copied unaliased; no record can form one.
 ONCE, as it enters the run, so the record holds only values the engine built, and a
 backend that kept a reference to a report it returned and writes it later writes nothing
 the run holds. A report the engine refuses there is that persona's contained spawn failure
-(#25), whose finding carries the highest severity the report claimed
-(``claimed_severity``), so an UGLY in it still trips the breaker. Refused at every SEAM
+(#25), whose finding carries the highest severity the report claimed, or UGLY where what
+it claimed cannot be read (``claimed_severity``), so an UGLY in it still trips the breaker
+and the title says which of the two it is. Refused at every SEAM
 instead, which was this module's second shape, one odd value stayed in the record and
 refused every later copy of the run, so the gate was never reached again. The one field the
 engine itself keeps a foreign value in, ``GateDecision.asked`` (#131), is copied as the
@@ -65,7 +70,12 @@ engine itself keeps a foreign value in, ``GateDecision.asked`` (#131), is copied
 **What it does not cover, stated.** A seam that writes to the WORLD rather than to the run
 (the repository, the filesystem, the network) is the permission policy's (#76, #79, #96). A
 refused report's OTHER findings are lost with it, as a spawn that raises loses its findings
-(#25): what survives is the failure, at the highest severity claimed. A seam that keeps its
+(#25): what survives is the failure, at the highest severity claimed (or UGLY, unread),
+and its title. That failure is an instrument finding, which is never adjudicated, so a
+BLOCKER it carries blocks ``CONVERGED`` for the rest of the run: nothing can refute it,
+and retiring it is #157's. A refused report's token count is not in the record. A
+record SUBCLASS is refused wherever it is met, so a backend returning one fails closed
+even where the subclass is harmless; the shipped backend never does. A seam that keeps its
 COPY and writes it later writes nothing the engine reads. ``adjudicate`` is
 still handed the live ``surface``: it is opaque to the engine (``ReviewSurface = object``),
 the run does not store it, and nothing the engine decides reads it.
@@ -74,7 +84,7 @@ the run does not store it, and nothing the engine decides reads it.
 from __future__ import annotations
 
 from dataclasses import fields
-from typing import TypeVar
+from typing import NamedTuple, TypeVar
 
 from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport,
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
@@ -148,7 +158,7 @@ def _copied(value, memo: dict[int, object], depth: int):
     if kind is tuple:
         memo[id(value)] = copied = tuple(_copied(item, memo, depth) for item in value)
         return copied
-    base = next((b for b in _RECORDS if issubclass(kind, b)), None)
+    base = next((b for b in _RECORDS if kind is b), None)
     if base is None:
         # No type NAME, deliberately: ``type_name`` evaluates ``type(v).__name__``
         # through the metaclass (#142's fidelity rule), which is foreign code. The
@@ -182,7 +192,19 @@ def _copied(value, memo: dict[int, object], depth: int):
     return record
 
 
-def claimed_severity(returned: object) -> Severity:
+class Claim(NamedTuple):
+    """What a refused report claimed: its highest severity, and whether it could be READ.
+
+    ``read`` is what lets a run say which of two different facts its UGLY is: the report
+    CLAIMED an UGLY, or the engine could not read what it claimed and failed closed (#30:
+    a run must be able to tell those apart).
+    """
+
+    severity: Severity
+    read: bool
+
+
+def claimed_severity(returned: object) -> Claim:
     """The highest severity a report the engine REFUSED claimed, failing CLOSED.
 
     A refused report is a contained spawn failure (#25), and its findings never enter the
@@ -194,46 +216,49 @@ def claimed_severity(returned: object) -> Severity:
     **Fails closed, by the maintainer's ruling of 2026-10-14.** A claim whose severity
     cannot be read is UGLY, never NOTE: whether an UGLY is open is then UNKNOWN, and #148's
     rule is that an unknown is never read as a measurement, so the breaker fires rather
-    than a quorum voting past it. The third pre-merge review measured the first shape of
-    this function returning NOTE for a ``findings`` that was a list subclass or a tuple and
-    for a finding whose instance dict was a ``dict`` subclass, each converging a run main
-    escalated. A report that claims nothing (no findings, or a return that is not a report
-    at all) is NOTE. No healthy run reaches this: the shipped backend's output is never
-    refused (measured over 42 reports).
+    than a quorum voting past it. Unreadable includes a report or finding that is a
+    SUBCLASS: what it presents can come from its own properties, which the engine will not
+    run, and its instance dict can hold something else entirely (the fourth pre-merge
+    review measured a subclass presenting an UGLY over a dict holding none, converging a
+    run main escalated). A return that is not a report at all, or a report claiming no
+    findings, claims nothing, and is NOTE. No healthy run reaches this: the shipped
+    backend's output is never refused (measured over 3,000 fuzzed replies).
 
-    Read with the copy's own discipline, running nothing the value carries: types by
-    ``type()`` and ``issubclass``, instance dicts through the BASE class's descriptor,
-    sequences through ``list.__iter__`` / ``tuple.__iter__`` and dicts through
-    ``dict.items`` (the underlying storage, so a subclass's own hooks are not called),
-    keys compared only once they are exact ``str``, and a severity by identity.
+    Read running nothing the value carries: types by ``type()``, instance dicts through
+    the class's own descriptor, sequences through ``list.__iter__`` / ``tuple.__iter__`` and
+    dicts through ``dict.items`` (the underlying storage, so a container subclass's own
+    hooks are not called), keys compared only once they are exact ``str``, and a severity
+    by identity.
     """
+    closed = Claim(Severity.UGLY, read=False)
     try:
-        if not issubclass(type(returned), PersonaReport):
-            return Severity.NOTE
+        if type(returned) is not PersonaReport:
+            return closed if issubclass(type(returned), PersonaReport) else Claim(
+                Severity.NOTE, read=True)
         state = _INSTANCE_DICT[PersonaReport].__get__(returned, PersonaReport)
         found, findings = _stored(state, "findings")
         if not found:
-            return Severity.UGLY
+            return closed
         if issubclass(type(findings), list):
             claims = list(list.__iter__(findings))
         elif issubclass(type(findings), tuple):
             claims = list(tuple.__iter__(findings))
         else:
-            return Severity.UGLY
+            return closed
         highest = Severity.NOTE
         for f in claims:
-            if not issubclass(type(f), Finding):
-                return Severity.UGLY
+            if type(f) is not Finding:
+                return closed
             found, severity = _stored(_INSTANCE_DICT[Finding].__get__(f, Finding), "severity")
             if not found or not any(severity is s for s in Severity):
-                return Severity.UGLY
+                return closed
             if severity > highest:
                 highest = severity
-        return highest
+        return Claim(highest, read=True)
     except Exception:  # noqa: BLE001
         # Reached only by a defect here, or by a backend thread writing what it returned
         # while it is read ("dict changed size during iteration"). Closed, as above.
-        return Severity.UGLY
+        return closed
 
 
 def _stored(state: object, name: str) -> tuple[bool, object]:

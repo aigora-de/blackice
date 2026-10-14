@@ -48,7 +48,8 @@ class SpawnPersona(Protocol):
     What it returns is copied as it enters the run (#155), so a backend that keeps the
     report writes nothing the run holds afterwards. A return the engine cannot copy, or
     that is not a ``PersonaReport``, is contained exactly as a raise is, and the
-    failure's finding carries the highest severity the report claimed.
+    failure's finding carries the highest severity the report claimed, or UGLY where
+    what it claimed cannot be read (fail closed); its title says which.
     """
 
     def __call__(

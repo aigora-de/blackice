@@ -892,7 +892,8 @@ def _refused_ugly(shape):
 def test_a_refused_reports_ugly_escalates_however_its_findings_are_held(shape):
     """REGRESSION for the third review's UGLY: the claimed severity was read only from an
     exact ``list`` of findings with exact instance dicts, and returned NOTE otherwise, so a
-    quorum-below-panel run CONVERGED on an UGLY main escalated (all but ``tokens``)."""
+    quorum-below-panel run CONVERGED on an UGLY main escalated. ``tokens`` is the CONTROL:
+    green on the shape before that repair, as on this one."""
     review_run = _malformed_run(_refused_ugly(shape), panel=PAIR_QUORUM_ONE)
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
@@ -915,3 +916,101 @@ def test_an_adjudicator_cannot_refute_a_refused_reports_ugly():
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
     assert True not in seen
+
+
+# --- a subclass presents what its dict does not hold (the fourth review) ---------------
+
+class _PresentsAnUgly(PersonaReport):
+    @property
+    def findings(self):  # noqa: D401
+        return [Finding("p", "t", U, "c", "a.py", 1)]
+
+    @findings.setter
+    def findings(self, value):
+        self.__dict__["findings"] = value
+
+
+class _PresentsANo(PersonaReport):
+    @property
+    def verdict(self):  # noqa: D401
+        return "NO"
+
+    @verdict.setter
+    def verdict(self, value):
+        self.__dict__["verdict"] = value
+
+
+class _UglyBehindAProperty(Finding):
+    @property
+    def severity(self):  # noqa: D401
+        return U
+
+
+def _subclassed(shape):
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        if persona == "q" or epoch > 1:
+            return PersonaReport(persona=persona, verdict="YES",
+                                 status=PersonaStatus.FOUND_NOTHING)
+        if shape == "report-presents-an-ugly":
+            return _PresentsAnUgly(persona=persona, findings=[], verdict="YES",
+                                   status=PersonaStatus.CONTRIBUTED)
+        if shape == "finding-presents-an-ugly":
+            f = object.__new__(_UglyBehindAProperty)
+            object.__setattr__(f, "__dict__", {
+                **Finding(persona, "t", Severity.NOTE, "c", "a.py", 1).__dict__,
+                "verified": True})
+            return PersonaReport(persona=persona, verdict="YES",
+                                 status=PersonaStatus.CONTRIBUTED, findings=[f])
+        return _PresentsANo(persona=persona, verdict="YES", status=PersonaStatus.CONTRIBUTED)
+    return spawn
+
+
+@pytest.mark.parametrize("shape", ["report-presents-an-ugly", "finding-presents-an-ugly"])
+def test_a_subclass_presenting_an_ugly_its_dict_does_not_hold_escalates(shape):
+    """REGRESSION for the fourth review's UGLY: the copy read a subclass's base fields from
+    its instance dict, so the UGLY it PRESENTED (through a property) was replaced by the
+    stale value, nothing was refused, and the run converged; main read the property and
+    escalated. A subclass is now refused, and its claim fails closed."""
+    review_run = _malformed_run(_subclassed(shape), panel=PAIR)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert _refused_at_entry(review_run)
+
+
+def test_a_subclass_presenting_a_no_vote_is_not_counted_as_yes():
+    """REGRESSION for the fourth review: a report presenting NO over a dict holding YES was
+    counted as a YES and a one-persona run converged; main halted ``epoch``. Refused, its
+    subclass claim is unreadable and fails closed, so the run does not converge."""
+    review_run = _contained(lambda: run(
+        ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=1), PANEL,
+        spawn=_subclassed("report-presents-a-no"), gather=lambda epoch: "s", parallel=False))
+
+    assert review_run.halt_reason is not HaltReason.CONVERGED
+
+
+@pytest.mark.parametrize("shape, words", [
+    ("tokens", " — it claimed UGLY"),
+    ("report-presents-an-ugly", " — what it claimed could not be read, so it is carried as "
+                                "UGLY (fail closed)"),
+])
+def test_the_failure_says_whether_its_ugly_was_claimed_or_unreadable(shape, words):
+    """The fourth review's BAD (#30): a claimed UGLY and one carried because nothing could
+    be read were the same record. The title now says which, in fixed words."""
+    spawn = _refused_ugly("tokens") if shape == "tokens" else _subclassed(shape)
+    review_run = _malformed_run(spawn, panel=PAIR)
+
+    (failure,) = [f for f in review_run.ledger.values() if f.about_run]
+    assert failure.title.endswith(words)
+
+
+def test_a_spawn_that_raises_is_titled_exactly_as_before():
+    """GREEN ON MAIN, by design: the note is empty where nothing above NOTE was claimed, so
+    the raise path's record is byte-for-byte what it always was."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        raise RuntimeError("down")
+
+    review_run = _malformed_run(spawn)
+
+    (failure,) = review_run.ledger.values()
+    assert failure.title == "persona failed: RuntimeError: down"
+    assert failure.severity is Severity.NOTE

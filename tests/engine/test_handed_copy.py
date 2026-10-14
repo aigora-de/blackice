@@ -117,16 +117,13 @@ class _Hostile(Finding):
         return super().__getattribute__(name)
 
 
-def test_a_hostile_subclass_is_copied_without_calling_any_of_its_hooks():
-    """REGRESSION for #155's rejected design: ``copy.deepcopy`` calls ``__deepcopy__``, and
-    ``isinstance`` consults ``__class__``. The copy is the BASE class, as #129 re-makes a
-    ``GateDecision``: a subclass's extra behaviour is dropped."""
+def test_a_hostile_subclass_is_refused_without_calling_any_of_its_hooks():
+    """REGRESSION for #155's rejected design (``copy.deepcopy`` calls ``__deepcopy__``, and
+    ``isinstance`` consults ``__class__``) and for the fourth review: a subclass is refused
+    by its exact type, so not one of its hooks runs, and it is never handed live."""
     hostile = _Hostile("p", "t", Severity.UGLY, "c", "a.py", 1)
 
-    copy = handed([hostile])[0]
-
-    assert type(copy) is Finding
-    assert (copy.title, copy.severity) == ("t", Severity.UGLY)
+    assert "neither a record nor" in _refused([hostile])
 
 
 class _Report(PersonaReport):
@@ -139,15 +136,27 @@ class _Report(PersonaReport):
         self.__dict__["turns"] = value
 
 
-def test_a_report_subclass_with_a_raising_property_is_still_copied():
-    """The field is read from the instance dict through the base class, never through the
-    subclass's attribute machinery, so the copy cannot raise on what ``spawn`` returned.
-    Red under the shim only because the shim hands the subclass itself."""
-    report = _Report("p", turns=4)
+class _Shadow(PersonaReport):
+    """Presents a NO vote through a property, over an instance dict holding YES."""
 
-    copy = handed(report)
+    @property
+    def verdict(self):  # noqa: D401
+        return "NO"
 
-    assert type(copy) is PersonaReport and copy.turns == 4
+    @verdict.setter
+    def verdict(self, value):
+        self.__dict__["verdict"] = value
+
+
+@pytest.mark.parametrize("make", [lambda: _Report("p", turns=4),
+                                  lambda: _Shadow("p", verdict="YES")],
+                         ids=["raising-property", "shadowing-property"])
+def test_a_report_subclass_is_refused_never_copied_from_its_dict(make):
+    """REGRESSION for the fourth review's UGLY: the previous shape copied a subclass's BASE
+    fields from its instance dict, so a subclass presenting a NO vote (or an UGLY) over a
+    dict holding YES (or nothing) was handed on as the stale value, and the run converged
+    where main did not. No copy of a subclass is faithful, so it is refused."""
+    assert "neither a record nor" in _refused(make())
 
 
 class _Odd(list):
@@ -261,12 +270,13 @@ def _report_of(*findings, holder=list):
 
 @pytest.mark.parametrize("holder", [list, tuple, _Seq], ids=["list", "tuple", "list-subclass"])
 def test_a_refused_reports_ugly_is_read_through_any_list_or_tuple(holder):
-    """REGRESSION for the third review's UGLY: the first shape read only an exact ``list``
+    """REGRESSION for the third review's UGLY (the ``list`` case is the CONTROL, green on
+    the shape before it): the first shape read only an exact ``list``
     and returned NOTE for a tuple or a list subclass, so a quorum-below-panel run converged
     on an UGLY main escalated. Read through the underlying storage, no hook runs."""
     report = _report_of(_finding(1, Severity.NOTE), _finding(2, Severity.UGLY), holder=holder)
 
-    assert claimed_severity(report) is Severity.UGLY
+    assert claimed_severity(report) == (Severity.UGLY, True)
 
 
 def test_a_finding_whose_instance_dict_is_a_dict_subclass_is_read_without_its_hooks():
@@ -274,15 +284,16 @@ def test_a_finding_whose_instance_dict_is_a_dict_subclass_is_read_without_its_ho
     f = _finding(1, Severity.UGLY)
     object.__setattr__(f, "__dict__", _Dict(f.__dict__))
 
-    assert claimed_severity(_report_of(f)) is Severity.UGLY
+    assert claimed_severity(_report_of(f)) == (Severity.UGLY, True)
 
 
 def test_the_highest_readable_claim_is_carried():
-    """The max, not the first or the last: a BLOCKER beside NOTEs blocks convergence."""
+    """The max, not the first or the last: a BLOCKER beside NOTEs blocks convergence. A
+    CONTROL: green on the shape before the third review's repair, as on this one."""
     report = _report_of(_finding(1, Severity.NOTE), _finding(2, Severity.BLOCKER),
                         _finding(3, Severity.NON_BLOCKING))
 
-    assert claimed_severity(report) is Severity.BLOCKER
+    assert claimed_severity(report) == (Severity.BLOCKER, True)
 
 
 @pytest.mark.parametrize("returned", [None, "text", 7, _report_of()],
@@ -290,7 +301,7 @@ def test_the_highest_readable_claim_is_carried():
 def test_a_return_that_claims_nothing_is_note(returned):
     """The fail-closed rule's other end: nothing claimed is nothing unknown. Without this
     pair a function returning UGLY for everything would pass the tests above."""
-    assert claimed_severity(returned) is Severity.NOTE
+    assert claimed_severity(returned) == (Severity.NOTE, True)
 
 
 class _IntSeverity(int):
@@ -335,7 +346,25 @@ def test_a_claim_that_cannot_be_read_fails_closed(make):
         report = PersonaReport("p")
         report.__dict__["findings"] = {_finding()}
 
-    assert claimed_severity(report) is Severity.UGLY
+    assert claimed_severity(report) == (Severity.UGLY, False)
+
+
+class _ShadowedFinding(Finding):
+    """Presents an UGLY through a property over an instance dict holding NOTE."""
+
+    @property
+    def severity(self):  # noqa: D401
+        return Severity.UGLY
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _Shadow("p", findings=[_finding(1, Severity.NOTE)]),
+    lambda: _report_of(_with_state(object.__new__(_ShadowedFinding), **_finding(1, Severity.NOTE).__dict__)),
+], ids=["report-subclass", "finding-subclass"])
+def test_a_subclass_claim_fails_closed_because_what_it_presents_cannot_be_read(make):
+    """REGRESSION for the fourth review's UGLY: its dict says NOTE, it presents UGLY, and
+    the engine will not run the property that presents it. Unknown, so closed."""
+    assert claimed_severity(make()) == (Severity.UGLY, False)
 
 
 def test_a_report_with_no_findings_attribute_fails_closed():
@@ -343,7 +372,7 @@ def test_a_report_with_no_findings_attribute_fails_closed():
     report = PersonaReport("p")
     del report.__dict__["findings"]
 
-    assert claimed_severity(report) is Severity.UGLY
+    assert claimed_severity(report) == (Severity.UGLY, False)
 
 
 def test_a_colliding_foreign_key_beside_the_severity_has_no_code_run():
@@ -354,4 +383,4 @@ def test_a_colliding_foreign_key_beside_the_severity_has_no_code_run():
     f.__dict__[key] = "x"
     key.armed = True
 
-    assert claimed_severity(_report_of(f)) is Severity.UGLY
+    assert claimed_severity(_report_of(f)) == (Severity.UGLY, True)
