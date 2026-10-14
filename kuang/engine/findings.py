@@ -390,7 +390,7 @@ class PersonaStatus(Enum):
     FOUND_NOTHING = "found_nothing"  # a readable review with no findings
     UNREADABLE = "unreadable"        # replied; the reply was not a readable review
     AGENT_ERROR = "agent_error"      # the process ran, no review came back (#29)
-    SPAWN_FAILED = "spawn_failed"    # our own code raised inside the seam (#25)
+    SPAWN_FAILED = "spawn_failed"    # the seam raised, or returned what was refused (#25, #155)
     NOT_SPAWNED = "not_spawned"      # no call was made (dry run)
 
     @property

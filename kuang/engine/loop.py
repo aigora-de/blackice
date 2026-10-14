@@ -70,7 +70,7 @@ from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
-from ._handed import handed
+from ._handed import UncopiableRecord, claimed_severity, handed
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -324,7 +324,9 @@ def run(
         halting: The halting set (budgets, max epochs, stall patience).
         panel: The reviewer ensemble (personas + mandates).
         spawn: Runs one persona subagent over the surface. May raise; an
-            exception is contained as a meta finding on that persona's report.
+            exception is contained as a meta finding on that persona's report. What it
+            returns is copied as it enters the run (#155); a return the engine cannot
+            copy is contained as a raise is, at the highest severity it claimed.
         gather: Produces the review surface for each epoch. May raise; a failure
             after at least one epoch has completed halts the run as
             ``SURFACE_LOST`` and returns what those epochs produced, and a failure
@@ -428,8 +430,22 @@ def run(
         # per persona, so run them concurrently (subprocess calls release the
         # GIL, so threads parallelise fine).
         def _run(pm: tuple[str, str]) -> PersonaReport:
+            returned: object = None
             try:
-                return spawn(pm[0], pm[1], surface, epoch)
+                # Copied ONCE, here, as it enters the run (#155, by the maintainer's
+                # ruling of 2026-10-14), so the run's record holds only values the
+                # engine built. A value the engine cannot copy, kept in the record,
+                # was measured refusing EVERY later copy of the run, so the gate was
+                # never reached again; refused here, it costs this persona's report
+                # and nothing after it. And a backend that kept a reference to what it
+                # returned and wrote it later now writes nothing the run holds. What
+                # comes back must be a ``PersonaReport`` (the copy rebuilds a
+                # subclass as the base), or the spawn has failed like any other.
+                returned = spawn(pm[0], pm[1], surface, epoch)
+                report = handed(returned)
+                if type(report) is not PersonaReport:
+                    raise UncopiableRecord("spawn returned a value that is not a report")
+                return report
             except Exception as exc:  # noqa: BLE001
                 # A persona is a fallible black box, and one that raises must not
                 # take the panel's other reviews with it (#25): the exception used
@@ -437,16 +453,21 @@ def run(
                 # for everyone. Recorded as a finding rather than swallowed, and
                 # deliberately not BaseException — a human's Ctrl-C still stops it.
                 # The status is set HERE, at the source, and is the engine's own:
-                # ``SPAWN_FAILED`` means our code raised, against a backend's
+                # ``SPAWN_FAILED`` means our code raised, or returned what the engine
+                # refused (#155), against a backend's
                 # ``AGENT_ERROR`` for a runtime that ran and returned no review.
                 # A run must be able to tell those apart (#30). Both strings come
                 # from the guarded helpers, never from ``exc`` directly (#142).
+                #
+                # NOTE where the seam raised. Where it RETURNED a report the engine
+                # refused (#155), the highest severity that report claimed, so an
+                # UGLY in it still trips the breaker: see ``claimed_severity``.
                 return PersonaReport(
                     persona=pm[0], verdict=None,
                     status=PersonaStatus.SPAWN_FAILED,
                     findings=[
                         Finding(pm[0], f"persona failed: {render_exception(exc)}",
-                                Severity.NOTE, "meta",
+                                claimed_severity(returned), "meta",
                                 evidence=bounded_diagnosis(repr_exception(exc)),
                                 about_run=True)])
 

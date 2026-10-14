@@ -550,20 +550,30 @@ def test_each_seam_call_is_handed_its_own_copy(live):
 
 # --- a malformed spawn: the axis the first shape's fixtures could not express ----------
 #
-# Found by #155's pre-merge review: every fixture above builds well-formed records, and the
-# copy's first shape handed anything it could not copy over AS IT WAS, which is to say
-# live. A ``spawn`` value is a return value (#25), but what the engine hands a SEAM from it
-# is this issue's. Each run below reproduced on the first shape; the control is the same
-# run with a well-formed ``spawn``.
+# Found by #155's pre-merge reviews: every fixture above builds well-formed records. The
+# first shape handed what it could not copy over AS IT WAS (live); the second refused it
+# at every seam, so one odd value refused every later copy of the run. By the
+# maintainer's ruling of 2026-10-14 a ``spawn`` report is now copied ONCE, as it enters
+# the run, and one the engine cannot copy is that persona's contained spawn failure (#25),
+# whose finding carries the highest severity the report claimed. ``p`` is the malformed
+# persona; ``q``, where present, is well-formed.
+
+class _Tokens(int):
+    """An ``int`` subclass, as a third-party backend might count with."""
+
 
 def _malformed_spawn(severity, verdict, *, cut_finding=False, cut_report=False,
-                     denied=None, repeat=False):
+                     denied=None, tokens=9, repeat=False, healthy_q=None):
     def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
         e = 1 if repeat else epoch
         f = Finding(persona, f"defect {e}", severity, f"lens-{e}", "a.py", e * 100)
+        if persona == "q":
+            return PersonaReport(persona="q", verdict=healthy_q, tokens=9,
+                                 status=PersonaStatus.CONTRIBUTED,
+                                 findings=[f] if repeat else [])
         if cut_finding:
             object.__delattr__(f, "evidence")   # still READS, through the class default
-        report = PersonaReport(persona=persona, verdict=verdict, tokens=9,
+        report = PersonaReport(persona=persona, verdict=verdict, tokens=tokens,
                                status=PersonaStatus.CONTRIBUTED, findings=[f])
         if cut_report:
             del report.__dict__["turns"]
@@ -573,11 +583,21 @@ def _malformed_spawn(severity, verdict, *, cut_finding=False, cut_report=False,
     return spawn
 
 
-def _malformed_run(spawn, *, repeat=False, **seams):
+def _malformed_run(spawn, *, repeat=False, panel=PANEL, **seams):
     return _contained(lambda: run(
         ReviewSpec(why="w", what="x"),
-        HaltingSet(max_epochs=3, stall_patience=1 if repeat else 5), PANEL,
+        HaltingSet(max_epochs=3, stall_patience=1 if repeat else 5), panel,
         spawn=spawn, gather=lambda epoch: "s", parallel=False, **seams))
+
+
+PAIR = PanelConfig(personas=[("p", "mandate"), ("q", "mandate")])
+PAIR_QUORUM_ONE = PanelConfig(personas=[("p", "mandate"), ("q", "mandate")], quorum=1)
+
+
+def _refused_at_entry(review_run, persona="p"):
+    return [r for e in review_run.epochs for r in e.reports
+            if r.persona == persona and r.status is PersonaStatus.SPAWN_FAILED
+            and "could not copy" in r.findings[0].title]
 
 
 def _copy_refusals(review_run):
@@ -586,22 +606,55 @@ def _copy_refusals(review_run):
 
 
 @pytest.mark.parametrize("cut", [False, True], ids=["control", "finding-missing-a-field"])
-def test_a_malformed_finding_is_never_handed_to_adjudicate_live(cut):
-    """REGRESSION for the review's UGLY: on the first shape an UGLY ``spawn`` finding missing
-    one instance-dict field was handed to ``adjudicate`` live, the downgrade it wrote reached
-    the ledger, and the run halted ``converged`` with nothing recorded. Now the copy is
-    refused, ``adjudicate`` is not called, the finding stays unadjudicated and open, and the
-    breaker fires. The control is GREEN ON MAIN, by design."""
+def test_a_malformed_finding_never_reaches_adjudicate_and_its_ugly_still_escalates(cut):
+    """REGRESSION for the first review's UGLY: an UGLY ``spawn`` finding missing one
+    instance-dict field was handed to ``adjudicate`` live, the downgrade it wrote reached
+    the ledger, and the run halted ``converged``. Now the report is refused as it enters,
+    and the failure's finding is UGLY, so the breaker fires. The control is RED ON MAIN
+    too: it is row 6, a downgrade written into a well-formed finding."""
     review_run = _malformed_run(_malformed_spawn(U, "YES", cut_finding=cut),
                                 adjudicate=_downgrades(True))
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
     assert [f.severity for f in review_run.ledger.values()] == [U]
-    assert bool(_copy_refusals(review_run)) is cut
+    assert bool(_refused_at_entry(review_run)) is cut
+
+
+def test_an_ugly_in_a_refused_report_cannot_be_voted_past():
+    """REGRESSION for the ingress refusal's own first shape (measured before it shipped):
+    a report refused only for an ``int`` subclass in ``tokens`` lost its UGLY, and a panel
+    with a quorum below its size voted the run ``converged``; main escalated. The failure's
+    finding carries the report's highest claimed severity."""
+    review_run = _malformed_run(_malformed_spawn(U, "YES", tokens=_Tokens(5), healthy_q="YES"),
+                                panel=PAIR_QUORUM_ONE)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert _refused_at_entry(review_run)
+
+
+def test_one_odd_value_costs_one_report_not_the_rest_of_the_run():
+    """REGRESSION for the second review's BAD: an ``int`` subclass in one report's
+    ``tokens`` stayed in the record and refused EVERY later ``checkpoint`` and gate copy,
+    so the gate was never reached again. Refused at entry, it costs that report only.
+    GREEN ON MAIN, by design: main copied nothing, so refused nothing."""
+    gates: list[int] = []
+    checkpoints: list[int] = []
+
+    def gate(result, review_run):  # noqa: ARG001
+        gates.append(result.index)
+        return GateDecision(stop=False)
+
+    review_run = _malformed_run(
+        _malformed_spawn(B, "NO", tokens=_Tokens(5), healthy_q="NO"), panel=PAIR,
+        human_gate=gate, checkpoint=lambda r: checkpoints.append(len(r.epochs)))
+
+    assert gates == [1, 2] and checkpoints == [1, 2, 3]
+    assert _copy_refusals(review_run) == []
+    assert all(e.gate_failure is None for e in review_run.epochs)
 
 
 def test_a_malformed_finding_cannot_end_the_run_through_adjudicate():
-    """REGRESSION for the review (R4a, #148): handed the incomplete finding live, an
+    """REGRESSION for the first review (R4a, #148): handed the incomplete finding live, an
     adjudicator deleting ``persona`` made the loop's rebuild raise out of ``run``."""
     def deletes(finding, surface):  # noqa: ARG001
         object.__delattr__(finding, "persona")
@@ -609,7 +662,8 @@ def test_a_malformed_finding_cannot_end_the_run_through_adjudicate():
 
     review_run = _malformed_run(_malformed_spawn(B, "NO", cut_finding=True), adjudicate=deletes)
 
-    assert review_run.halt_reason is HaltReason.EPOCH
+    assert review_run.halt_reason is HaltReason.NO_REVIEW
+    assert _refused_at_entry(review_run)
 
 
 def _refutes_through_reports(result, review_run):  # noqa: ARG001
@@ -621,44 +675,119 @@ def _refutes_through_reports(result, review_run):  # noqa: ARG001
 
 @pytest.mark.parametrize("cut", [False, True], ids=["control", "report-missing-a-field"])
 def test_a_malformed_report_cannot_expose_the_ledgers_findings_to_the_gate(cut):
-    """REGRESSION for the review (R2): one report missing a field was handed to the gate
-    live, and through ``report.findings`` it reached the ledger's OWN complete findings, so
-    a refutation written there converged a run with the same BLOCKER raised every epoch.
-    The control is GREEN ON MAIN only in its halt."""
-    review_run = _malformed_run(_malformed_spawn(B, "YES", cut_report=cut, repeat=True),
-                                repeat=True, human_gate=_refutes_through_reports)
+    """REGRESSION for the first review (R2): a report missing a field was handed to the gate
+    live, and through ``report.findings`` it reached the ledger's OWN findings, so a
+    refutation written there converged a run with the same BLOCKER raised every epoch.
+    The control is RED ON MAIN too: it is row 8, through the reports."""
+    review_run = _malformed_run(
+        _malformed_spawn(B, "YES", cut_report=cut, repeat=True, healthy_q="YES"),
+        repeat=True, panel=PAIR, human_gate=_refutes_through_reports)
 
     assert review_run.halt_reason is HaltReason.STALL
-    assert len(_open(review_run, B)) == 1
+    assert len([f for f in _open(review_run, B) if not f.about_run]) == 1
+    # The refused report's failure carries the BLOCKER it claimed, and is open too.
+    assert bool([f for f in _open(review_run, B) if f.about_run]) is cut
 
 
 def test_a_malformed_report_cannot_end_the_run_through_the_gate():
-    """REGRESSION for the review (R4b, #148): the gate deleted ``severity`` from a ledger
-    finding it reached through a live report, and the next epoch's snapshot raised."""
+    """REGRESSION for the first review (R4b, #148): the gate deleted ``severity`` from a
+    ledger finding it reached through a live report, and the next snapshot raised."""
     def deletes(result, review_run):  # noqa: ARG001
         for report in result.reports:
             for f in report.findings:
                 object.__delattr__(f, "severity")
         return GateDecision(stop=False)
 
-    review_run = _malformed_run(_malformed_spawn(B, "NO", cut_report=True), human_gate=deletes)
+    review_run = _malformed_run(_malformed_spawn(B, "NO", cut_report=True, repeat=True,
+                                                 healthy_q="NO"),
+                                panel=PAIR, human_gate=deletes)
 
     assert review_run.halt_reason is HaltReason.EPOCH
-    assert len(_open(review_run, B)) == 3
+    assert len([f for f in _open(review_run, B) if not f.about_run]) == 1
 
 
-def test_a_mutable_value_spawn_supplied_is_not_shared_with_a_seam():
-    """REGRESSION for the review (R3b): a ``set`` in ``denied_tools`` was shared with the
-    live record, so a checkpoint could rewrite what the run publishes. Now the copy is
-    refused and recorded, and the published value is what ``spawn`` returned."""
+def test_a_mutable_value_spawn_supplied_never_enters_the_run():
+    """REGRESSION for the first review (R3b): a ``set`` in ``denied_tools`` was shared with
+    the live record, so a checkpoint could rewrite what the run publishes. Now the report
+    is refused as it enters, and no value it carried is in the record."""
     def writes(review_run):
-        for report in review_run.epochs[-1].reports:
-            report.denied_tools.add("Write")
+        for e in review_run.epochs:
+            for report in e.reports:
+                report.denied_tools.append("Write")
 
     review_run = _malformed_run(_malformed_spawn(B, "NO", denied={"Bash"}), checkpoint=writes)
 
-    assert all(r.denied_tools == {"Bash"} for e in review_run.epochs for r in e.reports)
-    assert _copy_refusals(review_run)
+    assert _refused_at_entry(review_run)
+    assert all(type(r.denied_tools) is list and r.denied_tools == []
+               for e in review_run.epochs for r in e.reports)
+
+
+def test_a_backend_that_writes_a_report_after_returning_it_writes_nothing_the_run_holds():
+    """REGRESSION: a backend kept a reference to the report it returned at epoch 1 and
+    rewrote its finding at epoch 2. On main the run held that object, so the published
+    epoch-1 record and the ledger changed after the fact; the report is now copied as it
+    enters."""
+    returned: list[PersonaReport] = []
+
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        for earlier in returned:
+            for f in earlier.findings:
+                object.__setattr__(f, "severity", Severity.NOTE)
+            earlier.findings.clear()
+        report = PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                               findings=[Finding(persona, f"d{epoch}", B, f"c{epoch}", "a.py",
+                                                 epoch * 100)])
+        returned.append(report)
+        return report
+
+    review_run = _malformed_run(spawn)
+
+    assert [len(e.reports[0].findings) for e in review_run.epochs] == [1, 1, 1]
+    assert len(_open(review_run, B)) == 3
+
+
+@pytest.mark.parametrize("value", [None, "a report", 7],
+                         ids=["none", "str", "int"])
+def test_a_spawn_that_returns_no_report_is_a_contained_spawn_failure(value):
+    """REGRESSION: on main a ``spawn`` returning something that is not a report raised out
+    of ``run`` at the first read of it, after the panel was paid for (#148). The entry copy
+    refuses it, and it is that persona's spawn failure."""
+    review_run = _malformed_run(lambda *a: value, panel=PAIR)
+
+    assert review_run.halt_reason is HaltReason.NO_REVIEW
+    assert all(r.status is PersonaStatus.SPAWN_FAILED for r in review_run.epochs[0].reports)
+
+
+def test_a_spawn_that_returns_another_record_is_not_taken_for_a_report():
+    """The copy rebuilds whatever record it is given, so a ``Finding`` returned as a report
+    is refused by type after the copy, not read as one."""
+    review_run = _malformed_run(lambda *a: Finding("p", "t", U, "c"))
+
+    assert review_run.epochs[0].reports[0].status is PersonaStatus.SPAWN_FAILED
+
+
+def test_a_foreign_asked_is_read_as_no_answer_and_refuses_no_later_copy():
+    """REGRESSION for the second review's BAD: ``asked`` is stored un-coerced by #131's
+    ruling, so a gate answering ``asked=object()`` once refused every later copy of the
+    run. The copy hands a seam ``None``, which is how the publisher resolves it; the
+    record itself keeps what #131 says it keeps. GREEN ON MAIN, by design: main copied
+    nothing, so refused nothing."""
+    odd = object()
+    asked_seen: list[object] = []
+
+    def gate(result, review_run):  # noqa: ARG001
+        return GateDecision(stop=False, asked=odd if result.index == 1 else True)
+
+    def checkpoint(review_run):
+        asked_seen.extend(e.gate.asked for e in review_run.epochs if e.gate is not None)
+
+    review_run = _malformed_run(_malformed_spawn(B, "NO"), human_gate=gate,
+                                checkpoint=checkpoint)
+
+    assert _copy_refusals(review_run) == []
+    assert all(e.gate_failure is None for e in review_run.epochs)
+    assert asked_seen == [None, None, True]
+    assert review_run.epochs[0].gate.asked is odd
 
 
 # --- refusing runs nothing the refused value carries (the second review) ---------------
@@ -668,7 +797,8 @@ def test_refusing_a_value_cannot_run_its_metaclass_and_mask_an_ugly():
     the refusal named the value's type through ``type_name``, which evaluates the
     metaclass's ``__name__``. A payload whose ``__name__`` downgraded the UGLY ``spawn``
     still held ran INSIDE the copy, and the breaker never fired; main escalated on the same
-    input, because nothing there named the type. The refusal now names nothing it refuses."""
+    input, because nothing there named the type. The refusal now names nothing it refuses.
+    GREEN ON MAIN, by design, for that reason."""
     kept: list[Finding] = []
     calls: list[str] = []
 
@@ -698,7 +828,7 @@ def test_refusing_a_value_cannot_run_its_metaclass_and_mask_an_ugly():
 def test_a_foreign_key_in_an_instance_dict_has_no_code_run_by_the_copy():
     """REGRESSION for the second review: a key whose hash matches a field name had its
     ``__eq__`` run by the copy's field lookup. Keys are now checked to be exact ``str``
-    before any lookup, and the copy is refused."""
+    before any lookup, and the report is refused as it enters."""
     calls: list[str] = []
     armed: list[bool] = []   # inserting the key compares it with "evidence" in SPAWN itself
 
@@ -722,5 +852,5 @@ def test_a_foreign_key_in_an_instance_dict_has_no_code_run_by_the_copy():
     review_run = _malformed_run(spawn, adjudicate=lambda f, s: True)
 
     assert calls == []
-    assert review_run.halt_reason is HaltReason.EPOCH
-    assert _copy_refusals(review_run)
+    assert review_run.halt_reason is HaltReason.NO_REVIEW
+    assert _refused_at_entry(review_run)

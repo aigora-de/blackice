@@ -51,15 +51,22 @@ every match is by ``key``, but a copy that changed it would hand a reading seam 
 structure from today's. A tuple enters the memo only once its members are built, so a cycle
 running through a tuple would be copied unaliased; no record can form one.
 
+**At entry, too (the maintainer's ruling of 2026-10-14).** ``spawn``'s report is copied
+ONCE, as it enters the run, so the record holds only values the engine built, and a
+backend that kept a reference to a report it returned and writes it later writes nothing
+the run holds. A report the engine refuses there is that persona's contained spawn failure
+(#25), whose finding carries the highest severity the report claimed
+(``claimed_severity``), so an UGLY in it still trips the breaker. Refused at every SEAM
+instead, which was this module's second shape, one odd value stayed in the record and
+refused every later copy of the run, so the gate was never reached again. The one field the
+engine itself keeps a foreign value in, ``GateDecision.asked`` (#131), is copied as the
+``None`` the publisher reads it as, for the same reason.
+
 **What it does not cover, stated.** A seam that writes to the WORLD rather than to the run
 (the repository, the filesystem, the network) is the permission policy's (#76, #79, #96). A
-value ``spawn`` returned is a return value (#25): a backend that keeps a reference to a
-report it returned and writes it later is that door, not this one, and so is a finding so
-malformed that the engine's own reads of it raise before any seam is called. A seam that
-keeps its COPY and writes it later writes nothing the engine reads. A value that cannot be
-copied, once it is in the run's record, is in every later copy of the run too, so EVERY
-later ``checkpoint`` and gate copy is refused for the rest of the run: recorded at each
-epoch, and bounded by ``max_epochs``, but the gate is not reached again. ``adjudicate`` is
+refused report's OTHER findings are lost with it, as a spawn that raises loses its findings
+(#25): what survives is the failure, at the highest severity claimed. A seam that keeps its
+COPY and writes it later writes nothing the engine reads. ``adjudicate`` is
 still handed the live ``surface``: it is opaque to the engine (``ReviewSurface = object``),
 the run does not store it, and nothing the engine decides reads it.
 """
@@ -163,5 +170,58 @@ def _copied(value, memo: dict[int, object], depth: int):
     record = object.__new__(base)
     memo[id(value)] = record
     for name in names:
-        object.__setattr__(record, name, _copied(state[name], memo, depth))
+        field_value = state[name]
+        if base is GateDecision and name == "asked" and not _is_answer(field_value):
+            # The one field the engine keeps a foreign value in, by #131's ruling: a
+            # value the tool cannot read is not a measurement, and the publisher
+            # resolves it by IDENTITY to "no answer". The copy hands a seam exactly that
+            # reading rather than the object, which nothing in the engine reads, so a
+            # gate's odd answer at one epoch cannot refuse every later copy of the run.
+            field_value = None
+        object.__setattr__(record, name, _copied(field_value, memo, depth))
     return record
+
+
+def claimed_severity(returned: object) -> Severity:
+    """The highest severity a report the engine REFUSED claimed, read without trusting it.
+
+    A refused report is a contained spawn failure (#25), and its findings never enter the
+    run. Without this, an UGLY in a report refused only for an odd value elsewhere (an
+    ``int`` subclass in ``tokens``, a ``set`` of denied tools) was lost, and a panel with a
+    quorum below its size could vote the run ``converged`` where main had escalated. So
+    the failure's own finding carries the highest severity the report claimed, and the
+    breaker still fires on it.
+
+    Read with the copy's own discipline: base-class descriptors, exact types, identity, so
+    nothing the value carries runs. A severity that cannot be read that way is not
+    invented into one, and is stated as such: ``NOTE``, the failure's ordinary severity.
+    """
+    try:
+        if not issubclass(type(returned), PersonaReport):
+            return Severity.NOTE
+        state = _INSTANCE_DICT[PersonaReport].__get__(returned, PersonaReport)
+        if type(state) is not dict or not all(type(k) is str for k in state):
+            return Severity.NOTE
+        findings = state.get("findings")
+        if type(findings) is not list:
+            return Severity.NOTE
+        highest = Severity.NOTE
+        for f in findings:
+            if not issubclass(type(f), Finding):
+                continue
+            fstate = _INSTANCE_DICT[Finding].__get__(f, Finding)
+            if type(fstate) is not dict or not all(type(k) is str for k in fstate):
+                continue
+            severity = fstate.get("severity")
+            if any(severity is s for s in Severity) and severity > highest:
+                highest = severity
+        return highest
+    except Exception:  # noqa: BLE001
+        # Unreachable by construction, as in ``handed``: kept so a defect here cannot
+        # discard the run (#148).
+        return Severity.NOTE
+
+
+def _is_answer(value: object) -> bool:
+    """``True``, ``False`` or ``None``, by identity: the three values ``asked`` can mean."""
+    return value is True or value is False or value is None

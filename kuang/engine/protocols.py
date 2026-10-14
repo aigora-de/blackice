@@ -44,6 +44,11 @@ class SpawnPersona(Protocol):
     a ``meta`` finding on that persona's report, so one reviewer cannot end a run
     the panel has already been paid for (#25). It is contained, not hidden — the
     exception reaches the run artefact as a finding.
+
+    What it returns is copied as it enters the run (#155), so a backend that keeps the
+    report writes nothing the run holds afterwards. A return the engine cannot copy, or
+    that is not a ``PersonaReport``, is contained exactly as a raise is, and the
+    failure's finding carries the highest severity the report claimed.
     """
 
     def __call__(
