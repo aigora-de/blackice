@@ -327,12 +327,24 @@ def test_a_return_that_claims_nothing_is_note(returned):
     assert claimed_severity(returned) == (Severity.NOTE, True)
 
 
+_FOREIGN_CALLS: list[str] = []
+
+
 class _IntSeverity(int):
+    """RECORDS its calls rather than raising: ``claimed_severity`` catches every exception
+    and fails closed, so a hook that raised would be invisible behind a closed result."""
+
     def __gt__(self, other):
-        raise AssertionError("a foreign __gt__ ran")
+        _FOREIGN_CALLS.append("__gt__")
+        return True
+
+    def __lt__(self, other):
+        _FOREIGN_CALLS.append("__lt__")
+        return False
 
     def __eq__(self, other):
-        raise AssertionError("a foreign __eq__ ran")
+        _FOREIGN_CALLS.append("__eq__")
+        return False
 
     __hash__ = int.__hash__
 
@@ -368,8 +380,10 @@ def test_a_claim_that_cannot_be_read_fails_closed(make):
     if report is None:
         report = PersonaReport("p")
         report.__dict__["findings"] = {_finding()}
+    _FOREIGN_CALLS.clear()
 
     assert claimed_severity(report) == (Severity.UGLY, False)
+    assert _FOREIGN_CALLS == [], "a severity's own comparison ran"
 
 
 class _ShadowedFinding(Finding):
@@ -473,3 +487,15 @@ def test_a_value_reached_twice_within_the_bound_is_still_one_object():
     copy = handed([shared, [[shared]]])
 
     assert copy[0] is copy[1][0][0]
+
+
+def test_a_value_reached_twice_at_the_bound_is_admitted_both_times():
+    """The revisit check's exact boundary: a list exactly ``MAX_DEPTH`` high, reached twice
+    at the same depth, is admitted on the first visit, so it must be on the second (an
+    off-by-one on the revisit refused it there, and only there). GREEN UNDER THE SHIM."""
+    tall = _chain(MAX_DEPTH)
+    handed([tall])
+
+    copy = handed([tall, tall])
+
+    assert copy[0] is copy[1]

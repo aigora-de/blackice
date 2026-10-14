@@ -1268,7 +1268,8 @@ def test_a_refuted_instrument_finding_with_an_unusable_severity_does_not_end_the
     """REGRESSION for the ninth review's BAD (#148): excluded from adjudication, a backend's
     ``about_run`` finding with a raw-int severity stayed open, and its key raised out of
     ``run`` beside a real UGLY that main escalated on. Adjudicated as on main, it is
-    refuted, never keyed, and the run escalates."""
+    refuted, never keyed, and the run escalates. GREEN ON MAIN, by design: it guards the
+    ninth review's shape, not main."""
     def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
         return PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
                              findings=[Finding(persona, "real", U, "c", file="a.py"),
