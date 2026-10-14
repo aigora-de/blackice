@@ -113,8 +113,9 @@ def _evaluate_halt(
     returned: reading them, ``reduce -> []`` with open UGLYs in the ledger halted
     ``epoch`` on ``f17c256``, or ``converged`` on a panel voting YES.
 
-    Values rather than records, because every record this could read was handed mutably
-    to a seam before the halt was taken (until #155, which hands seams copies). Each of the two pre-merge reviews measured one
+    Values rather than records, because every record this could read was handed
+    mutably to a seam before the halt was taken (until #155, which hands seams
+    copies). Each of the two pre-merge reviews measured one
     such door converging an UGLY run: a ``scope_complete`` zeroing the epoch's published
     counts (main), and one writing through the ledger's own frozen ``Finding`` objects
     (this fix's second shape, which read the ledger live). A predicate handed two

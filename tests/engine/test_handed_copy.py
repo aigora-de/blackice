@@ -15,7 +15,7 @@ import pytest
 
 from kuang.engine import (Cluster, EpochResult, Finding, GateDecision, PersonaReport,
                           PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression)
-from kuang.engine._handed import handed
+from kuang.engine._handed import MAX_DEPTH, UncopiableRecord, handed
 
 
 def _finding(n=1, severity=Severity.BLOCKER):
@@ -154,24 +154,78 @@ class _Odd(list):
     pass
 
 
-def test_only_exact_containers_are_copied_and_anything_else_is_handed_as_is():
-    """A ``list`` subclass could run code on iteration, so it is not walked: handed as it
-    is, and stated in the module as what the copy does not cover. GREEN UNDER THE SHIM,
-    by design: it guards a copy that walks foreign containers."""
-    odd = _Odd([1])
-    report = PersonaReport("p", denied_tools=odd)
+class _Spy(dict):
+    """An instance dict that is not a plain ``dict``: its hooks are foreign code."""
 
-    assert handed(report).denied_tools is odd
+    def __contains__(self, key):
+        raise AssertionError("a dict-subclass hook ran inside the copy")
+
+    def __getitem__(self, key):
+        raise AssertionError("a dict-subclass hook ran inside the copy")
 
 
-def test_a_record_missing_a_field_is_handed_as_is_rather_than_misrepresented():
-    """Reachable only through a deleted attribute or a foreign subclass: it cannot be
-    copied faithfully, so it is not copied at all. GREEN UNDER THE SHIM, by design: it
-    guards a copy that would raise, or invent a field, on it."""
+def _refused(value):
+    with pytest.raises(UncopiableRecord) as caught:
+        handed(value)
+    return str(caught.value)
+
+
+@pytest.mark.parametrize("value", [
+    PersonaReport("p", denied_tools=_Odd(["Bash"])),
+    PersonaReport("p", denied_tools={"Bash"}),
+    PersonaReport("p", unresolved_severities=bytearray(b"x")),
+], ids=["list-subclass", "set", "bytearray"])
+def test_a_value_that_is_neither_copyable_nor_immutable_is_refused(value):
+    """REGRESSION for #155's review: the first shape handed these over AS THEY WERE, so a
+    ``set`` or a container subclass ``spawn`` supplied was shared with the live record and a
+    gate or checkpoint could rewrite what the run publishes. Under the shim (main's live
+    object) nothing is refused."""
+    assert "could not copy" in _refused(value)
+
+
+def test_a_record_missing_a_field_is_refused_never_handed_live():
+    """REGRESSION for the review's UGLY: a ``spawn`` finding missing one instance-dict field
+    (it still READS, through the class default) was handed to ``adjudicate`` live, so a
+    downgrade written there reached the ledger and an UGLY run converged."""
     f = _finding()
-    del f.__dict__["evidence"]
+    object.__delattr__(f, "evidence")
 
-    assert handed([f])[0] is f
+    assert "missing 1 field" in _refused([f])
+
+
+def test_an_instance_dict_that_is_not_a_plain_dict_is_refused_without_calling_it():
+    """REGRESSION for the review: a dict-subclass ``__dict__`` had its ``__contains__`` and
+    ``__getitem__`` called 18 times in one copy, which is foreign code inside the copy."""
+    report = PersonaReport("p")
+    report.__dict__ = _Spy(report.__dict__)
+
+    assert "not a plain dict" in _refused(report)
+
+
+def test_a_structure_nested_past_the_bound_is_refused_at_the_engines_own_depth():
+    """REGRESSION for the review: a ``spawn`` value nested past the interpreter's recursion
+    limit raised ``RecursionError``, recorded against whichever seam was being copied for.
+    The bound is the engine's constant, so where a copy is refused is deterministic."""
+    deep: list = []
+    cur = deep
+    for _ in range(MAX_DEPTH + 5):
+        cur.append([])
+        cur = cur[0]
+
+    assert f"deeper than {MAX_DEPTH}" in _refused(PersonaReport("p", denied_tools=deep))
+
+
+def test_a_structure_inside_the_bound_is_copied():
+    """The bound's other end: a list nested to just inside it is a value, and is copied.
+    GREEN UNDER THE SHIM, by design (the shim refuses nothing)."""
+    deep: list = []
+    cur = deep
+    for _ in range(MAX_DEPTH - 10):
+        cur.append([])
+        cur = cur[0]
+    report = PersonaReport("p", denied_tools=deep)
+
+    assert handed(report) == report
 
 
 @pytest.mark.parametrize("value", [None, 0, "s", Severity.UGLY, (1, "a")])

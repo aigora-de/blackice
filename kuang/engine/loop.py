@@ -358,7 +358,9 @@ def run(
 
     Every record a seam is handed is a copy the engine built (#155): ``adjudicate``'s
     finding, ``reduce``'s findings, ``scope_complete``'s epoch, ``checkpoint``'s run and
-    the gate's run and epoch. A seam's only channel into the run is its return value.
+    the gate's run and epoch. A seam's only channel into the run is its return value. A
+    record that cannot be copied is never handed over live: the seam is not called, and
+    that is its recorded failure, with a detail naming the copy.
 
     Returns:
         A ``ReviewRun`` with per-epoch results, the deduped findings ledger, and

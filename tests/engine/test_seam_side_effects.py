@@ -546,3 +546,116 @@ def test_each_seam_call_is_handed_its_own_copy(live):
     _shaped("blocker-no", checkpoint=checkpoint, human_gate=gate)
 
     assert problems == []
+
+
+# --- a malformed spawn: the axis the first shape's fixtures could not express ----------
+#
+# Found by #155's pre-merge review: every fixture above builds well-formed records, and the
+# copy's first shape handed anything it could not copy over AS IT WAS, which is to say
+# live. A ``spawn`` value is a return value (#25), but what the engine hands a SEAM from it
+# is this issue's. Each run below reproduced on the first shape; the control is the same
+# run with a well-formed ``spawn``.
+
+def _malformed_spawn(severity, verdict, *, cut_finding=False, cut_report=False,
+                     denied=None, repeat=False):
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        e = 1 if repeat else epoch
+        f = Finding(persona, f"defect {e}", severity, f"lens-{e}", "a.py", e * 100)
+        if cut_finding:
+            object.__delattr__(f, "evidence")   # still READS, through the class default
+        report = PersonaReport(persona=persona, verdict=verdict, tokens=9,
+                               status=PersonaStatus.CONTRIBUTED, findings=[f])
+        if cut_report:
+            del report.__dict__["turns"]
+        if denied is not None:
+            report.denied_tools = denied
+        return report
+    return spawn
+
+
+def _malformed_run(spawn, *, repeat=False, **seams):
+    return _contained(lambda: run(
+        ReviewSpec(why="w", what="x"),
+        HaltingSet(max_epochs=3, stall_patience=1 if repeat else 5), PANEL,
+        spawn=spawn, gather=lambda epoch: "s", parallel=False, **seams))
+
+
+def _copy_refusals(review_run):
+    return [f.detail for e in review_run.epochs for f in e.seam_failures
+            if "could not copy" in f.detail]
+
+
+@pytest.mark.parametrize("cut", [False, True], ids=["control", "finding-missing-a-field"])
+def test_a_malformed_finding_is_never_handed_to_adjudicate_live(cut):
+    """REGRESSION for the review's UGLY: on the first shape an UGLY ``spawn`` finding missing
+    one instance-dict field was handed to ``adjudicate`` live, the downgrade it wrote reached
+    the ledger, and the run halted ``converged`` with nothing recorded. Now the copy is
+    refused, ``adjudicate`` is not called, the finding stays unadjudicated and open, and the
+    breaker fires. The control is GREEN ON MAIN, by design."""
+    review_run = _malformed_run(_malformed_spawn(U, "YES", cut_finding=cut),
+                                adjudicate=_downgrades(True))
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert [f.severity for f in review_run.ledger.values()] == [U]
+    assert bool(_copy_refusals(review_run)) is cut
+
+
+def test_a_malformed_finding_cannot_end_the_run_through_adjudicate():
+    """REGRESSION for the review (R4a, #148): handed the incomplete finding live, an
+    adjudicator deleting ``persona`` made the loop's rebuild raise out of ``run``."""
+    def deletes(finding, surface):  # noqa: ARG001
+        object.__delattr__(finding, "persona")
+        return True
+
+    review_run = _malformed_run(_malformed_spawn(B, "NO", cut_finding=True), adjudicate=deletes)
+
+    assert review_run.halt_reason is HaltReason.EPOCH
+
+
+def _refutes_through_reports(result, review_run):  # noqa: ARG001
+    for report in result.reports:
+        for f in report.findings:
+            f.__dict__["verified"] = False
+    return GateDecision(stop=False)
+
+
+@pytest.mark.parametrize("cut", [False, True], ids=["control", "report-missing-a-field"])
+def test_a_malformed_report_cannot_expose_the_ledgers_findings_to_the_gate(cut):
+    """REGRESSION for the review (R2): one report missing a field was handed to the gate
+    live, and through ``report.findings`` it reached the ledger's OWN complete findings, so
+    a refutation written there converged a run with the same BLOCKER raised every epoch.
+    The control is GREEN ON MAIN only in its halt."""
+    review_run = _malformed_run(_malformed_spawn(B, "YES", cut_report=cut, repeat=True),
+                                repeat=True, human_gate=_refutes_through_reports)
+
+    assert review_run.halt_reason is HaltReason.STALL
+    assert len(_open(review_run, B)) == 1
+
+
+def test_a_malformed_report_cannot_end_the_run_through_the_gate():
+    """REGRESSION for the review (R4b, #148): the gate deleted ``severity`` from a ledger
+    finding it reached through a live report, and the next epoch's snapshot raised."""
+    def deletes(result, review_run):  # noqa: ARG001
+        for report in result.reports:
+            for f in report.findings:
+                object.__delattr__(f, "severity")
+        return GateDecision(stop=False)
+
+    review_run = _malformed_run(_malformed_spawn(B, "NO", cut_report=True), human_gate=deletes)
+
+    assert review_run.halt_reason is HaltReason.EPOCH
+    assert len(_open(review_run, B)) == 3
+
+
+def test_a_mutable_value_spawn_supplied_is_not_shared_with_a_seam():
+    """REGRESSION for the review (R3b): a ``set`` in ``denied_tools`` was shared with the
+    live record, so a checkpoint could rewrite what the run publishes. Now the copy is
+    refused and recorded, and the published value is what ``spawn`` returned."""
+    def writes(review_run):
+        for report in review_run.epochs[-1].reports:
+            report.denied_tools.add("Write")
+
+    review_run = _malformed_run(_malformed_spawn(B, "NO", denied={"Bash"}), checkpoint=writes)
+
+    assert all(r.denied_tools == {"Bash"} for e in review_run.epochs for r in e.reports)
+    assert _copy_refusals(review_run)
