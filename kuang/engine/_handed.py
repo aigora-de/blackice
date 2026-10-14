@@ -58,10 +58,16 @@ keyed by ``id()``, so a backend thread freeing and replacing an object WHILE it 
 could alias the wrong one; that needs a concurrent writer, and main is no less racy there.
 
 **At entry, too (the maintainer's ruling of 2026-10-14).** ``spawn``'s report is copied
-ONCE, as it enters the run (once the whole fan-out has returned, which is when main read
-it), so the record holds only values the engine built, and a backend that kept a
-reference to a report and writes it after that writes nothing the run holds. The entry
-copy starts at ``REPORT_DEPTH``, so a report it admits is admitted by every later copy. A report the engine refuses there is that persona's contained spawn failure
+ONCE, as it enters the run, once the whole fan-out has returned (the latest point at
+which every report exists, and a deterministic one), so the record holds only values the
+engine built. A backend or seam that kept a reference to a report or a finding and
+writes it after that writes nothing the run holds, INCLUDING an UGLY that main, which
+held the live objects for the whole run, would have escalated on: by the rule above, a
+callable's only channel into the run is its return value (the eighth pre-merge review
+measured that no copy point can reproduce main's reads, since main read the ledger's
+live findings at every later epoch). The entry copy starts at ``REPORT_DEPTH``, so a
+report it admits is admitted by every later copy. A report the engine refuses there is
+that persona's contained spawn failure
 (#25), whose finding carries the highest severity the report claimed, or UGLY where what
 it claimed cannot be read (``claimed_severity``), so an UGLY in it still trips the breaker
 and the title says which of the two it is. Refused at every SEAM
@@ -113,9 +119,12 @@ MAX_DEPTH = 64
 # the epoch, ``reports``, the report. The bound is counted from where a copy STARTS, so
 # the entry copy starts here: a report the entry admits is then admitted by every later
 # copy too. Counted from 0, the seventh pre-merge review measured a report nested 60 deep
-# admitted at entry and refused by every later copy, losing the gate for the run. Nothing
-# a report reaches sits deeper in any other copy (``scope_complete``'s epoch holds it at 2,
-# and a cluster's members are findings, which carry only scalars).
+# admitted at entry and refused by every later copy, losing the gate for the run. No
+# copy holds a report deeper (``scope_complete``'s epoch holds it at 2), and since the
+# bound is on the HEIGHT under a value at every visit (see ``_copied``), a value under a
+# report that the entry admits is admitted wherever a later copy reaches it, however the
+# paths to it are ordered: a finding's own field values (an ``evidence`` list, say) sit
+# under the same report in every copy.
 REPORT_DEPTH = 4
 
 
@@ -136,7 +145,7 @@ def handed(value: _T, depth: int = 0) -> _T:
     seam's guard, and the diagnosis says it was the copy, not the seam, that failed.
     """
     try:
-        return _copied(value, {}, depth)
+        return _copied(value, {}, depth)[0]
     except UncopiableRecord:
         raise
     except Exception:  # noqa: BLE001
@@ -151,30 +160,61 @@ def _refused(why: str) -> UncopiableRecord:
     return UncopiableRecord(f"the engine could not copy a record: {why}")
 
 
-def _copied(value, memo: dict[int, object], depth: int):
+def _copied(value, memo: dict[int, list], depth: int):
+    """``(copy, height)``: ``height`` is 0 for an immutable value, else 1 + its tallest child.
+
+    The bound is on depth + height, checked on EVERY visit, first or not (#155): checked on
+    the first visit only, the memo let a value admitted through a short path be reached
+    again through a long one unchecked, so whether it was admitted hung on the order paths
+    were walked, and the eighth pre-merge review measured a value the entry admitted then
+    refused by every later ``adjudicate`` and ``reduce`` copy. A non-scalar at depth ``d``
+    with height ``h`` has its deepest non-scalar at ``d + h - 1``, and that is what is
+    bounded, whichever path reached it. A value reached while it is still being copied
+    contains itself, has no height, and is refused: no record can, so only a hostile
+    ``spawn`` value is.
+    """
     kind = type(value)
     if is_immutable_value(value):
-        return value
-    found = memo.get(id(value))
-    if found is not None:
-        return found
+        return value, 0
+    hit = memo.get(id(value))
+    if hit is not None:
+        copy, height = hit
+        if height is None:
+            raise _refused("a value contains itself")
+        if depth + height - 1 > MAX_DEPTH:
+            raise _refused(f"nested deeper than {MAX_DEPTH}")
+        return copy, height
     if depth > MAX_DEPTH:
         raise _refused(f"nested deeper than {MAX_DEPTH}")
-    depth += 1
+    child = depth + 1
     if kind is list:
         out: list = []
-        memo[id(value)] = out
-        out.extend(_copied(item, memo, depth) for item in value)
-        return out
+        entry = memo[id(value)] = [out, None]
+        tallest = 0
+        for item in value:
+            copied, h = _copied(item, memo, child)
+            out.append(copied)
+            tallest = max(tallest, h)
+        entry[1] = 1 + tallest
+        return out, entry[1]
     if kind is dict:
         table: dict = {}
-        memo[id(value)] = table
+        entry = memo[id(value)] = [table, None]
+        tallest = 0
         for k, v in value.items():
-            table[_copied(k, memo, depth)] = _copied(v, memo, depth)
-        return table
+            ck, hk = _copied(k, memo, child)
+            cv, hv = _copied(v, memo, child)
+            table[ck] = cv
+            tallest = max(tallest, hk, hv)
+        entry[1] = 1 + tallest
+        return table, entry[1]
     if kind is tuple:
-        memo[id(value)] = copied = tuple(_copied(item, memo, depth) for item in value)
-        return copied
+        memo[id(value)] = [None, None]
+        pairs = [_copied(item, memo, child) for item in value]
+        copied = tuple(c for c, _ in pairs)
+        height = 1 + max((h for _, h in pairs), default=0)
+        memo[id(value)] = [copied, height]
+        return copied, height
     base = next((b for b in _RECORDS if kind is b), None)
     if base is None:
         # No type NAME, deliberately: ``type_name`` evaluates ``type(v).__name__``
@@ -195,7 +235,8 @@ def _copied(value, memo: dict[int, object], depth: int):
     if missing:
         raise _refused(f"a {base.__name__} is missing {len(missing)} field(s)")
     record = object.__new__(base)
-    memo[id(value)] = record
+    entry = memo[id(value)] = [record, None]
+    tallest = 0
     for name in names:
         field_value = state[name]
         if base is GateDecision and name == "asked" and not _is_answer(field_value):
@@ -205,8 +246,11 @@ def _copied(value, memo: dict[int, object], depth: int):
             # reading rather than the object, which nothing in the engine reads, so a
             # gate's odd answer at one epoch cannot refuse every later copy of the run.
             field_value = None
-        object.__setattr__(record, name, _copied(field_value, memo, depth))
-    return record
+        copied, h = _copied(field_value, memo, child)
+        object.__setattr__(record, name, copied)
+        tallest = max(tallest, h)
+    entry[1] = 1 + tallest
+    return record, entry[1]
 
 
 class Claim(NamedTuple):

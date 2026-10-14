@@ -482,14 +482,16 @@ def run(
                     # rebuilt, and a gate's foreign ``asked`` is copied as ``None``).
                     #
                     # AFTER the fan-out has joined, never inside a worker: main read
-                    # every report only once all had returned, so a backend that wrote
-                    # into an earlier report from a later ``spawn`` call was read, and
-                    # an UGLY written that way escalated. Copied inside the worker, the
+                    # no report before all had returned, so a backend that wrote into
+                    # an earlier report from a later ``spawn`` call was read, and an
+                    # UGLY written that way escalated. Copied inside the worker, the
                     # seventh pre-merge review measured it lost and the run converged,
-                    # and in parallel the halt depended on thread scheduling. Copied
-                    # here, the engine reads exactly what main read, deterministically.
-                    # Anything a backend writes into a report AFTER this point reaches
-                    # nothing the run holds.
+                    # and in parallel the halt depended on thread scheduling. Here is
+                    # the latest point at which every report exists, and it is
+                    # deterministic. It is NOT everything main read: main held the live
+                    # objects for the whole run, so a write through a kept reference
+                    # after this point reached it; here it reaches nothing the run
+                    # holds, by #155's rule (see ``_handed``).
                     #
                     # A value the engine cannot copy, kept in the record, was measured
                     # refusing EVERY later copy of the run, so the gate was never

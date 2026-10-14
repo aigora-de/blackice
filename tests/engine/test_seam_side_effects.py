@@ -986,7 +986,8 @@ def test_a_subclass_presenting_an_ugly_its_dict_does_not_hold_escalates(shape):
 def test_a_subclass_presenting_a_no_vote_is_not_counted_as_yes():
     """REGRESSION for the fourth review: a report presenting NO over a dict holding YES was
     counted as a YES and a one-persona run converged; main halted ``epoch``. Refused, its
-    subclass claim is unreadable and fails closed, so the run does not converge."""
+    subclass claim is unreadable and fails closed, so the run does not converge. GREEN ON
+    MAIN, by design: it guards the fourth repair's shape, not main."""
     review_run = _contained(lambda: run(
         ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=1), PANEL,
         spawn=_subclassed("report-presents-a-no"), gather=lambda epoch: "s", parallel=False))
@@ -1178,7 +1179,9 @@ def test_a_write_into_an_earlier_report_before_the_fan_out_joins_is_read_as_main
     fan-out had returned, so a backend writing an UGLY into an earlier persona's report
     from a later ``spawn`` call escalated. Copied inside the worker as each returned, the
     branch lost it and converged (and in parallel, the halt hung on thread scheduling).
-    The entry copy is now taken after the join, so it reads exactly what main read."""
+    The entry copy is now taken after the join, the latest point at which every report
+    exists. GREEN ON MAIN, by design: it guards the seventh repair's shape, not main. (A
+    write through a kept reference AFTER the join reaches nothing; that is #155's rule.)"""
     held: dict[str, PersonaReport] = {}
 
     def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
@@ -1209,7 +1212,8 @@ def test_a_report_the_entry_copy_admits_is_admitted_by_every_later_copy(n):
     depth bound counted from wherever a copy started, so a report nested 60-63 deep was
     admitted at entry (depth 0) and refused by every later copy of the run (where it sits
     four levels down), so the gate was never reached and nothing checkpointed. For every
-    nesting either side of the bound: refused at entry, or no later copy refuses it."""
+    nesting either side of the bound: refused at entry, or no later copy refuses it.
+    GREEN ON MAIN, by design: main copied nothing; it guards the seventh repair's shape."""
     gates: list[int] = []
     checkpoints: list[int] = []
 

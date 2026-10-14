@@ -425,3 +425,51 @@ def test_anything_but_an_exact_report_or_an_immutable_value_fails_closed(make):
     it claimed NOTE, while main read its ``findings`` by attribute lookup and escalated.
     Only an immutable scalar claims nothing; anything else is closed."""
     assert claimed_severity(make()) == (Severity.UGLY, False)
+
+
+# --- the bound is on the height under a value, whichever path reaches it first ----------
+
+def _chain(n, tail=None):
+    out: list = [] if tail is None else [tail]
+    for _ in range(n - 1):
+        out = [out]
+    return out
+
+
+def test_a_value_admitted_through_a_short_path_is_bounded_on_a_long_one():
+    """REGRESSION for the eighth review's BLOCKER: the bound was checked on a value's FIRST
+    visit only, so a list reached first through a short path was admitted, and then a
+    copy walking a longer path first (``adjudicate``'s, ``reduce``'s) refused it at every
+    epoch. Whichever path is walked first, the answer is now the same."""
+    shared = _chain(40)
+    short = _finding(1, Severity.NOTE)
+    short.__dict__["evidence"] = shared
+    long = _finding(2, Severity.BLOCKER)
+    long.__dict__["evidence"] = _chain(40, shared)
+
+    def outcome(value):
+        try:
+            handed(value)
+            return "admitted"
+        except UncopiableRecord:
+            return "refused"
+
+    assert outcome([short, long]) == outcome([long, short]) == outcome([long]) == "refused"
+
+
+def test_a_value_that_contains_itself_is_refused():
+    """No record can contain itself, so only a hostile ``spawn`` value can: it has no
+    height to bound, and it is refused rather than copied."""
+    loop: list = []
+    loop.append(loop)
+
+    assert "contains itself" in _refused(PersonaReport("p", denied_tools=loop))
+
+
+def test_a_value_reached_twice_within_the_bound_is_still_one_object():
+    """The bound's other end, and the aliasing it must not cost: a value reached twice,
+    both times within the bound, is copied once and admitted. GREEN UNDER THE SHIM."""
+    shared = _chain(5)
+    copy = handed([shared, [[shared]]])
+
+    assert copy[0] is copy[1][0][0]
