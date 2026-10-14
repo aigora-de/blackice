@@ -659,3 +659,68 @@ def test_a_mutable_value_spawn_supplied_is_not_shared_with_a_seam():
 
     assert all(r.denied_tools == {"Bash"} for e in review_run.epochs for r in e.reports)
     assert _copy_refusals(review_run)
+
+
+# --- refusing runs nothing the refused value carries (the second review) ---------------
+
+def test_refusing_a_value_cannot_run_its_metaclass_and_mask_an_ugly():
+    """REGRESSION for the second pre-merge review's UGLY, introduced by the first repair:
+    the refusal named the value's type through ``type_name``, which evaluates the
+    metaclass's ``__name__``. A payload whose ``__name__`` downgraded the UGLY ``spawn``
+    still held ran INSIDE the copy, and the breaker never fired; main escalated on the same
+    input, because nothing there named the type. The refusal now names nothing it refuses."""
+    kept: list[Finding] = []
+    calls: list[str] = []
+
+    class _Meta(type):
+        @property
+        def __name__(cls):  # noqa: N805
+            calls.append("__name__")
+            for f in kept:
+                object.__setattr__(f, "severity", Severity.NOTE)
+            return "Inert"
+
+    class _Payload(metaclass=_Meta):
+        pass
+
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        f = Finding(persona, "t", U, "c", "a.py", 1, evidence=_Payload())
+        kept.append(f)
+        return PersonaReport(persona=persona, verdict="YES", status=PersonaStatus.CONTRIBUTED,
+                             findings=[f])
+
+    review_run = _malformed_run(spawn, adjudicate=lambda f, s: True)
+
+    assert calls == []
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+
+
+def test_a_foreign_key_in_an_instance_dict_has_no_code_run_by_the_copy():
+    """REGRESSION for the second review: a key whose hash matches a field name had its
+    ``__eq__`` run by the copy's field lookup. Keys are now checked to be exact ``str``
+    before any lookup, and the copy is refused."""
+    calls: list[str] = []
+    armed: list[bool] = []   # inserting the key compares it with "evidence" in SPAWN itself
+
+    class _Key:
+        def __hash__(self):
+            return hash("evidence")
+
+        def __eq__(self, other):
+            if armed:
+                calls.append("__eq__")
+            return False
+
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        f = Finding(persona, "t", B, f"c{epoch}", "a.py", epoch)
+        armed.clear()
+        f.__dict__[_Key()] = "x"
+        armed.append(True)
+        return PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                             findings=[f])
+
+    review_run = _malformed_run(spawn, adjudicate=lambda f, s: True)
+
+    assert calls == []
+    assert review_run.halt_reason is HaltReason.EPOCH
+    assert _copy_refusals(review_run)

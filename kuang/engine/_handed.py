@@ -18,15 +18,18 @@ lesson). So:
 
 * a record is matched by ``issubclass(type(value), base)``, never ``isinstance``, which can
   consult a foreign ``__class__``;
-* its fields are read from an instance dict that must be an EXACT ``dict``, through the
-  BASE class's own descriptor, so no property, ``__getattr__``, ``__getattribute__`` or
-  dict-subclass hook a subclass defines is called;
+* its fields are read from an instance dict that must be an EXACT ``dict`` keyed by EXACT
+  ``str``, through the BASE class's own descriptor, so no property, ``__getattr__``,
+  ``__getattribute__``, dict-subclass hook or foreign key's ``__eq__`` is called;
 * it is rebuilt as the BASE class without calling ``__init__``, so a subclass's extra
   state is dropped, as #129's ``GateDecision`` is re-made;
 * a container is copied at an exact ``list``, ``tuple`` or ``dict`` type;
 * every other value must be an immutable scalar of an exact type (``str``, ``int``,
   ``float``, ``bool``, ``None``, or one of the engine's own enums), so sharing it shares
   nothing a seam can write.
+
+Nothing about a refused value is rendered into the refusal: its detail is a fixed string
+naming the engine's own record class, so refusing runs no code the value carries.
 
 **Copied, or refused: never handed live.** Anything else (a record missing a field, a set,
 a container subclass, a foreign object, a structure nested deeper than ``MAX_DEPTH``) raises
@@ -53,7 +56,10 @@ running through a tuple would be copied unaliased; no record can form one.
 value ``spawn`` returned is a return value (#25): a backend that keeps a reference to a
 report it returned and writes it later is that door, not this one, and so is a finding so
 malformed that the engine's own reads of it raise before any seam is called. A seam that
-keeps its COPY and writes it later writes nothing the engine reads. ``adjudicate`` is
+keeps its COPY and writes it later writes nothing the engine reads. A value that cannot be
+copied, once it is in the run's record, is in every later copy of the run too, so EVERY
+later ``checkpoint`` and gate copy is refused for the rest of the run: recorded at each
+epoch, and bounded by ``max_epochs``, but the gate is not reached again. ``adjudicate`` is
 still handed the live ``surface``: it is opaque to the engine (``ReviewSurface = object``),
 the run does not store it, and nothing the engine decides reads it.
 """
@@ -65,7 +71,7 @@ from typing import TypeVar
 
 from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport,
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
-                       SurfaceFailure, render_exception, type_name)
+                       SurfaceFailure)
 from .halting import HaltReason
 from .protocols import GateDecision
 
@@ -99,10 +105,12 @@ def handed(value: _T) -> _T:
         return _copied(value, {}, 0)
     except UncopiableRecord:
         raise
-    except Exception as exc:  # noqa: BLE001
-        raise UncopiableRecord(
-            f"the engine could not copy what it hands this seam: {render_exception(exc)}"
-        ) from None
+    except Exception:  # noqa: BLE001
+        # Unreachable by construction: every check above runs only the engine's own code,
+        # so nothing here can raise but a refusal. Kept so that a defect in this module is
+        # still recorded as the COPY failing, never against a seam that was not called,
+        # and with a fixed string, so even then nothing the value carries is rendered.
+        raise _refused("an unexpected error") from None
 
 
 def _refused(why: str) -> UncopiableRecord:
@@ -135,10 +143,19 @@ def _copied(value, memo: dict[int, object], depth: int):
         return copied
     base = next((b for b in _RECORDS if issubclass(kind, b)), None)
     if base is None:
-        raise _refused(f"a {type_name(value)} is neither a record nor an immutable value")
+        # No type NAME, deliberately: ``type_name`` evaluates ``type(v).__name__``
+        # through the metaclass (#142's fidelity rule), which is foreign code. The
+        # second pre-merge review measured a metaclass ``__name__`` downgrading an UGLY
+        # from inside this very message, and the breaker never fired.
+        raise _refused("a value is neither a record nor an immutable value")
     state = _INSTANCE_DICT[base].__get__(value, base)
     if type(state) is not dict:
         raise _refused(f"a {base.__name__}'s attributes are not a plain dict")
+    # Every key an exact ``str`` BEFORE any lookup: a foreign key whose hash matches a
+    # field name would otherwise have its ``__eq__`` run by ``name in state``. The name
+    # interpolated here and below is the engine's OWN class's, never the value's.
+    if not all(type(key) is str for key in state):
+        raise _refused(f"a {base.__name__}'s attributes have a key that is not a str")
     names = _FIELDS[base]
     missing = [name for name in names if name not in state]
     if missing:
