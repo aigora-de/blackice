@@ -103,8 +103,9 @@ def test_the_shipped_parser_never_produces_a_report_the_copy_refuses(reply):
     """The mirror image of the entry refusal (#155): a rule that refused what the SHIPPED
     backend produces would fail every persona of a healthy run closed. A sample of well-
     and ill-formed replies through the real parser, each copied, equal, and not the same
-    object. GREEN ON MAIN only in the sense that main never copied: there is no refusal to
-    fire. The pre-merge reviews fuzzed thousands more; this pins a sample in the suite."""
+    object. Red under the red-on-main shim only because the shim hands the live object back
+    (``copy is not report``). The pre-merge reviews fuzzed thousands more; this pins a
+    sample in the suite."""
     report = parse_findings("p", reply)
 
     copy = handed(report)

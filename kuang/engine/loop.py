@@ -399,6 +399,14 @@ def run(
     """
     review_run = ReviewRun()
     quorum = panel.effective_quorum
+    # A persona's NAME is the one value the engine itself writes into the record from its
+    # caller (a contained spawn failure's ``persona``), so it must be one the copy can keep
+    # (#155): the sixth pre-merge review measured a ``StrEnum`` name refusing every later
+    # copy of the run, and every report a healthy spawn returned under it. Checked here,
+    # before anything is spent, so it is an operator error that propagates (#18), as the
+    # first ``clock()`` below is. The shipped CLI's names are always exact ``str``.
+    if not all(type(name) is str for name, _ in panel.personas):
+        raise TypeError("every persona name in the panel must be an exact str")
     # NOT guarded, deliberately (#148): this precedes any spend, so a raise loses nothing,
     # which is #18's doctrine as ``gather`` applies it with no completed epoch. Guarding it
     # for symmetry would fabricate a run in which nothing happened. ``float`` here so a
@@ -464,13 +472,15 @@ def run(
                 # Copied ONCE, here, as it enters the run (#155, by the maintainer's
                 # ruling of 2026-10-14), so the run's record holds only values the
                 # engine built (a reduce's cluster titles are checked where they are
-                # rebuilt, and a gate's foreign ``asked`` is copied as ``None``). A value the engine cannot copy, kept in the record,
-                # was measured refusing EVERY later copy of the run, so the gate was
+                # rebuilt, and a gate's foreign ``asked`` is copied as ``None``). A
+                # value the engine cannot copy, kept in the record, was measured
+                # refusing EVERY later copy of the run, so the gate was
                 # never reached again; refused here, it costs this persona's report
                 # and nothing after it. And a backend that kept a reference to what it
                 # returned and wrote it later now writes nothing the run holds. What
-                # comes back must be a ``PersonaReport`` (the copy rebuilds a
-                # subclass as the base), or the spawn has failed like any other.
+                # comes back must be exactly a ``PersonaReport`` (the copy refuses a
+                # subclass, and copies any other exact record it is given), or the
+                # spawn has failed like any other.
                 returned = spawn(pm[0], pm[1], surface, epoch)
                 report = handed(returned)
                 if type(report) is not PersonaReport:
@@ -608,7 +618,8 @@ def run(
         # taken before the halting inputs too. Neither read raises on any value a seam
         # wrote into a finding's severity or verdict (see ``ReviewRun.open_uglies``).
         # Since #155 no seam is handed the ledger's own findings at all, so no seam's
-        # write reaches this snapshot, this epoch's or the next: ``reduce``,
+        # write through what it is handed reaches this snapshot, this epoch's or the next
+        # (a seam reaching into this frame is outside any in-process guarantee): ``reduce``,
         # ``scope_complete``, ``checkpoint`` and the gate are handed copies, and the
         # ledger entry ``adjudicate`` verified is built from the finding it never held.
         # The snapshot is kept: it is what makes the breaker independent of ``reduce``'s

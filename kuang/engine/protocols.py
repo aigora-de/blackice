@@ -145,7 +145,8 @@ class HumanGate(Protocol):
     a subclass carrying its own state has that state dropped. An implementation
     needing to record something of its own has no channel here; #130 removed the one
     that existed. What it is HANDED is a copy (#155): one copy of the run, with
-    ``result`` as that copy's newest epoch, so writing either reaches nothing.
+    ``result`` as that copy's newest epoch, so writing either reaches nothing the run
+    holds.
     """
 
     def __call__(self, result: EpochResult, run: ReviewRun) -> GateDecision: ...

@@ -853,7 +853,9 @@ def test_a_foreign_key_in_an_instance_dict_has_no_code_run_by_the_copy():
     review_run = _malformed_run(spawn, adjudicate=lambda f, s: True)
 
     assert calls == []
-    assert review_run.halt_reason is HaltReason.NO_REVIEW
+    # A dict with a foreign key is not read at all: the claim is closed, so the run
+    # escalates, and the title says it was not read.
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
     assert _refused_at_entry(review_run)
 
 
@@ -914,6 +916,8 @@ def test_an_adjudicator_cannot_refute_a_refused_reports_ugly():
 
     review_run = _malformed_run(_refused_ugly("tokens"), panel=PAIR_QUORUM_ONE,
                                 adjudicate=adjudicate)
+    # GREEN ON MAIN in its halt, by design: main adjudicated the panel's own (readable)
+    # UGLY, which this adjudicator confirms. It guards the third repair's shape.
 
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
     assert True not in seen
@@ -986,6 +990,8 @@ def test_a_subclass_presenting_a_no_vote_is_not_counted_as_yes():
         ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=1), PANEL,
         spawn=_subclassed("report-presents-a-no"), gather=lambda epoch: "s", parallel=False))
 
+    # GREEN ON MAIN, by design (main read the NO and halted ``epoch``): it guards the
+    # fourth repair's shape, which counted the stale YES.
     assert review_run.halt_reason is not HaltReason.CONVERGED
 
 
@@ -1041,6 +1047,8 @@ def test_an_ugly_presented_by_a_findings_container_subclass_escalates():
     panel = PanelConfig(personas=[("p", "m"), ("q", "m"), ("r", "m")], quorum=2)
     review_run = _malformed_run(spawn, panel=panel)
 
+    # GREEN ON MAIN, by design (main iterated it and escalated): it guards the fifth
+    # repair's shape, which read the empty storage.
     assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
 
 
@@ -1082,3 +1090,80 @@ def test_the_engines_own_reduce_keeps_a_title_of_none():
     review_run = _malformed_run(spawn)
 
     assert _seams(review_run) == [[], [], []]
+
+
+# --- the sixth review: a duck-typed report, main's own rebuild, a persona name ----------
+
+class _Duck:
+    """Has every field a report has, and main reads them by attribute lookup."""
+
+    def __init__(self, persona, findings, verdict):
+        self.persona, self.findings, self.verdict = persona, findings, verdict
+        self.tokens, self.turns = 0, 0
+        self.unresolved_severities, self.denied_tools = [], []
+        self.unresolved_verdict = None
+        self.status = PersonaStatus.CONTRIBUTED
+
+    counted_vote = PersonaReport.counted_vote
+
+
+def test_a_duck_typed_report_carrying_an_ugly_escalates():
+    """REGRESSION for the sixth review's UGLY: "not a report" claimed NOTE, so a quorum of
+    one voted past a duck-typed report whose UGLY main read by attribute and escalated on.
+    Anything but an exact report or an immutable value is now closed."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        if persona == "p":
+            return _Duck("p", [Finding("p", "ruin", U, "c", "a.py", 1)], "NO")
+        return PersonaReport(persona="q", verdict="YES", status=PersonaStatus.FOUND_NOTHING)
+
+    review_run = _malformed_run(spawn, panel=PAIR_QUORUM_ONE)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+    assert _refused_at_entry(review_run)
+
+
+class _Rebuilds(dict):
+    """What main's ``{**f.__dict__}`` rebuild reads: its own ``keys`` and ``__getitem__``."""
+
+    def keys(self):
+        return list(dict.keys(self))
+
+    def __getitem__(self, key):
+        return U if key == "severity" else dict.__getitem__(self, key)
+
+
+def test_a_finding_whose_rebuild_main_reads_through_dict_hooks_does_not_lose_its_ugly():
+    """REGRESSION for the sixth review's BLOCKER: main's adjudicated rebuild runs a dict
+    subclass's hooks and escalated on the UGLY they present; the previous shape read the
+    BLOCKER in storage and the breaker never fired. Closed, so it escalates."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        f = Finding(persona, "t", B, "c", "a.py", 1)
+        object.__setattr__(f, "__dict__", _Rebuilds(f.__dict__))
+        return PersonaReport(persona=persona, verdict="YES", status=PersonaStatus.CONTRIBUTED,
+                             findings=[f])
+
+    review_run = _malformed_run(spawn)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+
+
+class _Lens(str):
+    """A persona name that is a ``str`` subclass, as a ``StrEnum`` member is."""
+
+
+def test_a_persona_name_the_copy_cannot_keep_is_an_operator_error_before_any_spend():
+    """REGRESSION for the sixth review's BAD: a ``str``-subclass persona name was written
+    into the record by the engine itself and refused every later copy, and every report a
+    healthy spawn returned under it. Now refused before anything is spent (#18), and
+    ``spawn`` is never called. Red on main, which accepted it."""
+    calls: list[str] = []
+
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        calls.append(persona)
+        return PersonaReport(persona=persona, verdict="YES", status=PersonaStatus.FOUND_NOTHING)
+
+    with pytest.raises(TypeError):
+        run(ReviewSpec(why="w", what="x"), HaltingSet(max_epochs=1),
+            PanelConfig(personas=[(_Lens("p"), "m")]), spawn=spawn,
+            gather=lambda epoch: "s", parallel=False)
+    assert calls == []

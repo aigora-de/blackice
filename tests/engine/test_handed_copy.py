@@ -297,12 +297,16 @@ def test_a_container_subclass_of_claims_fails_closed_without_its_hook_running(ho
     assert claimed_severity(report) == (Severity.UGLY, False)
 
 
-def test_a_finding_whose_instance_dict_is_a_dict_subclass_is_read_without_its_hooks():
-    """REGRESSION for the third review's UGLY, the dict-subclass shape."""
-    f = _finding(1, Severity.UGLY)
+@pytest.mark.parametrize("severity", [Severity.NOTE, Severity.UGLY], ids=["note", "ugly"])
+def test_a_finding_whose_instance_dict_is_a_dict_subclass_fails_closed(severity):
+    """REGRESSION for the third review's UGLY (the dict-subclass shape lost an UGLY) and the
+    sixth review's BLOCKER: main's adjudicated rebuild reads ``{**f.__dict__}``, which runs
+    a dict subclass's own ``keys`` and ``__getitem__``, so storage is not what main acts
+    on. Closed whatever the storage holds, and none of ``_Dict``'s hooks runs."""
+    f = _finding(1, severity)
     object.__setattr__(f, "__dict__", _Dict(f.__dict__))
 
-    assert claimed_severity(_report_of(f)) == (Severity.UGLY, True)
+    assert claimed_severity(_report_of(f)) == (Severity.UGLY, False)
 
 
 def test_the_highest_readable_claim_is_carried():
@@ -395,10 +399,28 @@ def test_a_report_with_no_findings_attribute_fails_closed():
 
 def test_a_colliding_foreign_key_beside_the_severity_has_no_code_run():
     """The third review's surviving mutation M6: a key whose hash matches ``severity`` had
-    its ``__eq__`` run by a ``.get``. Keys are compared only once they are exact ``str``."""
+    its ``__eq__`` run by a ``.get``. A dict with a key that is not an exact ``str`` is not
+    read at all: closed, and the key's ``__eq__`` never runs."""
     f = _finding(1, Severity.UGLY)
     key = _CollidingKey()
     f.__dict__[key] = "x"
     key.armed = True
 
-    assert claimed_severity(_report_of(f)) == (Severity.UGLY, True)
+    assert claimed_severity(_report_of(f)) == (Severity.UGLY, False)
+
+
+class _DuckReport:
+    """Not a ``PersonaReport``, but main reads ``.findings`` off it all the same."""
+
+    def __init__(self):
+        self.findings = [_finding(1, Severity.UGLY)]
+
+
+@pytest.mark.parametrize("make", [_DuckReport, lambda: _finding(1, Severity.UGLY),
+                                  lambda: [_finding(1, Severity.UGLY)]],
+                         ids=["duck-report", "a-finding", "a-list"])
+def test_anything_but_an_exact_report_or_an_immutable_value_fails_closed(make):
+    """REGRESSION for the sixth review's UGLY: a duck-typed report was "not a report", so
+    it claimed NOTE, while main read its ``findings`` by attribute lookup and escalated.
+    Only an immutable scalar claims nothing; anything else is closed."""
+    assert claimed_severity(make()) == (Severity.UGLY, False)

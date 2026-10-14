@@ -53,7 +53,9 @@ twice is copied once, so a ledger ``Finding`` that is also in ``new_findings`` a
 cluster's ``members`` is still one object in the copy. Nothing shipped relies on that, as
 every match is by ``key``, but a copy that changed it would hand a reading seam a different
 structure from today's. A tuple enters the memo only once its members are built, so a cycle
-running through a tuple would be copied unaliased; no record can form one.
+running through a tuple would be copied unaliased; no record can form one. The memo is
+keyed by ``id()``, so a backend thread freeing and replacing an object WHILE it is copied
+could alias the wrong one; that needs a concurrent writer, and main is no less racy there.
 
 **At entry, too (the maintainer's ruling of 2026-10-14).** ``spawn``'s report is copied
 ONCE, as it enters the run, so the record holds only values the engine built, and a
@@ -219,62 +221,48 @@ def claimed_severity(returned: object) -> Claim:
     quorum below its size could vote the run ``converged`` where main had escalated. So
     the failure's own finding carries the highest severity the report claimed.
 
-    **Fails closed, by the maintainer's ruling of 2026-10-14.** A claim whose severity
-    cannot be read is UGLY, never NOTE: whether an UGLY is open is then UNKNOWN, and #148's
-    rule is that an unknown is never read as a measurement, so the breaker fires rather
-    than a quorum voting past it. Unreadable includes a report or finding that is a
-    SUBCLASS: what it presents can come from its own properties, which the engine will not
-    run, and its instance dict can hold something else entirely (the fourth pre-merge
-    review measured a subclass presenting an UGLY over a dict holding none, converging a
-    run main escalated). A return that is not a report at all, or a report claiming no
-    findings, claims nothing, and is NOTE. No healthy run reaches this: the shipped
-    backend's output is never refused: measured by the fourth and fifth pre-merge reviews
-    over thousands of fuzzed replies, and pinned on a sample by
-    ``tests/backends/claude_code/test_handed_prior_context.py``.
+    **Closed by default (the maintainer's ruling of 2026-10-14: fail closed).** A claim is
+    READ only through exactly the shapes the copy itself accepts, all of them the engine's
+    own: an exact ``PersonaReport`` whose instance dict is an exact ``dict`` keyed by exact
+    ``str``, whose ``findings`` is an exact ``list`` or ``tuple``, of exact ``Finding``s with
+    exact-``dict`` instance dicts, whose ``severity`` is one of the engine's enum members by
+    identity. In those shapes what the storage holds IS what main reads, and reading it runs
+    nothing the value carries. ANYTHING else that could carry a claim is UGLY, unread:
+    whether an UGLY is open is then unknown, and #148's rule is that an unknown is never
+    read as a measurement. Only an immutable scalar (``None``, a ``str``, an ``int`` ...)
+    claims nothing, and is NOTE: main reads no findings off one either.
 
-    **One rule: read exactly what main would act on, and where that value can be obtained
-    only by running code the value carries, fail closed.** Main walks ``findings`` with
-    ``for f in report.findings`` and reads ``f.severity`` by attribute lookup, so:
-
-    * a ``findings`` that is an exact ``list`` or ``tuple`` is read through its storage,
-      which is what iterating it yields; a container SUBCLASS is iterated by main through
-      its own ``__iter__``, so it is closed;
-    * a report or finding of an exact class is read through that class's own instance-dict
-      descriptor, and a ``severity`` that is not one of the engine's enum members by
-      identity is closed; a record SUBCLASS can present through its own properties, so it
-      is closed;
-    * an instance dict that is a ``dict`` SUBCLASS is read through ``dict.items``, its
-      storage, which is also what main's attribute lookup reads, so it is read, with keys
-      compared only once they are exact ``str``.
-
-    Two pre-merge reviews each measured an UGLY lost where this function read storage that
-    main did not (a record subclass's dict; a list subclass's ``__iter__``).
+    Why closed by default rather than "read what main reads": five pre-merge reviews in
+    succession each found one more shape where reading storage the way main would was not
+    what main did (a record subclass's properties, a list subclass's ``__iter__``, a duck-
+    typed report, a dict subclass's ``__getitem__`` reached by main's own rebuild). Matching
+    main case by case is an open surface; refusing to read anything but the engine's exact
+    shapes is a closed one, and the cost lands only on reports no healthy run produces:
+    the shipped backend's output is never refused (measured by the pre-merge reviews over
+    thousands of fuzzed replies, and pinned on a sample by
+    ``tests/backends/claude_code/test_handed_prior_context.py``).
     """
     closed = Claim(Severity.UGLY, read=False)
     try:
+        if is_immutable_value(returned):
+            return Claim(Severity.NOTE, read=True)
         if type(returned) is not PersonaReport:
-            return closed if issubclass(type(returned), PersonaReport) else Claim(
-                Severity.NOTE, read=True)
-        state = _INSTANCE_DICT[PersonaReport].__get__(returned, PersonaReport)
-        found, findings = _stored(state, "findings")
-        if not found:
             return closed
-        if type(findings) is list:
-            claims = list(list.__iter__(findings))
-        elif type(findings) is tuple:
-            claims = list(tuple.__iter__(findings))
-        else:
-            # A container SUBCLASS is walked by main through its own ``__iter__``, which
-            # can present findings its storage does not hold (the fifth pre-merge review
-            # measured an UGLY presented that way lost here, read from storage, and the
-            # run converging where main escalated). Closed.
+        state = _INSTANCE_DICT[PersonaReport].__get__(returned, PersonaReport)
+        if not _plain(state) or "findings" not in state:
+            return closed
+        findings = state["findings"]
+        if type(findings) is not list and type(findings) is not tuple:
             return closed
         highest = Severity.NOTE
-        for f in claims:
+        for f in findings:
             if type(f) is not Finding:
                 return closed
-            found, severity = _stored(_INSTANCE_DICT[Finding].__get__(f, Finding), "severity")
-            if not found or not any(severity is s for s in Severity):
+            fstate = _INSTANCE_DICT[Finding].__get__(f, Finding)
+            if not _plain(fstate) or "severity" not in fstate:
+                return closed
+            severity = fstate["severity"]
+            if not any(severity is s for s in Severity):
                 return closed
             if severity > highest:
                 highest = severity
@@ -285,14 +273,9 @@ def claimed_severity(returned: object) -> Claim:
         return closed
 
 
-def _stored(state: object, name: str) -> tuple[bool, object]:
-    """``state[name]`` from an instance dict, read through ``dict.items``: no hook runs."""
-    if not issubclass(type(state), dict):
-        return False, None
-    for key, value in dict.items(state):
-        if type(key) is str and key == name:
-            return True, value
-    return False, None
+def _plain(state: object) -> bool:
+    """An exact ``dict`` keyed only by exact ``str``: lookups in it run nothing foreign."""
+    return type(state) is dict and all(type(key) is str for key in state)
 
 
 def _is_answer(value: object) -> bool:

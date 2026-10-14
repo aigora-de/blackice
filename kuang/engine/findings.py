@@ -300,7 +300,9 @@ class Cluster:
     what the published per-epoch counts read, so a withdrawn UGLY is not counted open.
     The halt itself reads a snapshot of the ledger (#150). These counts agree with it
     in zero-ness because the loop admits only clusters that partition the ledger, and
-    since #155 no seam can write the epoch's record or a finding the run holds.
+    since #155 no seam can write the epoch's record or a finding the run holds through
+    anything it is handed (a seam reaching into the loop's own frame is outside any
+    in-process guarantee, on main as here).
     """
 
     members: tuple[Finding, ...]
@@ -862,8 +864,8 @@ class ReviewRun:
         # wrote into a finding's severity or verdict, and a withdrawn entry's severity is
         # never read, as main's cluster counts never read it (the third pre-merge review
         # measured the reverse order raising on a gate's duck-typed ledger entry). Since
-        # #155 no seam can write a finding the ledger holds, so the order guards the read
-        # itself rather than a reachable state.
+        # #155 no seam can write a finding the ledger holds through anything it is handed,
+        # so the order guards the read itself rather than a state a seam can reach that way.
         return [f for f in self.ledger.values()
                 if f.counts_open and f.severity is Severity.UGLY]
 
