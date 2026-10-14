@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import pytest
 
-from kuang.engine import (Finding, GateDecision, HaltingSet, HaltReason, PanelConfig,
-                          PersonaReport, PersonaStatus, ReviewRun, ReviewSpec, Severity, run)
+from kuang.engine import (Cluster, Finding, GateDecision, HaltingSet, HaltReason,
+                          PanelConfig, PersonaReport, PersonaStatus, ReviewRun, ReviewSpec,
+                          Severity, run)
 import kuang.engine.loop as loop_module
 from kuang.engine.reduce import _identity_reduce
 
@@ -1014,3 +1015,70 @@ def test_a_spawn_that_raises_is_titled_exactly_as_before():
     (failure,) = review_run.ledger.values()
     assert failure.title == "persona failed: RuntimeError: down"
     assert failure.severity is Severity.NOTE
+
+
+# --- a container that presents what it does not store; a title the copy cannot keep -----
+
+class _PresentsFindings(list):
+    def __init__(self, shown):
+        super().__init__([])
+        self.shown = shown
+
+    def __iter__(self):
+        return iter(self.shown)
+
+
+def test_an_ugly_presented_by_a_findings_container_subclass_escalates():
+    """REGRESSION for the fifth review's UGLY: main walks ``findings`` through its own
+    ``__iter__`` and escalated; the previous shape read the empty storage, claimed nothing,
+    and a quorum-of-two-of-three panel converged."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        if persona == "p":
+            return PersonaReport(persona="p", verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                                 findings=_PresentsFindings([Finding("p", "ruin", U, "c")]))
+        return PersonaReport(persona=persona, verdict="YES", status=PersonaStatus.FOUND_NOTHING)
+
+    panel = PanelConfig(personas=[("p", "m"), ("q", "m"), ("r", "m")], quorum=2)
+    review_run = _malformed_run(spawn, panel=panel)
+
+    assert review_run.halt_reason is HaltReason.ESCALATE_UGLY
+
+
+class _Title(str):
+    pass
+
+
+def test_a_cluster_title_the_copy_cannot_keep_is_a_failed_reduce_not_a_lost_gate():
+    """REGRESSION for the fifth review's BLOCKER: a ``reduce`` titling a cluster with a
+    ``str`` subclass put it in the run's record, and every later copy of the run was
+    refused, so the gate was never reached again and nothing was checkpointed. Now the
+    reduce has failed (recorded), the identity follows, and the gate is reached."""
+    gates: list[int] = []
+
+    def reduce(findings):
+        return [Cluster(members=c.members, title=_Title(c.title))
+                for c in _identity_reduce(list(findings))]
+
+    def gate(result, review_run):  # noqa: ARG001
+        gates.append(result.index)
+        return GateDecision(stop=False)
+
+    review_run = _malformed_run(_malformed_spawn(B, "NO"), reduce=reduce, human_gate=gate)
+
+    assert gates == [1, 2]
+    assert _seams(review_run) == [["reduce"]] * 3
+    assert all(type(c.title) is str for c in review_run.clusters)
+
+
+def test_the_engines_own_reduce_keeps_a_title_of_none():
+    """GREEN ON MAIN, by design: the mirror image of the test above, measured on its first
+    shape (an exact-``str`` rule): a ``spawn`` finding titled ``None`` is admitted by the
+    copy, so the identity reduce's title is ``None``, and the engine's own reduce must never
+    be recorded as a failure for carrying it."""
+    def spawn(persona, mandate, surface, epoch):  # noqa: ARG001
+        return PersonaReport(persona=persona, verdict="NO", status=PersonaStatus.CONTRIBUTED,
+                             findings=[Finding(persona, None, B, f"c{epoch}", "a.py", epoch)])
+
+    review_run = _malformed_run(spawn)
+
+    assert _seams(review_run) == [[], [], []]

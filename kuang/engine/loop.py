@@ -70,7 +70,8 @@ from .findings import (Cluster, EpochResult, Finding, GateFailure, PersonaReport
                        PersonaStatus, ReviewRun, SeamFailure, Severity, Suppression,
                        SurfaceFailure, bounded_diagnosis, render_exception,
                        repr_exception, type_name)
-from ._handed import Claim, UncopiableRecord, claimed_severity, handed
+from ._handed import (Claim, UncopiableRecord, claimed_severity, handed,
+                      is_immutable_value)
 from .halting import HaltingSet, HaltReason, _evaluate_halt
 from .protocols import (Adjudicate, GateDecision, GatherSurface, HumanGate,
                         Reduce, ReviewSurface, SpawnPersona)
@@ -258,9 +259,22 @@ def _rebuilt_clusters(returned: object, ledger: dict[str, Finding]) -> list[Clus
     question, so ``Cluster.title``'s annotation is a contract on reducers, not a
     guarantee this function adds. A member the ledger does not hold is a ``KeyError`` here, never a phantom
     finding. A reduce that leaves a ledger finding OUT is ``_as_partition``'s to refuse.
+
+    **Except where it is a value the copy cannot share (#155).** The title is stored in
+    the run's record (``EpochResult.new_clusters``), so a ``str`` subclass kept there was
+    in every later copy of the run, and each was refused: the fifth pre-merge review
+    measured the gate never reached again and nothing checkpointed. Such a title is a
+    failed reduce, recorded, and the identity follows. The rule is the COPY's
+    (``is_immutable_value``: an exact ``str``, ``None`` or other exact scalar), not "a
+    ``str``": the identity reduce's titles are a ledger finding's, which the copy admitted
+    by that same rule, so the engine's own reduce can never fail it (the objection
+    above, which an exact-``str`` rule reopened, measured on this repair's first shape).
     """
-    return [Cluster(members=tuple(ledger[m.key] for m in c.members), title=c.title)
-            for c in returned]  # type: ignore[attr-defined]
+    clusters = [Cluster(members=tuple(ledger[m.key] for m in c.members), title=c.title)
+                for c in returned]  # type: ignore[attr-defined]
+    if not all(is_immutable_value(c.title) for c in clusters):
+        raise TypeError("reduce returned a cluster title the engine cannot keep")
+    return clusters
 
 
 def _as_partition(clusters: list[Cluster], ledger: dict[str, Finding]) -> list[Cluster]:
@@ -449,7 +463,8 @@ def run(
             try:
                 # Copied ONCE, here, as it enters the run (#155, by the maintainer's
                 # ruling of 2026-10-14), so the run's record holds only values the
-                # engine built. A value the engine cannot copy, kept in the record,
+                # engine built (a reduce's cluster titles are checked where they are
+                # rebuilt, and a gate's foreign ``asked`` is copied as ``None``). A value the engine cannot copy, kept in the record,
                 # was measured refusing EVERY later copy of the run, so the gate was
                 # never reached again; refused here, it costs this persona's report
                 # and nothing after it. And a backend that kept a reference to what it

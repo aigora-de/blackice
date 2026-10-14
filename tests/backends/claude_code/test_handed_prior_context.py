@@ -21,10 +21,12 @@ from __future__ import annotations
 import pytest
 
 import kuang.engine.loop as loop_module
+from kuang.backends.claude_code.contract import parse_findings
 from kuang.backends.claude_code.memory import epoch_summary, ungrounded_keys
 from kuang.backends.claude_code.spawn import UNGROUNDED_TURNS
 from kuang.engine import (EpochResult, Finding, HaltingSet, PanelConfig, PersonaReport,
                           PersonaStatus, ReviewRun, ReviewSpec, Severity, run)
+from kuang.engine._handed import handed
 
 
 def _spawn(persona, mandate, surface, epoch):  # noqa: ARG001
@@ -79,3 +81,32 @@ def test_the_fixture_can_express_the_axis(field):
 
     assert "[ungrounded]" in whole
     assert "[ungrounded]" not in _memory(review_run)
+
+
+_REPLIES = [
+    "no contract at all",
+    "```json\n{}\n```",
+    "```json\n[]\n```",
+    '```json\n{"verdict": "YES", "findings": []}\n```',
+    '```json\n{"verdict": "NO", "findings": [{"title": "t", "severity": "UGLY", '
+    '"claim_class": "c", "file": "a.py", "line": 7, "evidence": "e"}]}\n```',
+    '```json\n{"verdict": "maybe", "findings": [{"title": 3, "severity": "SEVERE", '
+    '"claim_class": null, "file": ["x"], "line": "~42"}, "not an object", null]}\n```',
+    '```json\n{"verdict": ["NO"], "findings": {"title": "t"}}\n```',
+    '```json\n{"verdict": "NO", "findings": [{"title": "t", "severity": "blocker", '
+    '"claim_class": "c", "file": "None", "line": true}]}\n```',
+]
+
+
+@pytest.mark.parametrize("reply", _REPLIES)
+def test_the_shipped_parser_never_produces_a_report_the_copy_refuses(reply):
+    """The mirror image of the entry refusal (#155): a rule that refused what the SHIPPED
+    backend produces would fail every persona of a healthy run closed. A sample of well-
+    and ill-formed replies through the real parser, each copied, equal, and not the same
+    object. GREEN ON MAIN only in the sense that main never copied: there is no refusal to
+    fire. The pre-merge reviews fuzzed thousands more; this pins a sample in the suite."""
+    report = parse_findings("p", reply)
+
+    copy = handed(report)
+
+    assert copy == report and copy is not report

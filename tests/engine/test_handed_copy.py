@@ -268,15 +268,33 @@ def _report_of(*findings, holder=list):
     return report
 
 
-@pytest.mark.parametrize("holder", [list, tuple, _Seq], ids=["list", "tuple", "list-subclass"])
-def test_a_refused_reports_ugly_is_read_through_any_list_or_tuple(holder):
+@pytest.mark.parametrize("holder", [list, tuple], ids=["list", "tuple"])
+def test_a_refused_reports_ugly_is_read_through_a_list_or_tuple(holder):
     """REGRESSION for the third review's UGLY (the ``list`` case is the CONTROL, green on
-    the shape before it): the first shape read only an exact ``list``
-    and returned NOTE for a tuple or a list subclass, so a quorum-below-panel run converged
-    on an UGLY main escalated. Read through the underlying storage, no hook runs."""
+    the shape before it): the first shape read only an exact ``list`` and returned NOTE for
+    a tuple, so a quorum-below-panel run converged on an UGLY main escalated."""
     report = _report_of(_finding(1, Severity.NOTE), _finding(2, Severity.UGLY), holder=holder)
 
     assert claimed_severity(report) == (Severity.UGLY, True)
+
+
+class _Presents(list):
+    """Presents an UGLY through ``__iter__`` over storage holding none."""
+
+    def __iter__(self):
+        return iter([_finding(9, Severity.UGLY)])
+
+
+@pytest.mark.parametrize("holder", [_Seq, _Presents], ids=["hook-raises", "hook-presents"])
+def test_a_container_subclass_of_claims_fails_closed_without_its_hook_running(holder):
+    """REGRESSION for the fifth review's UGLY: the previous shape read a list subclass's
+    STORAGE, which is not what main iterates (its own ``__iter__``), so an UGLY presented
+    that way over empty storage was read as nothing claimed. Closed; ``_Seq``'s hook
+    raises, so a read that ran it would fail here."""
+    report = PersonaReport("p")
+    report.__dict__["findings"] = holder()
+
+    assert claimed_severity(report) == (Severity.UGLY, False)
 
 
 def test_a_finding_whose_instance_dict_is_a_dict_subclass_is_read_without_its_hooks():

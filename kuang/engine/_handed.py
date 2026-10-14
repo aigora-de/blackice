@@ -108,6 +108,12 @@ _SCALARS: tuple[type, ...] = (str, int, float, bool, type(None), Severity, HaltR
 MAX_DEPTH = 64
 
 
+def is_immutable_value(value: object) -> bool:
+    """Whether ``value`` is one the copy shares rather than copies: an exact scalar type."""
+    kind = type(value)
+    return any(kind is scalar for scalar in _SCALARS)
+
+
 class UncopiableRecord(Exception):
     """The engine could not build the copy a seam is handed, so the seam is not called."""
 
@@ -136,7 +142,7 @@ def _refused(why: str) -> UncopiableRecord:
 
 def _copied(value, memo: dict[int, object], depth: int):
     kind = type(value)
-    if any(kind is scalar for scalar in _SCALARS):
+    if is_immutable_value(value):
         return value
     found = memo.get(id(value))
     if found is not None:
@@ -222,13 +228,27 @@ def claimed_severity(returned: object) -> Claim:
     review measured a subclass presenting an UGLY over a dict holding none, converging a
     run main escalated). A return that is not a report at all, or a report claiming no
     findings, claims nothing, and is NOTE. No healthy run reaches this: the shipped
-    backend's output is never refused (measured over 3,000 fuzzed replies).
+    backend's output is never refused: measured by the fourth and fifth pre-merge reviews
+    over thousands of fuzzed replies, and pinned on a sample by
+    ``tests/backends/claude_code/test_handed_prior_context.py``.
 
-    Read running nothing the value carries: types by ``type()``, instance dicts through
-    the class's own descriptor, sequences through ``list.__iter__`` / ``tuple.__iter__`` and
-    dicts through ``dict.items`` (the underlying storage, so a container subclass's own
-    hooks are not called), keys compared only once they are exact ``str``, and a severity
-    by identity.
+    **One rule: read exactly what main would act on, and where that value can be obtained
+    only by running code the value carries, fail closed.** Main walks ``findings`` with
+    ``for f in report.findings`` and reads ``f.severity`` by attribute lookup, so:
+
+    * a ``findings`` that is an exact ``list`` or ``tuple`` is read through its storage,
+      which is what iterating it yields; a container SUBCLASS is iterated by main through
+      its own ``__iter__``, so it is closed;
+    * a report or finding of an exact class is read through that class's own instance-dict
+      descriptor, and a ``severity`` that is not one of the engine's enum members by
+      identity is closed; a record SUBCLASS can present through its own properties, so it
+      is closed;
+    * an instance dict that is a ``dict`` SUBCLASS is read through ``dict.items``, its
+      storage, which is also what main's attribute lookup reads, so it is read, with keys
+      compared only once they are exact ``str``.
+
+    Two pre-merge reviews each measured an UGLY lost where this function read storage that
+    main did not (a record subclass's dict; a list subclass's ``__iter__``).
     """
     closed = Claim(Severity.UGLY, read=False)
     try:
@@ -239,11 +259,15 @@ def claimed_severity(returned: object) -> Claim:
         found, findings = _stored(state, "findings")
         if not found:
             return closed
-        if issubclass(type(findings), list):
+        if type(findings) is list:
             claims = list(list.__iter__(findings))
-        elif issubclass(type(findings), tuple):
+        elif type(findings) is tuple:
             claims = list(tuple.__iter__(findings))
         else:
+            # A container SUBCLASS is walked by main through its own ``__iter__``, which
+            # can present findings its storage does not hold (the fifth pre-merge review
+            # measured an UGLY presented that way lost here, read from storage, and the
+            # run converging where main escalated). Closed.
             return closed
         highest = Severity.NOTE
         for f in claims:
