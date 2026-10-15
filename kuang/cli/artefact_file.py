@@ -99,8 +99,9 @@ def check_destination(raw: str, repo: Path) -> Path:
             f"--out {raw!r} names no file; give the path of the file to write")
     target = Path(raw)
     # Every filesystem question below can itself fail — a name too long for the
-    # filesystem raises from ``exists()`` — and a failure here is still an operator
-    # error before any spend, said without the path the operator already gave.
+    # filesystem raises from ``exists()`` before Python 3.14, and is swallowed there
+    # from 3.14 and met by the probe below instead — and a failure here is still an
+    # operator error before any spend, never a traceback.
     try:
         if not target.parent.is_dir():
             raise DestinationError(
@@ -116,7 +117,7 @@ def check_destination(raw: str, repo: Path) -> Path:
                 f"--out {raw} already exists; kuang does not overwrite it")
     except OSError as exc:
         raise DestinationError(
-            f"--out cannot be used ({failure_detail(exc)})") from None
+            f"--out {raw} cannot be used ({failure_detail(exc)})") from None
     try:
         fd, probe = tempfile.mkstemp(dir=resolved.parent, prefix=f".{target.name}.",
                                      suffix=".tmp")

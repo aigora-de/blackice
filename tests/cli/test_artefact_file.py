@@ -305,11 +305,13 @@ def test_a_non_git_reviewed_directory_is_matched_by_identity_not_spelling(tmp_pa
 def test_a_name_too_long_is_refused_not_raised(tmp_path):
     """REGRESSION for #31's final review pass: an operator error, never a traceback.
 
-    ``exists()`` re-raises ENAMETOOLONG, which escaped as an unhandled ``OSError``,
-    exit 1, with the whole path in the traceback.
+    Before Python 3.14 ``exists()`` re-raises ENAMETOOLONG, which escaped as an
+    unhandled ``OSError``: exit 1 and a traceback. From 3.14 ``exists()`` swallows it
+    and the writability probe meets it instead. Either way it must be refused, with
+    the errno's own words. The refusal goes to stderr and quotes the path the
+    operator gave, as every refusal does; the published artefact never carries it.
     """
     raw = str(tmp_path / ("x" * 300 + ".json"))
 
-    with pytest.raises(DestinationError) as caught:
+    with pytest.raises(DestinationError, match=r"\[errno \d+\]: File name too long"):
         check_destination(raw, tmp_path / "elsewhere")
-    assert "x" * 300 not in str(caught.value)
