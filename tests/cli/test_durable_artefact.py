@@ -179,6 +179,35 @@ def test_a_run_that_completes_leaves_a_file_identical_to_its_stdout_artefact(
     assert json.loads(target.read_text())["halt_reason"] == halt
 
 
+def test_a_run_stopped_after_its_halting_epoch_but_before_the_final_write_is_incomplete(
+        changed_repo, out_dir, capsys, monkeypatch):
+    """REGRESSION for #31: the halting epoch's partial must read as partial too.
+
+    Ctrl-C while the report renders lands between the halting epoch's checkpoint and
+    the final write, which leaves exactly that file behind. Its epoch already knows
+    the run will halt (``EpochResult.halt``), but the run has not published a halt
+    reason, so the file must not claim one: a partial that carried the halt would be
+    indistinguishable from the complete file, and it is short of what only the final
+    write records.
+    """
+    from kuang.cli.artefact_file import ArtefactFile
+
+    def interrupted(self, text):  # noqa: ANN001, ARG001
+        raise KeyboardInterrupt
+
+    _stub(monkeypatch, changed_repo)
+    monkeypatch.setattr(ArtefactFile, "final", interrupted)
+    target = out_dir / "run.json"
+
+    with pytest.raises(KeyboardInterrupt):
+        main(_argv(changed_repo, "--out", str(target)))
+    capsys.readouterr()
+
+    payload = json.loads(target.read_text())
+    assert payload["epochs"] == 2
+    assert payload["halt_reason"] is None
+
+
 def test_a_run_that_loses_its_surface_records_the_loss_in_its_final_file(
         changed_repo, out_dir, capsys, monkeypatch):
     """REGRESSION for #31: an epoch that never began fires no checkpoint (#85).
@@ -357,6 +386,38 @@ def test_a_destination_inside_the_reviewed_repository_is_refused(
     (changed_repo / "sub").mkdir()
 
     rc = main(_argv(changed_repo, "--out", str(changed_repo / relative)))
+
+    assert rc == 2
+    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert not (changed_repo / "run.json").exists()
+
+
+def test_a_relative_destination_inside_the_repository_is_refused(
+        changed_repo, capsys, monkeypatch):
+    """REGRESSION for #31: the check is made on the path as resolved, not as typed.
+
+    Run from inside the repository, ``--out run.json`` names a file there while the
+    string is nothing like the repository's path.
+    """
+    state = _stub(monkeypatch, changed_repo)
+    monkeypatch.chdir(changed_repo)
+
+    rc = main(_argv(changed_repo, "--out", "run.json"))
+
+    assert rc == 2
+    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert not (changed_repo / "run.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a symbolic link")
+def test_a_destination_reaching_the_repository_through_a_link_is_refused(
+        changed_repo, out_dir, capsys, monkeypatch):
+    """REGRESSION for #31: a link outside the repository that points into it."""
+    state = _stub(monkeypatch, changed_repo)
+    link = out_dir / "into-repo"
+    link.symlink_to(changed_repo, target_is_directory=True)
+
+    rc = main(_argv(changed_repo, "--out", str(link / "run.json")))
 
     assert rc == 2
     assert "inside the reviewed repository" in _refused(capsys, state)

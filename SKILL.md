@@ -85,6 +85,20 @@ human. You are the *synthesiser, not the judge* — the human decides.
      arrive as separately labelled blocks, so a persona can tell "found before the
      fixes" from "found now". Fails loudly on an unreadable seed rather than
      starting silently cold.
+   - **`--out <path>`** also writes the `--- JSON ---` artefact to a file. It is
+     replaced atomically after **every epoch** and once more at the end, so a run
+     that is interrupted, killed or rate-limited leaves what it completed. Without
+     the flag nothing is written anywhere, and such a run is as unrecoverable as
+     ever, so **use it for any run you cannot afford to lose.** Tell a partial file
+     from a complete one by **`halt_reason`**: `null` means the run did not finish,
+     and the newest epoch's `gate`, its `gate_failures` row and its own `checkpoint`
+     failure are not in it yet. A complete file is byte-identical to the stdout
+     artefact. The path must not exist yet and must be **outside the reviewed
+     repository**, because the artefact quotes the source and is not publishable by
+     default; both are refused before anything is spent. A failed write does not
+     stop the run: it is said once on the console and recorded in `seam_failures`.
+     A partial file is accepted by `--prior-findings` as it stands, and nothing
+     marks such a seed as coming from an unfinished run.
 
 ## Your responsibilities as the convening session
 - **Read the participation and reduce lines BEFORE the ledger.** Every run states,
