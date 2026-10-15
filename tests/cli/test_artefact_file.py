@@ -210,11 +210,14 @@ def test_a_failure_after_a_recovery_is_said_again(tmp_path, monkeypatch):
     with pytest.raises(ArtefactWriteError):
         out.persist(lambda: "{}\n", when="at epoch 1")
     out.persist(lambda: "{}\n", when="at epoch 2")
-    assert out.final("{}\n") is False
+    # Per-epoch writes only: the final write is always said, so ending on it could
+    # not tell a spell that was reset by the success from one that was never reset.
+    with pytest.raises(ArtefactWriteError):
+        out.persist(lambda: "{}\n", when="at epoch 3")
 
     assert [ln.split(":")[1].strip() for ln in lines] == [
         "could not write the artefact at epoch 1",
-        "could not write the artefact at the end of the run"]
+        "could not write the artefact at epoch 3"]
 
 
 def _tree(path, *, git_file: bool = False):
