@@ -98,7 +98,8 @@ human. You are the *synthesiser, not the judge* — the human decides.
      artefact quotes the source and is not publishable by default, and anything in a
      working tree is one `git add -A` from a commit. Both are refused before
      anything is spent. A failed write does not stop the run: the console says so,
-     once for each spell of failures, and `seam_failures` records it.
+     once for each spell of failures and always for a failed final write, and
+     `seam_failures` records each failed epoch.
      A partial file is accepted by `--prior-findings` as it stands, and nothing
      marks such a seed as coming from an unfinished run.
 

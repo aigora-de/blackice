@@ -602,9 +602,14 @@ def test_a_failed_write_is_said_once_and_the_run_continues(changed_repo, out_dir
     assert rc == 0
     assert payload["halt_reason"] == "epoch"
     warnings = [ln for ln in console.splitlines() if ln.startswith("[out] WARNING")]
-    assert len(warnings) == 1
+    # One for the spell of per-epoch failures, and one for the final write, which
+    # is always said: the console is its only channel, and a disk that stayed full
+    # must not print what a disk that cleared at the last epoch prints.
+    assert len(warnings) == 2
     assert warnings[0].startswith("[out] WARNING: could not write the artefact at epoch 1:")
     assert "not current until a later write succeeds" in warnings[0]
+    assert warnings[1].startswith(
+        "[out] WARNING: could not write the artefact at the end of the run:")
     assert [(r["epoch"], r["seam"]) for r in payload["seam_failures"]] == [
         (1, "checkpoint"), (2, "checkpoint"), (3, "checkpoint")]
     for row in payload["seam_failures"]:

@@ -36,7 +36,8 @@ owner only, which suits an artefact that is not publishable by default (#121).
 file cannot be written can still do what it is for, and its stdout artefact still
 arrives. The operator is told above the report that the file is not current until a
 later write succeeds: once for each spell of failures, so a failure after a recovery
-is not read as the recovery.
+is not read as the recovery, and always for a failed final write, which has no
+other channel.
 """
 
 from __future__ import annotations
@@ -97,18 +98,25 @@ def check_destination(raw: str, repo: Path) -> Path:
         raise DestinationError(
             f"--out {raw!r} names no file; give the path of the file to write")
     target = Path(raw)
-    if not target.parent.is_dir():
+    # Every filesystem question below can itself fail — a name too long for the
+    # filesystem raises from ``exists()`` — and a failure here is still an operator
+    # error before any spend, said without the path the operator already gave.
+    try:
+        if not target.parent.is_dir():
+            raise DestinationError(
+                f"--out {raw}: the directory it would be written in does not exist")
+        resolved = target.parent.resolve() / target.name
+        if _publishable_from(resolved.parent, repo):
+            raise DestinationError(
+                f"--out {raw} is inside a git working tree or the reviewed directory; "
+                f"the artefact quotes the source under review and must be written "
+                f"where git add -A cannot publish it")
+        if target.exists() or target.is_symlink():
+            raise DestinationError(
+                f"--out {raw} already exists; kuang does not overwrite it")
+    except OSError as exc:
         raise DestinationError(
-            f"--out {raw}: the directory it would be written in does not exist")
-    resolved = target.parent.resolve() / target.name
-    if _publishable_from(resolved.parent, repo):
-        raise DestinationError(
-            f"--out {raw} is inside a git working tree or the reviewed directory; the "
-            f"artefact quotes the source under review and must be written where "
-            f"git add -A cannot publish it")
-    if target.exists() or target.is_symlink():
-        raise DestinationError(
-            f"--out {raw} already exists; kuang does not overwrite it")
+            f"--out cannot be used ({failure_detail(exc)})") from None
     try:
         fd, probe = tempfile.mkstemp(dir=resolved.parent, prefix=f".{target.name}.",
                                      suffix=".tmp")
@@ -146,8 +154,10 @@ def _publishable_from(directory: Path, repo: Path) -> bool:
     volume, or any second spelling of a directory, reaches the same answer.
 
     What it under-reports: a working tree whose ``.git`` lives elsewhere and is
-    named only by ``core.worktree`` or ``GIT_WORK_TREE``, with no ``.git`` entry
-    inside the tree. Nothing in the tree marks it, so nothing here can see it.
+    named only from outside the tree — ``core.worktree``, ``GIT_WORK_TREE``,
+    ``GIT_DIR`` or ``--git-dir`` / ``--work-tree`` (a bare "dotfiles" repository
+    tracking a home directory is the common case), with no ``.git`` entry inside the
+    tree. Nothing in the tree marks it, so nothing here can see it.
     """
     try:
         repo_stat = os.stat(repo)
@@ -175,7 +185,8 @@ class ArtefactFile:
     ``persist`` is the per-epoch write, and raises ``ArtefactWriteError`` on failure so
     the checkpoint it runs in is recorded as failed. ``final`` is the end-of-run write,
     which nothing records, so it returns whether it succeeded. Both say the first
-    failure once, through ``say``, and never again.
+    failure through ``say``: a per-epoch failure once per spell of failures, and a
+    failed final write always, because the console is its only channel.
     """
 
     def __init__(self, path: Path, *, say: Callable[[str], None]) -> None:
@@ -187,7 +198,8 @@ class ArtefactFile:
         self._said_stale = False
 
     def persist(self, build: Callable[[], str], *, when: str,
-                consequence: str = _UNTIL_A_LATER_WRITE) -> None:
+                consequence: str = _UNTIL_A_LATER_WRITE,
+                say_always: bool = False) -> None:
         """Build the text and put it in place, or say so and raise.
 
         The build is inside the guard: text that could not be rendered persisted
@@ -206,7 +218,7 @@ class ArtefactFile:
             _replace(self.path, build())
         except Exception as exc:  # noqa: BLE001
             detail = failure_detail(exc)
-            if not self._said_stale:
+            if say_always or not self._said_stale:
                 self._said_stale = True
                 self._say(f"[out] WARNING: could not write the artefact {when}: "
                           f"{detail}. {consequence}")
@@ -214,10 +226,17 @@ class ArtefactFile:
         self._said_stale = False
 
     def final(self, text: str) -> bool:
-        """The end-of-run write: the stdout artefact, byte for byte."""
+        """The end-of-run write: the stdout artefact, byte for byte.
+
+        Its failure is ALWAYS said, even inside a spell already reported. The final
+        write's failure reaches no artefact (the artefact is already built), so the
+        console is its only channel; left unsaid, a disk that stayed full printed
+        exactly what a disk that cleared at the last epoch printed, while the file
+        was a partial in one and complete in the other.
+        """
         try:
             self.persist(lambda: text, when="at the end of the run",
-                         consequence=_AT_THE_END)
+                         consequence=_AT_THE_END, say_always=True)
         except ArtefactWriteError:
             return False
         return True

@@ -95,11 +95,13 @@ def test_the_text_is_written_byte_for_byte(tmp_path):
 
 
 def test_a_failure_is_said_once_and_raised_every_time(tmp_path):
-    """REGRESSION for #31: the console line is once; the recorded failure is per write.
+    """REGRESSION for #31: one line per spell, one for the final write; raised per write.
 
-    The run keeps trying, because a full disk can clear. The operator is told once,
-    because a line per epoch is noise that buries the first; the artefact records
-    every failed write, because each is a fact about an epoch.
+    The run keeps trying, because a full disk can clear. The operator is told once per
+    spell of failures, because a line per epoch is noise that buries the first; the
+    artefact records every failed write, because each is a fact about an epoch. The
+    final write is said as well, even inside the spell: its failure reaches no
+    artefact, so the console is its only channel.
     """
     lines, say = _said()
     out = ArtefactFile(tmp_path / "absent" / "run.json", say=say)
@@ -109,8 +111,10 @@ def test_a_failure_is_said_once_and_raised_every_time(tmp_path):
             out.persist(lambda: "{}\n", when=f"at epoch {epoch}")
     assert out.final("{}\n") is False
 
-    assert len(lines) == 1
+    assert len(lines) == 2
     assert lines[0].startswith("[out] WARNING: could not write the artefact at epoch 1")
+    assert lines[1].startswith(
+        "[out] WARNING: could not write the artefact at the end of the run")
 
 
 def test_a_builder_failure_is_a_write_failure(tmp_path):
@@ -262,3 +266,47 @@ def test_a_destination_outside_every_tree_is_accepted(tmp_path):
 
     assert check_destination(str(tmp_path / "out" / "x.json"), reviewed) == (
         tmp_path / "out").resolve() / "x.json"
+
+
+def test_a_git_file_alone_refuses_the_destination(tmp_path):
+    """REGRESSION for #31's final review pass: the ``.git`` FILE is the rule's headline.
+
+    A linked worktree added anywhere (``git worktree add /elsewhere/wt``) and a
+    submodule carry a ``.git`` file and no ``.git`` directory. Every other case here
+    sat below a ``.git`` directory as well, so "directories only" — the narrower
+    design — passed the whole suite.
+    """
+    wt = _tree(tmp_path / "wt", git_file=True)
+    (wt / "d").mkdir()
+
+    with pytest.raises(DestinationError, match="inside a git working tree"):
+        check_destination(str(wt / "d" / "x.json"), tmp_path / "elsewhere")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a symbolic link")
+def test_a_non_git_reviewed_directory_is_matched_by_identity_not_spelling(tmp_path):
+    """REGRESSION for #31: ``--repo`` named through a link is the same directory.
+
+    The reviewed directory is not in git, so only the identity check can refuse;
+    the operator names it through a link, and the destination by its real path.
+    """
+    real = tmp_path / "plain"
+    real.mkdir()
+    link = tmp_path / "via-link"
+    link.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(DestinationError, match="the reviewed directory"):
+        check_destination(str(real / "x.json"), link)
+
+
+def test_a_name_too_long_is_refused_not_raised(tmp_path):
+    """REGRESSION for #31's final review pass: an operator error, never a traceback.
+
+    ``exists()`` re-raises ENAMETOOLONG, which escaped as an unhandled ``OSError``,
+    exit 1, with the whole path in the traceback.
+    """
+    raw = str(tmp_path / ("x" * 300 + ".json"))
+
+    with pytest.raises(DestinationError) as caught:
+        check_destination(raw, tmp_path / "elsewhere")
+    assert "x" * 300 not in str(caught.value)
