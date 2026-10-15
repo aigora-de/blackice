@@ -26,6 +26,7 @@ import json
 import sys
 import textwrap
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -459,6 +460,10 @@ def _surface_loss_lines(record: SurfaceRecord) -> list[str]:
 @dataclass(frozen=True)
 class _RunContext:
     """What the artefact is built from besides the run: fixed before the first epoch.
+
+    Frozen SHALLOWLY: the bindings cannot be reassigned, but ``session`` is the live
+    session, whose token count and per-epoch records grow as the run proceeds. That
+    is what lets a checkpoint publish them as they stand at its epoch.
 
     Held together so the end-of-run report and a per-epoch checkpoint build the
     artefact from the same inputs through the same function (#31).
@@ -1014,7 +1019,8 @@ class CheckpointError(Exception):
     """One or both of the checkpoint's two jobs failed; the message names which."""
 
 
-def _checkpoint(on_epoch, out: ArtefactFile, ctx: _RunContext):  # noqa: ANN001, ANN202
+def _checkpoint(on_epoch: Callable[[ReviewRun], None], out: ArtefactFile,
+                ctx: _RunContext) -> Callable[[ReviewRun], None]:
     """``session.on_epoch`` and the durable write, behind the one ``checkpoint`` seam.
 
     Two jobs, both always attempted: a failure in one never skips the other. They

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import tempfile
 
 import pytest
@@ -424,6 +425,107 @@ def test_a_destination_reaching_the_repository_through_a_link_is_refused(
     assert not (changed_repo / "run.json").exists()
 
 
+def test_a_destination_in_the_working_tree_above_repo_is_refused(
+        changed_repo, capsys, monkeypatch):
+    """REGRESSION for #31's pre-merge review: the repository is not ``--repo``.
+
+    ``--repo`` may be a subdirectory of the working tree, and its default is ``.``.
+    The first shape of the check compared against ``--repo`` alone, so a file at the
+    tree's top level was accepted, and ``git status`` then listed it as untracked —
+    one ``git add -A`` from a public commit.
+    """
+    state = _stub(monkeypatch, changed_repo)
+    (changed_repo / "sub").mkdir()
+    (changed_repo / "sub" / "b.py").write_text("x = 1\n")
+
+    rc = main(_argv(changed_repo / "sub", "--out", str(changed_repo / "leak.json")))
+
+    assert rc == 2
+    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert not (changed_repo / "leak.json").exists()
+
+
+def test_a_destination_in_another_working_tree_of_the_repository_is_refused(
+        changed_repo, capsys, monkeypatch, commit_all):
+    """REGRESSION for #31's pre-merge review: a linked worktree's repository is every tree.
+
+    Reviewing a linked worktree, a destination in the MAIN checkout was accepted. This
+    repository keeps its reviewers' worktrees under ``.claude/worktrees/`` in exactly
+    that layout, so the case is not hypothetical.
+    """
+    state = _stub(monkeypatch, changed_repo)
+    commit_all(changed_repo, "panel")
+    linked = changed_repo / ".claude" / "worktrees" / "w"
+    subprocess.run(["git", "-C", str(changed_repo), "worktree", "add", "-q", "--detach",
+                    str(linked)], check=True, capture_output=True)
+
+    rc = main(_argv(linked, "--out", str(changed_repo / "leak.json")))
+
+    assert rc == 2
+    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert not (changed_repo / "leak.json").exists()
+
+
+def _case_insensitive(path) -> bool:
+    flipped = path.parent / path.name.swapcase()
+    return flipped != path and flipped.exists()
+
+
+def test_a_destination_spelled_in_another_case_is_refused(changed_repo, capsys,
+                                                         monkeypatch):
+    """REGRESSION for #31's pre-merge review: containment is identity, not spelling.
+
+    On a case-insensitive volume (macOS's default) ``REPO`` is ``repo``. A string
+    comparison accepted it; ``os.path.samestat`` does not. Skipped where the volume
+    is case-sensitive, because there the two spellings ARE different directories.
+    """
+    if not _case_insensitive(changed_repo):
+        pytest.skip("the volume is case-sensitive")
+    state = _stub(monkeypatch, changed_repo)
+    flipped = changed_repo.parent / changed_repo.name.swapcase()
+
+    rc = main(_argv(changed_repo, "--out", str(flipped / "x.json")))
+
+    assert rc == 2
+    assert "inside the reviewed repository" in _refused(capsys, state)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="needs a symbolic link")
+def test_a_dangling_link_at_the_destination_is_refused(changed_repo, out_dir, capsys,
+                                                      monkeypatch):
+    """REGRESSION for #31: a link kuang did not create is not replaced.
+
+    ``exists()`` follows the link and says False for a dangling one, so the check
+    also asks ``is_symlink()``. Without it ``os.replace`` would delete the operator's
+    link and put a file in its place.
+    """
+    state = _stub(monkeypatch, changed_repo)
+    target = out_dir / "run.json"
+    target.symlink_to(out_dir / "nowhere.json")
+
+    rc = main(_argv(changed_repo, "--out", str(target)))
+
+    assert rc == 2
+    assert "already exists" in _refused(capsys, state)
+    assert target.is_symlink()
+
+
+@pytest.mark.parametrize("raw", ["", "somewhere/"])
+def test_a_destination_naming_no_file_is_refused(changed_repo, capsys, monkeypatch, raw):
+    """REGRESSION for #31: an unset shell variable, or a trailing separator.
+
+    ``Path`` drops a trailing slash, so ``x.json/`` — a directory to POSIX — would be
+    written as a file; and ``--out ""`` was refused as "already exists", which tells
+    an operator with an unset variable the wrong thing.
+    """
+    state = _stub(monkeypatch, changed_repo)
+
+    rc = main(_argv(changed_repo, "--out", raw))
+
+    assert rc == 2
+    assert "names no file" in _refused(capsys, state)
+
+
 def test_a_destination_beside_the_repository_is_accepted(changed_repo, capsys,
                                                          monkeypatch):
     """REGRESSION for #31, the pair of the refusals: an ordinary path is written.
@@ -475,7 +577,7 @@ def test_a_failed_write_is_said_once_and_the_run_continues(changed_repo, out_dir
     warnings = [ln for ln in console.splitlines() if ln.startswith("[out] WARNING")]
     assert len(warnings) == 1
     assert warnings[0].startswith("[out] WARNING: could not write the artefact at epoch 1:")
-    assert "not current" in warnings[0]
+    assert "not current until a later write succeeds" in warnings[0]
     assert [(r["epoch"], r["seam"]) for r in payload["seam_failures"]] == [
         (1, "checkpoint"), (2, "checkpoint"), (3, "checkpoint")]
     for row in payload["seam_failures"]:
@@ -484,6 +586,42 @@ def test_a_failed_write_is_said_once_and_the_run_continues(changed_repo, out_dir
         assert str(out_dir) not in row["detail"]
         assert out_dir.name not in row["detail"]
     assert not target.exists()
+
+
+def test_a_failed_final_write_is_said_above_the_artefact(changed_repo, out_dir, capsys,
+                                                         monkeypatch):
+    """REGRESSION for #31: only the final write fails, and the console says so FIRST.
+
+    A line printed after the ``--- JSON ---`` block would make the run log unreadable
+    to every reader that takes the last block (#123). The file then holds the last
+    epoch's partial, which reads as one, and the warning says exactly that.
+    """
+    from kuang.cli import artefact_file
+
+    real = artefact_file._replace
+
+    def fails_when_complete(path, text):  # noqa: ANN001
+        if json.loads(text)["halt_reason"] is not None:
+            raise OSError(28, "No space left on device")
+        return real(path, text)
+
+    _stub(monkeypatch, changed_repo)
+    monkeypatch.setattr(artefact_file, "_replace", fails_when_complete)
+    target = out_dir / "run.json"
+
+    rc = main(_argv(changed_repo, "--out", str(target)))
+    out = capsys.readouterr().out
+    console, _, tail = out.rpartition(_DELIMITER)
+
+    assert rc == 0
+    json.loads(tail)
+    warnings = [ln for ln in console.splitlines() if ln.startswith("[out] WARNING")]
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        "[out] WARNING: could not write the artefact at the end of the run:")
+    assert "not the complete artefact" in warnings[0]
+    assert json.loads(target.read_text())["halt_reason"] is None
+    assert json.loads(target.read_text())["epochs"] == 2
 
 
 def test_a_failing_prior_context_refresh_does_not_skip_the_write(

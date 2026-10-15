@@ -34,13 +34,15 @@ owner only, which suits an artefact that is not publishable by default (#121).
 
 **A failed write does not stop the run.** Against ``HaltReason``'s bar, a run whose
 file cannot be written can still do what it is for, and its stdout artefact still
-arrives. The operator is told once, above the report, that the file is not current.
+arrives. The operator is told once, above the report, that the file is not current
+until a later write succeeds.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -75,9 +77,12 @@ def check_destination(raw: str, repo: Path) -> Path:
     Each refusal is an operator error, reported through the same path as an unusable
     ``--panel``: before the first epoch, so before any spend.
 
+    * Empty, or ending in a separator: no file name was given. An unset shell
+      variable produces the first constantly (#106's case).
     * Inside the reviewed repository: the artefact quotes the source and is not
       publishable by default (#121), and a file there is one ``git add -A`` from a
-      public commit.
+      public commit. See ``_forbidden_roots`` for what "the repository" covers and
+      ``_inside`` for how containment is decided.
     * Already present, as a file, a directory or a link: a previous run's only durable
       record is never overwritten unasked, because that cannot be undone.
     * A directory that does not exist, or one this user cannot create a file in. The
@@ -88,12 +93,15 @@ def check_destination(raw: str, repo: Path) -> Path:
     What this does not cover: a file created at the destination after this check and
     before the first write is replaced by that write. The window is the run's own.
     """
+    if not raw or raw.endswith(("/", os.sep)):
+        raise DestinationError(
+            f"--out {raw!r} names no file; give the path of the file to write")
     target = Path(raw)
     if not target.parent.is_dir():
         raise DestinationError(
             f"--out {raw}: the directory it would be written in does not exist")
     resolved = target.parent.resolve() / target.name
-    if resolved.is_relative_to(repo.resolve()):
+    if _inside(resolved.parent, _forbidden_roots(repo)):
         raise DestinationError(
             f"--out {raw} is inside the reviewed repository; the artefact quotes the "
             f"source under review and must be written outside it")
@@ -112,6 +120,68 @@ def check_destination(raw: str, repo: Path) -> Path:
     return resolved
 
 
+def _forbidden_roots(repo: Path) -> list[Path]:
+    """Every directory the artefact must not be written under: the reviewed repository.
+
+    One rule, stated once: the repository is ``--repo`` itself AND every working tree
+    git lists for the repository ``--repo`` belongs to. ``--repo`` alone is not
+    enough, and each way it falls short was measured on #31's diff:
+
+    * ``--repo`` may be a subdirectory of a working tree (its default is ``.``), so a
+      destination beside it can still be inside the tree git commits from;
+    * a linked worktree's repository includes the main checkout and every other
+      linked tree, any of which ``git add -A`` can publish from.
+
+    ``git worktree list`` names all of them, from any of them. If git cannot answer
+    (not a repository, or no git), only ``--repo`` is known, and that is all that is
+    refused: what this under-reports is a non-git ``--repo`` nested inside a git tree.
+    """
+    roots = [repo]
+    try:
+        listed = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return roots
+    # Line-split rather than ``-z``, which needs git 2.36: on an older git the
+    # fallback above would quietly narrow the rule, and a path with a newline in it
+    # is not a working tree anyone reviews.
+    roots += [Path(line[len("worktree "):]) for line in listed.splitlines()
+              if line.startswith("worktree ")]
+    return roots
+
+
+def _inside(directory: Path, roots: list[Path]) -> bool:
+    """Whether ``directory`` is one of ``roots`` or below one, decided by IDENTITY.
+
+    Each ancestor of ``directory`` is compared with each root by ``os.path.samestat``:
+    the same file on the same device, never the same spelling. A string comparison
+    is wrong on a case-insensitive volume (``REPO`` is ``repo``), through any link,
+    and wherever two spellings name one directory; identity is wrong in none of
+    them. A root that cannot be stat-ed cannot contain anything, and is skipped.
+    """
+    root_stats = []
+    for root in roots:
+        try:
+            root_stats.append(os.stat(root))
+        except OSError:
+            continue
+    for ancestor in (directory, *directory.parents):
+        try:
+            st = os.stat(ancestor)
+        except OSError:
+            continue
+        if any(os.path.samestat(st, r) for r in root_stats):
+            return True
+    return False
+
+
+_UNTIL_A_LATER_WRITE = ("The --out file is not current until a later write succeeds, "
+                        "and a run stopped before then cannot be recovered from it.")
+_AT_THE_END = ("The --out file is not the complete artefact: it holds the last "
+               "epoch written, if any, and says halt_reason null.")
+
+
 class ArtefactFile:
     """One run's durable artefact: every write replaces it whole.
 
@@ -126,11 +196,16 @@ class ArtefactFile:
         self._say = say
         self._warned = False
 
-    def persist(self, build: Callable[[], str], *, when: str) -> None:
+    def persist(self, build: Callable[[], str], *, when: str,
+                consequence: str = _UNTIL_A_LATER_WRITE) -> None:
         """Build the text and put it in place, or say so and raise.
 
         The build is inside the guard: text that could not be rendered persisted
         nothing, exactly as a full disk did, and the operator is owed the same line.
+
+        The line is said once and never retracted, so what it says must stay true
+        whatever happens next: a later write can succeed (a full disk clears), and
+        then "not current" would be false. So it says what holds UNTIL then.
         ``Exception``, never ``BaseException``: a Ctrl-C mid-write still stops the run,
         and the temporary file is removed on the way out.
         """
@@ -141,14 +216,14 @@ class ArtefactFile:
             if not self._warned:
                 self._warned = True
                 self._say(f"[out] WARNING: could not write the artefact {when}: "
-                          f"{detail}. The --out file is not current, and a run "
-                          f"stopped now cannot be recovered from it.")
+                          f"{detail}. {consequence}")
             raise ArtefactWriteError(detail) from None
 
     def final(self, text: str) -> bool:
         """The end-of-run write: the stdout artefact, byte for byte."""
         try:
-            self.persist(lambda: text, when="at the end of the run")
+            self.persist(lambda: text, when="at the end of the run",
+                         consequence=_AT_THE_END)
         except ArtefactWriteError:
             return False
         return True

@@ -152,3 +152,31 @@ def test_an_os_error_detail_carries_no_path(tmp_path):
 def test_an_os_error_without_an_errno_is_rendered_whole():
     """REGRESSION for #31: the errno form is used only where there is an errno."""
     assert failure_detail(OSError("no errno here")) == "OSError: no errno here"
+
+
+def test_the_warning_stays_true_when_a_later_write_succeeds(tmp_path, monkeypatch):
+    """REGRESSION for #31's pre-merge review: a line never retracted must not go false.
+
+    A full disk can clear. The first shape said "the file is not current" outright,
+    and a later write then made it current while the line stood. It now says what
+    holds until a later write succeeds.
+    """
+    lines, say = _said()
+    out = ArtefactFile(tmp_path / "run.json", say=say)
+    real = artefact_file._replace
+    calls = {"n": 0}
+
+    def full_once(path, text):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        return real(path, text)
+
+    monkeypatch.setattr(artefact_file, "_replace", full_once)
+    with pytest.raises(ArtefactWriteError):
+        out.persist(lambda: "{}\n", when="at epoch 1")
+    out.persist(lambda: '{"epochs": 2}\n', when="at epoch 2")
+
+    assert (tmp_path / "run.json").read_text() == '{"epochs": 2}\n'
+    assert len(lines) == 1
+    assert "not current until a later write succeeds" in lines[0]
