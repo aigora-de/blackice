@@ -26,20 +26,26 @@ import json
 import sys
 import textwrap
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, LensCoverage,
                                           PanelError, PanelSession, PanelSource,
+                                          Persona,
                                           ReduceState, SurfaceError,
                                           SurfaceRecord, called_no_tool,
                                           discard_note, load_personas,
                                           load_prior_findings, mandateless,
                                           unavailable_tools, ungrounded_keys)
+from kuang.cli.artefact_file import (ArtefactFile, ArtefactWriteError,
+                                     DestinationError, check_destination)
 from kuang.cli.console import ConsoleStream, release
-from kuang.engine import (Finding, GateDecision, HaltingSet, HaltReason,
+from kuang.engine import (EpochResult, Finding, GateDecision, HaltingSet, HaltReason,
                           PanelConfig, PersonaReport, ReviewSpec, Severity,
-                          bounded_diagnosis, run)
+                          ReviewRun, bounded_diagnosis, run)
+from kuang.engine.findings import render_exception
 from kuang.report import epoch_counts_line
 
 
@@ -451,449 +457,78 @@ def _surface_loss_lines(record: SurfaceRecord) -> list[str]:
     return lines
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Run the panel and print its report, which a stdout fault must not end (#141).
+@dataclass(frozen=True)
+class _RunContext:
+    """What the artefact is built from besides the run: fixed before the first epoch.
 
-    Every print made under this call goes through one ``ConsoleStream``. A run that
-    KNOWS its report did not reach its reader never exits ``0``: the halt's own code
-    is kept where it is already non-zero, because each such code carries a stronger
-    fact than "not delivered" — an UGLY's ``3`` above all — and ``1`` stands in for a
-    ``0``. A reader who leaves after the kernel accepted the bytes is not known, and
-    ``ConsoleStream`` says so. ``1`` is the code an unhandled exception returned here
-    on these paths before, where it was not ``120``; what the codes MEAN is #32's to
-    rule.
+    Frozen SHALLOWLY: the bindings cannot be reassigned, but ``session`` is the live
+    session, whose token count and per-epoch records grow as the run proceeds. That
+    is what lets a checkpoint publish them as they stand at its epoch.
 
-    The stream is settled in ``finally``, so an ``argparse`` exit or a Ctrl-C is
-    flushed, released and noticed like a return — only the exit code is theirs.
+    Held together so the end-of-run report and a per-epoch checkpoint build the
+    artefact from the same inputs through the same function (#31).
     """
-    console = ConsoleStream(sys.stdout)
-    sys.stdout = console
-    try:
-        code = _report(argv)
-    finally:
-        console.flush()
-        sys.stdout = console.inner
-        console.release()
-        for notice in console.notices():
-            # ``print(file=None)`` writes to stdout, which is after the JSON block:
-            # with descriptor 2 closed there is nowhere to say it, not somewhere else.
-            if sys.stderr is None:
-                break
-            try:
-                print(notice, file=sys.stderr)
-            except OSError:
-                # stderr is gone as well: the exit code is the only channel left, and
-                # the bytes left buffered must not fail again at the interpreter's exit.
-                release(sys.stderr)
-                break
-    return (code or 1) if console.lost else code
+
+    args: argparse.Namespace
+    session: PanelSession
+    panel: PanelConfig
+    personas: list[Persona]
+    source: PanelSource
+    coverage: list[LensCoverage]
+    no_mandate: list[str]
+    disallowed: list[str]
+    cancelled: dict[str, list[str]]
 
 
-def _report(argv: list[str] | None) -> int:
-    ap = argparse.ArgumentParser(description="Adversarial review panel loop over a git diff.")
-    ap.add_argument("--repo", default=".", help="repository root")
-    # Exactly one review mode is active per run: diff mode (--base/--head) OR
-    # path mode (--paths). Neither is argparse-required; main() enforces the XOR.
-    ap.add_argument("--base", default=None, help="diff mode: base ref (e.g. main)")
-    ap.add_argument("--head", default="HEAD", help="diff mode: head ref")
-    ap.add_argument("--paths", nargs="*", default=None, metavar="PATH",
-                    help="path mode: adversarially review the full content of these "
-                         "files/directories (directories expand via git ls-files, "
-                         "honouring .gitignore) instead of a diff")
-    ap.add_argument("--max-surface-bytes", type=int, default=200_000,
-                    help="path mode: cap on total review-surface size (default 200000)")
-    ap.add_argument("--why", default="mission-critical change", help="why the review matters")
-    ap.add_argument("--what", default=None, help="what changed / what to review")
-    ap.add_argument("--max-epochs", type=int, default=3)
-    ap.add_argument("--token-budget", type=int, default=None)
-    ap.add_argument("--stall-patience", type=int, default=1)
-    ap.add_argument("--model", default=None, help="default model for personas")
-    ap.add_argument("--allow-tools", nargs="*", default=None, metavar="TOOL",
-                    help="override allowed tools for ALL personas, e.g. --allow-tools "
-                         "Read Grep Glob. A Bash(...) grant does NOT bound what is run "
-                         "(issue #96): it is cancelled by the default deny-list, or, "
-                         "with Bash removed from it, becomes an unrestricted shell.")
-    ap.add_argument("--disallow-tools", nargs="*", default=None, metavar="TOOL",
-                    help="override the disallowed-tools list (default: Edit Write NotebookEdit Bash)")
-    ap.add_argument("--permission-mode", default="plan",
-                    help="claude --permission-mode: plan|default|acceptEdits|bypassPermissions")
-    ap.add_argument("--semantic-dedup", action="store_true",
-                    help="fold same-concept findings into canonical clusters via a "
-                         "cheap model call each epoch (default: deterministic "
-                         "signature dedup only, no extra call)")
-    ap.add_argument("--cluster-model", default=None,
-                    help="model for the --semantic-dedup clusterer (default: --model)")
-    ap.add_argument("--panel", default=None, metavar="PATH",
-                    help="source the panel from this file (issue #16), ahead of the "
-                         "repo's CLAUDE.md, panel.yaml and panel.md, none of which "
-                         "are then consulted. A .yaml/.yml file is read as a panel "
-                         "definition, anything else as a 'Resident Experts' "
-                         "markdown document. A named panel that cannot be used is "
-                         "an error, never a silent fall back to the default set")
-    ap.add_argument("--prior-findings", default=None, metavar="PATH",
-                    help="seed the panel with an earlier run's findings (issue #13): a "
-                         "saved findings.json, a run's JSON output, or a raw run.log "
-                         "containing the '--- JSON ---' block. Injected from epoch 1, "
-                         "with locations flagged advisory since fixes move code")
-    ap.add_argument("--dry-run", action="store_true", help="print the wiring, spawn nothing")
-    ap.add_argument("--no-parallel", action="store_true")
-    args = ap.parse_args(argv)
+@dataclass(frozen=True)
+class _Derived:
+    """Every value the artefact publishes that the console also reads (#31).
 
-    # Exactly-one-mode selection (deny ambiguity rather than silently prefer one).
-    path_mode = args.paths is not None
-    if path_mode and args.base is not None:
-        ap.error("choose one mode: --base/--head (diff) OR --paths (whole-file), not both")
-    if not path_mode and args.base is None:
-        ap.error("specify a review mode: --base <ref> (diff) or --paths <path...> (whole-file)")
-    if path_mode and not args.paths:
-        ap.error("--paths needs at least one file or directory")
-    what = args.what or ("existing code (full-file review)" if path_mode
-                         else "the pending diff")
+    Derived ONCE per rendering, by ``_derive``, so the number a console line states
+    and the number the artefact publishes cannot drift (#33, #82). Why each value is
+    what it is was written beside it before #31 moved the expressions here, and stays
+    there: beside its console use in ``_report``, or here in ``_derive`` for the two
+    the console never prints (``raised``, ``surface_epochs``).
+    """
 
-    repo = Path(args.repo).resolve()
-    # A panel named on the command line that cannot be used is refused here,
-    # before the first epoch and so before anything is spent, through the same
-    # operator-error path SurfaceError already uses rather than a third behaviour
-    # for the class (#59). The implicit tiers never reach this: they record what
-    # they discarded and carry on.
-    try:
-        # `is not None`, never truthiness: `--panel ""` is an operator who named
-        # a panel and got nothing, which shells produce constantly from an unset
-        # variable. Treating it as "no flag given" is this issue's own defect
-        # inside the flag that fixes it (#106). Sourcing takes the raw argument,
-        # because `Path("")` is an existing directory and loses the fact.
-        personas, source, coverage = load_personas(repo, args.panel)
-    except PanelError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    if args.allow_tools:  # override the read-only default for ALL personas
-        for p in personas:
-            p.tools = list(args.allow_tools)
-    print(f"[panel] {len(personas)} personas from {_panel_origin(source)}: "
-          f"{', '.join(p.name for p in personas)}")
-    # A declared panel that was thrown away, said BEFORE the spend — the one
-    # moment an operator can still abort (#16). Silent when nothing was declared:
-    # a repo that asked for nothing must read clean, because a rule that fires on
-    # a healthy run is the mirror image of the defect it reports. The artefact
-    # carries the same fact unconditionally, which is where a run read back cold
-    # tells "no panel was declared" from "the declared panel was discarded".
-    for line in _discard_lines(source):
-        print(line)
-    # A persona convened with NO MANDATE (#103), said in the same breath and for
-    # the same reason: this is the moment an operator can still abort. It is a
-    # different fact from a discard, not a second rendering of one — a discard is
-    # a declaration that yielded NOBODY, this is a declaration that yielded
-    # somebody with nothing in them, and #16's rule correctly does not fire on it.
-    # Measured, no existing field carried it: two runs differing only in whether
-    # half the panel had a brief were byte-identical, console and artefact alike.
-    # Silent on a healthy run, like every warning above it.
-    no_mandate = mandateless(personas)
-    if no_mandate:
-        # The duplicate-call clause is conditional for the reason ``_verdict_line``'s
-        # clauses are: it is a CLAIM, and with one mandate-less persona there is
-        # nothing to share it with. A warning about illegible output that is itself
-        # false in a case would be this issue committed inside its own fix.
-        shared = (" and personas sharing one spawn an identical call"
-                  if len(no_mandate) > 1 else "")
-        print(f"[panel] WARNING: {len(no_mandate)} of {len(personas)} persona(s) "
-              f"were convened with NO MANDATE — an empty brief is not a lens"
-              f"{shared}: {', '.join(no_mandate)}")
-    print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
-    disallowed = (list(args.disallow_tools) if args.disallow_tools is not None
-                  else list(DEFAULT_DISALLOWED_TOOLS))
-    # Tools the panel granted AND deny-listed (#67). Such a tool is not refused when
-    # a reviewer calls it — it is absent from the reviewer's session, so the reviewer
-    # never calls it and the result envelope records nothing at all. Named HERE, not
-    # only in the summary, because it follows from the flags alone: an operator who
-    # first learns of it after the run has already paid for the whole panel.
-    cancelled = {p.name: unavailable_tools(p.tools, disallowed) for p in personas}
-    if any(cancelled.values()):
-        starved = [n for n, t in cancelled.items() if t]
-        print(f"[panel] WARNING: {len(starved)} of {len(personas)} persona(s) were "
-              f"granted tools the deny-list removed, so those tools were NOT "
-              f"available to them: "
-              f"{', '.join(sorted({t for v in cancelled.values() for t in v}))}")
+    final: EpochResult
+    agreement: dict[str, int]
+    converged: bool
+    degenerate: bool | None
+    unresolved: list[dict]
+    unread_verdicts: list[dict]
+    participation: list[dict]
+    raised: dict
+    surface_epochs: list[dict]
+    coverage_records: list[dict]
+    permission_personas: list[dict]
+    refusals: list[dict]
+    reduce_epochs: list[dict]
+    issues_in_change: int
+    issues_about_run: int
+    ungrounded: frozenset[str]
 
-    # Cross-run memory (issue #13). Loaded BEFORE the session so a bad path fails
-    # here, not three epochs into a paid run, and echoed so a seed that loaded
-    # nothing cannot be mistaken for one that worked.
-    seeded = ""
-    if args.prior_findings:
-        seeded = load_prior_findings(args.prior_findings)
-        print(f"[panel] prior findings: {len(seeded.splitlines())} carried in from "
-              f"{args.prior_findings} (locations advisory)")
 
-    spec = ReviewSpec(why=args.why, what=what)
-    session = PanelSession(
-        repo_root=repo, spec=spec, base=args.base or "", head=args.head,
-        paths=args.paths, max_surface_bytes=args.max_surface_bytes,
-        personas={p.name: p for p in personas},
-        default_model=args.model, cluster_model=args.cluster_model,
-        dry_run=args.dry_run, seeded_summary=seeded,
-        disallowed_tools=disallowed,
-        permission_mode=args.permission_mode)
-    panel = PanelConfig(personas=[(p.name, p.grounding) for p in personas])
-    halting = HaltingSet(token_budget=args.token_budget, max_epochs=args.max_epochs,
-                         stall_patience=args.stall_patience, require_scope_complete=False)
+def _derive(review_run: ReviewRun, ctx: _RunContext) -> _Derived:
+    """Derive the shared values from a run, complete or partial.
 
-    # Opt-in semantic reduce; otherwise the engine's deterministic identity default.
-    reduce_kwargs = {"reduce": session.reduce} if args.semantic_dedup else {}
-    try:
-        review_run = run(
-            spec, halting, panel,
-            spawn=session.spawn, gather=session.gather,
-            human_gate=session.interactive_gate, checkpoint=session.on_epoch,
-            budget_spent=session.budget_spent, parallel=not args.no_parallel,
-            **reduce_kwargs)
-    except SurfaceError as exc:
-        # No surface means no review: report the operator error and print no
-        # verdict, rather than a halt line for a panel that reviewed nothing.
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-
-    print(f"\n=== HALT: {review_run.halt_reason.value} after {len(review_run.epochs)} epoch(s) ===")
-    print(f"open uglies: {len(review_run.open_uglies)} | open blockers: {len(review_run.open_blockers)}"
-          f" | tokens: {session.tokens}")
-    # Why there are no more epochs (#85). Above the findings, because why a run
-    # stopped is read before what it found, and it names the epoch because the halt
-    # line cannot: that counts the epochs that COMPLETED, so a run that lost its
-    # surface on epoch 2 reports "after 1 epoch(s)". The backend's own message rides
-    # along — it names the paths or carries git's stderr, which is what an operator
-    # needs to correct and what the engine could never produce (#18).
-    if review_run.surface_failure is not None:
-        print(f"surface lost: epoch {review_run.surface_failure.epoch} could not be "
-              f"reassembled — {review_run.surface_failure.detail}")
-    # Every other injected callable that failed (#148). An EXCEPTION section: it prints
-    # only when something failed, so its absence on a healthy run is a complete claim.
-    # Above the findings for the reason the line above is: a run halted ``unmeasured``
-    # is explained here, not two screens later.
-    for e in review_run.epochs:
-        for f in e.seam_failures:
-            print(f"seam failed: epoch {e.index}, {f.seam} — {f.detail}")
-    # What the good verdict rests on (#82). ``converged`` is satisfied by ABSENCE
-    # on every conjunct, and quorum is trivially met at n=1 — so a panel of one
-    # whose sole reviewer called no tool printed the good verdict with nothing
-    # beside it saying the agreement was one voice that did not look. Qualified,
-    # never gated: a halt reason is for a state the loop cannot usefully continue
-    # from, and a degenerate-but-real review can. Personas are a parameter, and a
-    # deliberate one-reviewer run is the operator's call — the tool informs.
-    # Attached to a verdict and only to a verdict; see ``_verdict_line``.
+    A partial run is what ``checkpoint`` is handed: at least one epoch, and no halt
+    reason yet. Nothing here may assume more than that.
+    """
+    args, session, personas, coverage, cancelled = (
+        ctx.args, ctx.session, ctx.personas, ctx.coverage, ctx.cancelled)
     final = review_run.epochs[-1]
     agreement = _agreement(final.reports)
     converged = review_run.halt_reason is HaltReason.CONVERGED
-    # ``degenerate`` qualifies a VERDICT, so it is ``None`` where the run reached
-    # none — the third state ``opened_source`` takes for the same reason. The
-    # counts beside it are unconditional facts about the votes and stay; this one
-    # is an answer to "what does converged rest on here?", and on a dry run that
-    # question has no subject. Arithmetically it would read ``true`` on every dry
-    # run, and 11 of 13 golden invocations are dry runs — so an operator counting
-    # degenerate verdicts across an archive would count runs that never reached
-    # one. Saying nothing is the honest value; the console is silent for the same
-    # reason, and both come off this one variable so they cannot disagree.
     degenerate = _degenerate(agreement) if converged else None
-    if converged:
-        print(_verdict_line(agreement, quorum=panel.effective_quorum,
-                            roster=len(personas)))
-        if degenerate:
-            print("  DEGENERATE VERDICT — at most one voice is known to have "
-                  "looked and agreed")
-    for f in review_run.open_uglies + review_run.open_blockers:
-        print(f"  [{f.severity.name}] ({f.persona}) {f.title} @ {f.file}:{f.line}")
-    # Claims the ledger refused to a collision (#119). An EXCEPTION section, like
-    # #24's and #26's below: it prints only when something was dropped, so on a
-    # healthy run its absence is itself a complete claim and no line about lost
-    # claims appears on a run that lost none.
-    #
-    # Two lines per claim — the one that was dropped, then the entry that displaced
-    # it — because a collision is only legible beside what it collided with: the
-    # pair agree on severity and line-bucket and differ exactly where the encoding
-    # let them merge, and a reader seeing one line alone cannot tell this from the
-    # coarse dedup working as designed.
-    #
-    # Locations and categories print through ``repr``, and the two have different
-    # reasons — stated separately, because one of them was written here as
-    # covering both and did not.
-    #
-    # The LOCATION, because of the second collision route: a persona writing the
-    # string ``"None"`` where another finding has no file at all. Rendered bare
-    # those are the same four characters, so the section would show two identical
-    # locations for findings that differ — reading as exactly the re-sighting it
-    # is not.
-    #
-    # The CATEGORY, because it is the field a collision is CRAFTED in and it is
-    # printed on the line that reports the crafting. ``claim_class`` is always a
-    # string (``contract.py`` coerces it), so the ``None`` route above cannot
-    # reach it; what reaches it is a newline, a carriage return or an escape
-    # sequence, each of which lets the persona being reported on forge an extra
-    # entry, overwrite this one, or recolour the section. ``repr`` escapes all
-    # three. The title and the persona name are NOT quoted here, and that is not
-    # an oversight: the same values print unquoted wherever this tool prints a
-    # finding, so quoting them here alone would imply a guarantee the report does
-    # not make. That whole class is filed separately.
-    #
-    # No ``evidence`` here: #112's console refusal stands. The artefact carries the
-    # persona's working, and the console carries the loss.
-    dropped = [(e.index, s) for e in review_run.epochs for s in e.suppressed]
-    if dropped:
-        print(f"\nsuppressed findings: {len(dropped)} — each hashed to a signature "
-              f"the ledger already held, so it was never recorded")
-        for index, s in dropped:
-            lost, held = s.finding, s.holder
-            # A ruin-class claim dropped is the one case where the loss can change
-            # what the run is FOR. On the two encoding routes the holder is an UGLY
-            # too, so the breaker latches anyway; on a truncated-digest collision it
-            # need not be, and then a run can halt without the circuit-breaker ever
-            # seeing this claim. #125 closes that route; this says so wherever it
-            # happens rather than leaving it to be inferred.
-            ruin = ""
-            if lost.severity is Severity.UGLY:
-                # What was lost, never a claim about what the run DID. On both
-                # encoding routes the holder carries the same severity — severity
-                # is the trailing component and contains no separator — so the
-                # breaker latched on it and only this claim went unseen. Saying
-                # "the breaker never saw this" there would be true of the claim
-                # and false of the run, which is the wrong half to leave an
-                # operator with. On the truncated-digest route (#125) the holder
-                # can be anything, and then nothing latched at all.
-                ruin = ("  — UGLY: the breaker latched on the entry that "
-                        "displaced it"
-                        if held.severity is Severity.UGLY else
-                        "  — UGLY: the breaker never saw this claim")
-            print(f"  (epoch {index}) [{lost.severity.name}] ({lost.persona}) "
-                  f"{lost.title} @ {lost.file!r}:{lost.line} "
-                  f"[{lost.claim_class!r}]{ruin}")
-            print(f"      signature already held by ({held.persona}) {held.title} "
-                  f"@ {held.file!r}:{held.line} [{held.claim_class!r}]")
-    # Severities the panel emitted that did not resolve to a level (#24). Reported
-    # rather than absorbed: the finding was escalated, not read, and the operator
-    # is the one who decides what the persona meant. Silent when there are none.
     unresolved = [
         {"epoch": e.index, "persona": r.persona, "raw": raw}
         for e in review_run.epochs for r in e.reports
         for raw in r.unresolved_severities]
-    if unresolved:
-        print(f"\nunresolved severities: {len(unresolved)} — escalated to "
-              f"{UNRESOLVED_SEVERITY.name}, never downgraded")
-        for u in unresolved:
-            print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
-    # Verdicts that were not a vote (#26). The same doctrine one field along: a
-    # value that decides whether the run may report a good verdict is reported,
-    # never absorbed, so quorum falling short is legible rather than mysterious.
     unread_verdicts = [
         {"epoch": e.index, "persona": r.persona, "raw": r.unresolved_verdict}
         for e in review_run.epochs for r in e.reports
         if r.unresolved_verdict is not None]
-    if unread_verdicts:
-        print(f"\nunresolved verdicts: {len(unread_verdicts)} — not counted "
-              f"toward quorum")
-        for u in unread_verdicts:
-            print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
-    # What each epoch raised, and what happened at the gate after it (#117).
-    #
-    # The gate was the SOLE reporter of what an epoch turned up, and it never runs
-    # for the epoch a run halts on — so the epoch that decided the halt got no
-    # console account of itself at all, which under the default
-    # ``--stall-patience 1`` is precisely the epoch whose counts an operator most
-    # needs. This section is the answer, and it is deliberately NOT printed at the
-    # gate: a notice there would appear for some epochs and never for the halting
-    # one, with nothing telling a reader which (#119's refusal, one channel along).
-    # Printed after the loop, so — unlike the gate — it cannot claim what did not
-    # happen (#72); every line here is read back off a record the loop already set.
-    #
-    # Always-on and exhaustive, like ``panel participation:`` and unlike #24's and
-    # #26's exception sections: "the gate was reached and a human continued" is a
-    # claim no absent section can make, and the absence of a claim about the human
-    # gate is the defect itself.
-    #
-    # A section of its own rather than a column on the participation walk, which is
-    # per-persona-per-epoch: folding a run-level narrative into a roster listing
-    # would give one heading two denominators.
-    print(f"\nepoch account: {len(review_run.epochs)} epoch(s) — what each raised, "
-          f"and what happened at the gate after it")
-    for e in review_run.epochs:
-        # A dry run took NO MEASUREMENT; a real epoch that raised nothing took one
-        # and it came back zero (#133). `new findings: 0` makes those two
-        # indistinguishable, and 12 of the 15 golden invocations are dry runs — so
-        # an operator grepping an archive for epochs that turned nothing up would
-        # count runs that never looked. The precedent is the DRY-RUN CLAUSE IN THE
-        # PERMISSIONS WALK below, whose wording this borrows: it exists because "no
-        # tool call was refused" would have been *true* and read as its opposite.
-        # Named by site rather than by line, deliberately — this comment cited a
-        # line number and the commit that added it pushed the cited line 24 down.
-        #
-        # Keyed on ``--dry-run`` rather than on the counts being zero, which is the
-        # whole distinction: a panel that ran and found nothing must still report
-        # its zeros, and a test pins that so this cannot over-reach. The two in-file
-        # precedents key on different things each time — that clause on
-        # ``args.dry_run``, `degenerate` on ``converged`` — because the rule is not
-        # "one discriminator for dry runs" but *whatever makes this line's claim
-        # have a subject*.
-        #
-        # The gate clause is untouched on purpose: "the epoch halted, so the gate
-        # was never reached" is true on a dry run, and a fix that dropped the whole
-        # line would take a true statement with it.
-        #
-        # WHAT THIS DELIBERATELY DOES NOT REACH, because the justification above
-        # says "archive" and the artefact is half of one: ``raised`` keeps
-        # publishing four zeros for a dry run, unconditionally. The asymmetry is
-        # principled rather than an oversight. This line is PROSE read by a human,
-        # under a header saying "what each raised", with the disambiguating fact six
-        # lines away; ``raised`` is STRUCTURED and its siblings are a one-field join
-        # (``halt_reason``, ``participation[].status``). And the join is exactly
-        # knowable rather than a convention: every route in this backend that fails
-        # to review still emits a diagnosis finding (``session.py``'s agent-error
-        # path, ``contract.py``'s unreadable path), so in the artefact
-        # ``new_findings: 0`` with ``halt_reason`` other than ``no_review`` can only
-        # mean a real review that found nothing. An absent key would also make no
-        # claim, which is the artefact's own rule pointing the other way.
-        if args.dry_run:
-            counts = "nothing was spawned"
-        else:
-            counts = epoch_counts_line(
-                new_findings=len(e.new_findings),
-                material_new_clusters=len(e.material_new_clusters),
-                open_blockers=e.open_blockers, open_uglies=e.open_uglies)
-        print(f"  epoch {e.index}: {counts} — {_gate_outcome(e.gate)}")
-    # Whether the panel actually RAN (#30). Printed on every run, and this is the
-    # one place the pattern above is deliberately not copied: #24's and #26's
-    # sections report an exception, so their absence is itself a complete claim.
-    # "The panel ran in full" is the claim an operator most needs to trust and no
-    # absent section can make it — and absent data is precisely this defect. Every
-    # status is SET at the source; none is inferred from the ledger, because "zero
-    # findings" is the ambiguous signal that made this issue necessary.
-    # ``turns`` rides on the same records rather than opening a fourth always-on
-    # section (#70). A turn count is a fact about one spawn, which is exactly what
-    # a participation record is, and this section is already always-on — so the
-    # claim "the panel actually opened the source" is made where the claim "the
-    # panel ran" is, without a further block on every run. Measured on agent CLI
-    # 2.1.246, ONE turn means the reviewer answered from the prompt alone: see
-    # ``spawn.called_no_tool`` for the rule and why nothing finer is claimed.
-    # ``verdict`` rides on the same records, for the reason ``turns`` does (#33).
-    # Quorum is a conjunct of CONVERGED, so the artefact recorded the verdicts it
-    # REFUSED to read (#26) and nothing about the ones it read: an archived run
-    # could not be asked who voted YES. It belongs here rather than in a block
-    # beside ``unresolved_verdicts`` because a vote's meaning DEPENDS on the status
-    # printed next to it — ``PersonaReport.counted_vote`` is "not did_not_review
-    # AND the word" — so the two facts a reader must join are in one record, and a
-    # second per-persona-per-epoch array would be two sections about one thing.
-    #
-    # The NORMALISED vote, never the prose: ``normalise_verdict`` resolves exactly
-    # YES and NO (#26), so this is a closed vocabulary and ``null`` is the whole of
-    # the rest. That ``null`` means THREE different things, and this field does not
-    # collapse them — which of the three is read from the siblings, never from
-    # here: a status the run knows produced no review; a status that reviewed WITH
-    # a row in ``unresolved_verdicts``, i.e. the persona wrote something that was
-    # not a vote; or a status that reviewed with no such row, i.e. it claimed no
-    # verdict at all. Recovering a categorical fact by matching prose is what #24,
-    # #26 and #30 each refused one field along.
-    #
-    # ``counted_vote`` itself is NOT emitted: it is exactly ``verdict == "YES"``
-    # over a status that reviewed, so a reader holding this record already has it.
-    # Ship the fact, not the derivation.
-    #
-    # Appended rather than inserted beside ``status``, following the surface
-    # record's rule (#74): every key an earlier artefact carried stays in the same
-    # place, so an archive diffs purely additively.
     participation = [
         {"epoch": e.index, "persona": r.persona, "status": r.status.value,
          "findings": len(r.findings), "turns": r.turns, "verdict": r.verdict}
@@ -993,89 +628,9 @@ def _report(argv: list[str] | None) -> int:
          "unreadable_files": list(rec.unreadable_files),
          "unresolved_paths": list(rec.unresolved_paths)}
         for i, rec in enumerate(session.surface_states)]
-    # Always on, for the reason participation is (#30): "this is what the panel
-    # looked at" is a claim no absent section can make, exactly as "the panel ran
-    # in full" is. What the panel was GIVEN, then what it DID with it — so #69's
-    # mark rides here, on the line carrying the composition it qualifies, rather
-    # than on the participation line as well. Two sections about one thing is the
-    # failure this section exists to avoid.
-    if session.surface_states:
-        print(f"\n{_surface_header(session.surface_states[0])}")
-        for i, rec in enumerate(session.surface_states, 1):
-            print(_surface_epoch_line(i, rec))
-            for line in _surface_loss_lines(rec):
-                print(line)
-    print(f"\npanel participation: {len(personas)} persona(s) x "
-          f"{len(review_run.epochs)} epoch(s)")
-    for e in review_run.epochs:
-        tally = Counter(r.status.value for r in e.reports)
-        line = f"  epoch {e.index}: " + ", ".join(
-            f"{n} {name.replace('_', ' ')}" for name, n in sorted(tally.items()))
-        # Said once per epoch, in words, so a reader scanning a seven-persona
-        # three-epoch run does not have to reconstruct it from the marks below.
-        ungrounded = [r for r in e.reports
-                      if r.status.reviewed and called_no_tool(r.turns)]
-        if ungrounded:
-            line += (f" — {len(ungrounded)} CALLED NO TOOL "
-                     f"(answered from the prompt alone)")
-        # What they were GIVEN is one section up (#74), not repeated here. Still
-        # two marks and two failures: a surface the operator did not get and a
-        # reviewer that did not look have different causes, either can happen
-        # without the other, and neither may absorb the other — they are simply
-        # reported where each belongs.
-        print(line)
-        for r in e.reports:
-            # The count is findings EMITTED, meta findings included, so it agrees
-            # with what "canonical issues" counts rather than quietly disagreeing.
-            print(f"    [{r.status.value.replace('_', ' ')}] ({r.persona}) "
-                  f"— {len(r.findings)} finding(s){_turn_note(r)}")
-    # What the panel COVERED (#82), and it is not what the panel agreed. A voting
-    # quorum is a threshold over the votes cast by whoever ran; coverage is the
-    # prior question of whether the right lenses were there at all, and it is not
-    # a headcount — seven correctness lenses are not more complete than three
-    # covering correctness, ruin and completeness. Neither is derived from the
-    # other and no single number may stand for both, so they are reported in two
-    # places under two names.
-    #
-    # Always on, for the reason the surface section is (#74): this is known before
-    # any subprocess exists, so it is reported in a dry run too, where pre-flight
-    # confirmation is the whole job — "your ruin lens is a substring match on one
-    # persona" is the most useful thing a dry run can say about a panel, and it is
-    # the last moment an operator can act on it without having paid.
-    #
-    # The run-time half describes the FINAL epoch, which is the one a verdict rests
-    # on. Per-epoch participation is one section up and is not repeated here.
     final_reports = {r.persona: r for r in final.reports}
     coverage_records = [_coverage_record(c, final_reports.get(c.persona))
                         for c in coverage]
-    print(f"\n{_coverage_header(coverage)}")
-    for c in coverage:
-        print(_coverage_line(c, final_reports.get(c.persona)))
-    # One persona suppressing every default is exactly how #82's panel of one
-    # happens, and it is exactly knowable — unlike which lens that persona really
-    # is. Said as counts so a third required lens needs no new wording.
-    # Over DISTINCT lenses and DISTINCT personas, since one lens may have several
-    # matchers and a record each: what makes a panel degenerate is lenses sharing
-    # a bearer, never a lens having more than one.
-    lens_bearers = {c.persona for c in coverage}
-    lenses = {c.lens for c in coverage}
-    if len(lens_bearers) < len(lenses):
-        print(f"  WARNING: {len(lenses)} required lens(es) rest on "
-              f"{len(lens_bearers)} persona(s) — the panel has no lens "
-              f"independent of any other")
-    # What the panel could actually DO (#67). Two facts, and they are not one fact
-    # reported twice. A tool the panel granted AND deny-listed was never in the
-    # reviewer's session — measured on agent CLI 2.1.246, the runtime removes it
-    # rather than refusing it, so ``permission_denials`` is empty and no envelope
-    # will ever report it. ``refusals`` is the other half: a tool that WAS in the
-    # session, whose use the agent attempted and was refused.
-    #
-    # Always on, for the reason participation is (#30): "the panel had the tools it
-    # says it had" is the claim an operator most needs to trust, and no absent
-    # section can make it. The two halves are reported differently on purpose — a
-    # deny-listed grant is OUR configuration contradicting itself and is a
-    # degradation; a refused call may be the deny-by-default policy working exactly
-    # as intended, so it is stated and not classified.
     permission_personas = [
         {"persona": p.name, "granted": list(p.tools),
          "unavailable": cancelled[p.name]}
@@ -1083,74 +638,49 @@ def _report(argv: list[str] | None) -> int:
     refusals = [
         {"epoch": e.index, "persona": r.persona, "tools": list(r.denied_tools)}
         for e in review_run.epochs for r in e.reports if r.denied_tools]
-    print(f"\npanel permissions: mode={args.permission_mode} | "
-          f"deny-list: {', '.join(disallowed) or 'none'}")
-    starved_records = [r for r in permission_personas if r["unavailable"]]
-    if starved_records:
-        print(f"  DEGRADED — {len(starved_records)} of {len(personas)} persona(s) "
-              f"were granted tools the deny-list removed:")
-        for r in starved_records:
-            print(f"    ({r['persona']}) granted {', '.join(r['granted'])} — "
-                  f"{', '.join(r['unavailable'])} not available")
-    else:
-        print("  every granted tool was available to every persona")
-    for e in review_run.epochs:
-        refused = [r for r in refusals if r["epoch"] == e.index]
-        if args.dry_run:
-            # "no tool call was refused" would be true and would mean the opposite
-            # of what an operator reads into it, so the dry run says which it is.
-            print(f"  epoch {e.index}: nothing was spawned")
-        elif refused:
-            for r in refused:
-                print(f"  epoch {e.index}: ({r['persona']}) refused: "
-                      f"{', '.join(r['tools'])}")
-        else:
-            print(f"  epoch {e.index}: no tool call was refused")
-    # Whether the reduce step ran (#30). Stated, never implied by a ratio: a dead
-    # clusterer and a live one that merged nothing used to differ only by the nine
-    # tokens the call itself cost. Two of the states are not degradations, and are
-    # not reported as such.
     reduce_epochs = [
         {"epoch": i + 1, "state": st.value, "degraded": st.degraded}
         for i, st in enumerate(session.reduce_states)]
-    if not args.semantic_dedup:
-        state = ReduceState.NOT_REQUESTED.value.replace("_", " ")
-        print(f"\nsemantic reduce: {state} (--semantic-dedup off)")
-    else:
-        print("\nsemantic reduce:")
-        for entry in reduce_epochs:
-            state = entry["state"].replace("_", " ")
-            line = (f"DEGRADED — {state} (identity reduce used)"
-                    if entry["degraded"] else state)
-            print(f"  epoch {entry['epoch']}: {line}")
-    # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
-    # finding stays visible above; this groups them (panel is raw material).
-    #
-    # Counted in two halves (#73). A tooling failure — ``agent error:`` (#29),
-    # ``persona failed:`` (#25), the contract parser's diagnoses — is a finding
-    # about the INSTRUMENT, and adding it to the count of defects in the change
-    # is the run reporting itself as part of its own results. Nothing is excluded
-    # to achieve it: both halves stay in the ledger and in the artefact, because a
-    # failed persona's diagnosis has to remain recoverable, and only the count is
-    # split. The flag is set where each finding is produced and is never matched
-    # out of ``claim_class``, which is model-controlled — see ``Finding``.
-    #
-    # Both numbers are printed even when one is zero: "0 about the run" is the
-    # claim an operator needs, and an absent clause cannot make it.
     issues_in_change = sum(1 for c in review_run.clusters if not c.about_run)
     issues_about_run = len(review_run.clusters) - issues_in_change
-    if args.semantic_dedup and review_run.clusters:
-        print(f"\ncanonical issues: {issues_in_change} in the change | "
-              f"{issues_about_run} about the run "
-              f"(reduced from {len(review_run.ledger)} raw findings)")
-        for c in sorted(review_run.clusters, key=lambda c: c.severity, reverse=True):
-            mark = " — about the run" if c.about_run else ""
-            print(f"  [{c.severity.name}] ({len(c.members)}x) {c.title}{mark}")
-    # Machine-readable output for the convening (synthesis) session to consume.
     ungrounded = ungrounded_keys(review_run)
-    print("\n--- JSON ---")
-    print(json.dumps({
-        "halt_reason": review_run.halt_reason.value,
+    return _Derived(
+        final=final, agreement=agreement, converged=converged, degenerate=degenerate,
+        unresolved=unresolved, unread_verdicts=unread_verdicts,
+        participation=participation, raised=raised, surface_epochs=surface_epochs,
+        coverage_records=coverage_records, permission_personas=permission_personas,
+        refusals=refusals, reduce_epochs=reduce_epochs,
+        issues_in_change=issues_in_change, issues_about_run=issues_about_run,
+        ungrounded=ungrounded)
+
+
+def _artefact(review_run: ReviewRun, ctx: _RunContext,
+              d: _Derived | None = None) -> dict:
+    """The run artefact: the ``--- JSON ---`` object, and the ``--out`` file's (#31).
+
+    ONE builder for both channels, so the durable record cannot be a second, hand-kept
+    copy of the console's (#33, #82). Built from a complete run at the end, and from
+    ``checkpoint``'s copy of a partial one after every epoch.
+    """
+    if d is None:
+        d = _derive(review_run, ctx)
+    args, session, panel, personas, source, no_mandate, disallowed = (
+        ctx.args, ctx.session, ctx.panel, ctx.personas, ctx.source, ctx.no_mandate,
+        ctx.disallowed)
+    agreement, degenerate, unresolved, unread_verdicts = (
+        d.agreement, d.degenerate, d.unresolved, d.unread_verdicts)
+    participation, raised, surface_epochs, coverage_records = (
+        d.participation, d.raised, d.surface_epochs, d.coverage_records)
+    permission_personas, refusals, reduce_epochs, ungrounded = (
+        d.permission_personas, d.refusals, d.reduce_epochs, d.ungrounded)
+    issues_in_change, issues_about_run = d.issues_in_change, d.issues_about_run
+    return {
+        # ``null`` is the partial marker (#31): a run that completed always has a halt
+        # reason, and a per-epoch write never does — ``checkpoint`` runs before the loop
+        # publishes it, on the halting epoch as well (#155). Read guarded for that
+        # reason; unguarded, every run's final checkpoint would fail.
+        "halt_reason": (None if review_run.halt_reason is None
+                        else review_run.halt_reason.value),
         "epochs": len(review_run.epochs),
         "open_uglies": len(review_run.open_uglies),
         "open_blockers": len(review_run.open_blockers),
@@ -1477,7 +1007,667 @@ def _report(argv: list[str] | None) -> int:
                           "title": m.title, "file": m.file, "line": m.line}
                          for m in c.members]}
             for c in review_run.clusters],
-    }, indent=2))
+    }
+
+
+def _render(artefact: dict) -> str:
+    """The artefact's text: what stdout prints after the delimiter, and the file holds."""
+    return json.dumps(artefact, indent=2) + "\n"
+
+
+class CheckpointError(Exception):
+    """One or both of the checkpoint's two jobs failed; the message names which."""
+
+
+def _checkpoint(on_epoch: Callable[[ReviewRun], None], out: ArtefactFile,
+                ctx: _RunContext) -> Callable[[ReviewRun], None]:
+    """``session.on_epoch`` and the durable write, behind the one ``checkpoint`` seam.
+
+    Two jobs, both always attempted: a failure in one never skips the other. They
+    rebuild the next epoch's prior context and replace the ``--out`` file, and
+    neither depends on the other. If either fails this raises once, naming each job
+    that failed, so the engine records one ``SeamFailure(seam="checkpoint")`` whose
+    detail says which. One row rather than two because the engine's contract is one
+    callable per seam, and splitting it would change the engine's signature for a
+    composition that belongs here.
+
+    What is written is built from ``run``, the copy the engine hands ``checkpoint``,
+    never the live run (#155). Its ``halt_reason`` is ``None``, which is the partial
+    marker.
+    """
+    def checkpoint(run: ReviewRun) -> None:
+        failed = []
+        try:
+            on_epoch(run)
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"prior context — {render_exception(exc)}")
+        try:
+            out.persist(lambda: _render(_artefact(run, ctx)),
+                        when=f"at epoch {len(run.epochs)}")
+        except ArtefactWriteError as exc:
+            failed.append(f"artefact write — {exc}")
+        if failed:
+            raise CheckpointError("; ".join(failed))
+    return checkpoint
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the panel and print its report, which a stdout fault must not end (#141).
+
+    Every print made under this call goes through one ``ConsoleStream``. A run that
+    KNOWS its report did not reach its reader never exits ``0``: the halt's own code
+    is kept where it is already non-zero, because each such code carries a stronger
+    fact than "not delivered" — an UGLY's ``3`` above all — and ``1`` stands in for a
+    ``0``. A reader who leaves after the kernel accepted the bytes is not known, and
+    ``ConsoleStream`` says so. ``1`` is the code an unhandled exception returned here
+    on these paths before, where it was not ``120``; what the codes MEAN is #32's to
+    rule.
+
+    The stream is settled in ``finally``, so an ``argparse`` exit or a Ctrl-C is
+    flushed, released and noticed like a return — only the exit code is theirs.
+    """
+    console = ConsoleStream(sys.stdout)
+    sys.stdout = console
+    try:
+        code = _report(argv)
+    finally:
+        console.flush()
+        sys.stdout = console.inner
+        console.release()
+        for notice in console.notices():
+            # ``print(file=None)`` writes to stdout, which is after the JSON block:
+            # with descriptor 2 closed there is nowhere to say it, not somewhere else.
+            if sys.stderr is None:
+                break
+            try:
+                print(notice, file=sys.stderr)
+            except OSError:
+                # stderr is gone as well: the exit code is the only channel left, and
+                # the bytes left buffered must not fail again at the interpreter's exit.
+                release(sys.stderr)
+                break
+    return (code or 1) if console.lost else code
+
+
+def _report(argv: list[str] | None) -> int:
+    ap = argparse.ArgumentParser(description="Adversarial review panel loop over a git diff.")
+    ap.add_argument("--repo", default=".", help="repository root")
+    # Exactly one review mode is active per run: diff mode (--base/--head) OR
+    # path mode (--paths). Neither is argparse-required; main() enforces the XOR.
+    ap.add_argument("--base", default=None, help="diff mode: base ref (e.g. main)")
+    ap.add_argument("--head", default="HEAD", help="diff mode: head ref")
+    ap.add_argument("--paths", nargs="*", default=None, metavar="PATH",
+                    help="path mode: adversarially review the full content of these "
+                         "files/directories (directories expand via git ls-files, "
+                         "honouring .gitignore) instead of a diff")
+    ap.add_argument("--max-surface-bytes", type=int, default=200_000,
+                    help="path mode: cap on total review-surface size (default 200000)")
+    ap.add_argument("--why", default="mission-critical change", help="why the review matters")
+    ap.add_argument("--what", default=None, help="what changed / what to review")
+    ap.add_argument("--max-epochs", type=int, default=3)
+    ap.add_argument("--token-budget", type=int, default=None)
+    ap.add_argument("--stall-patience", type=int, default=1)
+    ap.add_argument("--model", default=None, help="default model for personas")
+    ap.add_argument("--allow-tools", nargs="*", default=None, metavar="TOOL",
+                    help="override allowed tools for ALL personas, e.g. --allow-tools "
+                         "Read Grep Glob. A Bash(...) grant does NOT bound what is run "
+                         "(issue #96): it is cancelled by the default deny-list, or, "
+                         "with Bash removed from it, becomes an unrestricted shell.")
+    ap.add_argument("--disallow-tools", nargs="*", default=None, metavar="TOOL",
+                    help="override the disallowed-tools list (default: Edit Write NotebookEdit Bash)")
+    ap.add_argument("--permission-mode", default="plan",
+                    help="claude --permission-mode: plan|default|acceptEdits|bypassPermissions")
+    ap.add_argument("--semantic-dedup", action="store_true",
+                    help="fold same-concept findings into canonical clusters via a "
+                         "cheap model call each epoch (default: deterministic "
+                         "signature dedup only, no extra call)")
+    ap.add_argument("--cluster-model", default=None,
+                    help="model for the --semantic-dedup clusterer (default: --model)")
+    ap.add_argument("--panel", default=None, metavar="PATH",
+                    help="source the panel from this file (issue #16), ahead of the "
+                         "repo's CLAUDE.md, panel.yaml and panel.md, none of which "
+                         "are then consulted. A .yaml/.yml file is read as a panel "
+                         "definition, anything else as a 'Resident Experts' "
+                         "markdown document. A named panel that cannot be used is "
+                         "an error, never a silent fall back to the default set")
+    ap.add_argument("--prior-findings", default=None, metavar="PATH",
+                    help="seed the panel with an earlier run's findings (issue #13): a "
+                         "saved findings.json, a run's JSON output, or a raw run.log "
+                         "containing the '--- JSON ---' block. Injected from epoch 1, "
+                         "with locations flagged advisory since fixes move code")
+    ap.add_argument("--out", default=None, metavar="PATH",
+                    help="also write the JSON artefact to PATH, replaced atomically "
+                         "after every epoch and once more at the end, so a run that "
+                         "is stopped leaves what it completed (issue #31). A file "
+                         "whose halt_reason is null is from a run that did not "
+                         "finish. Must not exist yet, and must not be inside --repo "
+                         "or any git working tree; "
+                         "without this flag nothing is written")
+    ap.add_argument("--dry-run", action="store_true", help="print the wiring, spawn nothing")
+    ap.add_argument("--no-parallel", action="store_true")
+    args = ap.parse_args(argv)
+
+    # Exactly-one-mode selection (deny ambiguity rather than silently prefer one).
+    path_mode = args.paths is not None
+    if path_mode and args.base is not None:
+        ap.error("choose one mode: --base/--head (diff) OR --paths (whole-file), not both")
+    if not path_mode and args.base is None:
+        ap.error("specify a review mode: --base <ref> (diff) or --paths <path...> (whole-file)")
+    if path_mode and not args.paths:
+        ap.error("--paths needs at least one file or directory")
+    what = args.what or ("existing code (full-file review)" if path_mode
+                         else "the pending diff")
+
+    repo = Path(args.repo).resolve()
+    # A panel named on the command line that cannot be used is refused here,
+    # before the first epoch and so before anything is spent, through the same
+    # operator-error path SurfaceError already uses rather than a third behaviour
+    # for the class (#59). The implicit tiers never reach this: they record what
+    # they discarded and carry on.
+    try:
+        # `is not None`, never truthiness: `--panel ""` is an operator who named
+        # a panel and got nothing, which shells produce constantly from an unset
+        # variable. Treating it as "no flag given" is this issue's own defect
+        # inside the flag that fixes it (#106). Sourcing takes the raw argument,
+        # because `Path("")` is an existing directory and loses the fact.
+        personas, source, coverage = load_personas(repo, args.panel)
+    except PanelError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    # Where the durable artefact goes (#31), refused here for the panel's reason:
+    # before the first epoch, and so before anything is spent. ``None`` without the
+    # flag, and then nothing is written anywhere.
+    out = None
+    if args.out is not None:
+        try:
+            out = ArtefactFile(check_destination(args.out, repo), say=print)
+        except DestinationError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    if args.allow_tools:  # override the read-only default for ALL personas
+        for p in personas:
+            p.tools = list(args.allow_tools)
+    print(f"[panel] {len(personas)} personas from {_panel_origin(source)}: "
+          f"{', '.join(p.name for p in personas)}")
+    # A declared panel that was thrown away, said BEFORE the spend — the one
+    # moment an operator can still abort (#16). Silent when nothing was declared:
+    # a repo that asked for nothing must read clean, because a rule that fires on
+    # a healthy run is the mirror image of the defect it reports. The artefact
+    # carries the same fact unconditionally, which is where a run read back cold
+    # tells "no panel was declared" from "the declared panel was discarded".
+    for line in _discard_lines(source):
+        print(line)
+    # A persona convened with NO MANDATE (#103), said in the same breath and for
+    # the same reason: this is the moment an operator can still abort. It is a
+    # different fact from a discard, not a second rendering of one — a discard is
+    # a declaration that yielded NOBODY, this is a declaration that yielded
+    # somebody with nothing in them, and #16's rule correctly does not fire on it.
+    # Measured, no existing field carried it: two runs differing only in whether
+    # half the panel had a brief were byte-identical, console and artefact alike.
+    # Silent on a healthy run, like every warning above it.
+    no_mandate = mandateless(personas)
+    if no_mandate:
+        # The duplicate-call clause is conditional for the reason ``_verdict_line``'s
+        # clauses are: it is a CLAIM, and with one mandate-less persona there is
+        # nothing to share it with. A warning about illegible output that is itself
+        # false in a case would be this issue committed inside its own fix.
+        shared = (" and personas sharing one spawn an identical call"
+                  if len(no_mandate) > 1 else "")
+        print(f"[panel] WARNING: {len(no_mandate)} of {len(personas)} persona(s) "
+              f"were convened with NO MANDATE — an empty brief is not a lens"
+              f"{shared}: {', '.join(no_mandate)}")
+    print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
+    disallowed = (list(args.disallow_tools) if args.disallow_tools is not None
+                  else list(DEFAULT_DISALLOWED_TOOLS))
+    # Tools the panel granted AND deny-listed (#67). Such a tool is not refused when
+    # a reviewer calls it — it is absent from the reviewer's session, so the reviewer
+    # never calls it and the result envelope records nothing at all. Named HERE, not
+    # only in the summary, because it follows from the flags alone: an operator who
+    # first learns of it after the run has already paid for the whole panel.
+    cancelled = {p.name: unavailable_tools(p.tools, disallowed) for p in personas}
+    if any(cancelled.values()):
+        starved = [n for n, t in cancelled.items() if t]
+        print(f"[panel] WARNING: {len(starved)} of {len(personas)} persona(s) were "
+              f"granted tools the deny-list removed, so those tools were NOT "
+              f"available to them: "
+              f"{', '.join(sorted({t for v in cancelled.values() for t in v}))}")
+
+    # Cross-run memory (issue #13). Loaded BEFORE the session so a bad path fails
+    # here, not three epochs into a paid run, and echoed so a seed that loaded
+    # nothing cannot be mistaken for one that worked.
+    seeded = ""
+    if args.prior_findings:
+        seeded = load_prior_findings(args.prior_findings)
+        print(f"[panel] prior findings: {len(seeded.splitlines())} carried in from "
+              f"{args.prior_findings} (locations advisory)")
+
+    spec = ReviewSpec(why=args.why, what=what)
+    session = PanelSession(
+        repo_root=repo, spec=spec, base=args.base or "", head=args.head,
+        paths=args.paths, max_surface_bytes=args.max_surface_bytes,
+        personas={p.name: p for p in personas},
+        default_model=args.model, cluster_model=args.cluster_model,
+        dry_run=args.dry_run, seeded_summary=seeded,
+        disallowed_tools=disallowed,
+        permission_mode=args.permission_mode)
+    panel = PanelConfig(personas=[(p.name, p.grounding) for p in personas])
+    halting = HaltingSet(token_budget=args.token_budget, max_epochs=args.max_epochs,
+                         stall_patience=args.stall_patience, require_scope_complete=False)
+
+    # Opt-in semantic reduce; otherwise the engine's deterministic identity default.
+    reduce_kwargs = {"reduce": session.reduce} if args.semantic_dedup else {}
+    ctx = _RunContext(args=args, session=session, panel=panel, personas=personas,
+                      source=source, coverage=coverage, no_mandate=list(no_mandate),
+                      disallowed=disallowed, cancelled=cancelled)
+    # Without ``--out`` the seam is exactly what it was before #31.
+    checkpoint = (session.on_epoch if out is None
+                  else _checkpoint(session.on_epoch, out, ctx))
+    try:
+        review_run = run(
+            spec, halting, panel,
+            spawn=session.spawn, gather=session.gather,
+            human_gate=session.interactive_gate, checkpoint=checkpoint,
+            budget_spent=session.budget_spent, parallel=not args.no_parallel,
+            **reduce_kwargs)
+    except SurfaceError as exc:
+        # No surface means no review: report the operator error and print no
+        # verdict, rather than a halt line for a panel that reviewed nothing.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    d = _derive(review_run, ctx)
+
+    print(f"\n=== HALT: {review_run.halt_reason.value} after {len(review_run.epochs)} epoch(s) ===")
+    print(f"open uglies: {len(review_run.open_uglies)} | open blockers: {len(review_run.open_blockers)}"
+          f" | tokens: {session.tokens}")
+    # Why there are no more epochs (#85). Above the findings, because why a run
+    # stopped is read before what it found, and it names the epoch because the halt
+    # line cannot: that counts the epochs that COMPLETED, so a run that lost its
+    # surface on epoch 2 reports "after 1 epoch(s)". The backend's own message rides
+    # along — it names the paths or carries git's stderr, which is what an operator
+    # needs to correct and what the engine could never produce (#18).
+    if review_run.surface_failure is not None:
+        print(f"surface lost: epoch {review_run.surface_failure.epoch} could not be "
+              f"reassembled — {review_run.surface_failure.detail}")
+    # Every other injected callable that failed (#148). An EXCEPTION section: it prints
+    # only when something failed, so its absence on a healthy run is a complete claim.
+    # Above the findings for the reason the line above is: a run halted ``unmeasured``
+    # is explained here, not two screens later.
+    for e in review_run.epochs:
+        for f in e.seam_failures:
+            print(f"seam failed: epoch {e.index}, {f.seam} — {f.detail}")
+    # What the good verdict rests on (#82). ``converged`` is satisfied by ABSENCE
+    # on every conjunct, and quorum is trivially met at n=1 — so a panel of one
+    # whose sole reviewer called no tool printed the good verdict with nothing
+    # beside it saying the agreement was one voice that did not look. Qualified,
+    # never gated: a halt reason is for a state the loop cannot usefully continue
+    # from, and a degenerate-but-real review can. Personas are a parameter, and a
+    # deliberate one-reviewer run is the operator's call — the tool informs.
+    # Attached to a verdict and only to a verdict; see ``_verdict_line``.
+    final = d.final
+    agreement = d.agreement
+    converged = d.converged
+    # ``degenerate`` qualifies a VERDICT, so it is ``None`` where the run reached
+    # none — the third state ``opened_source`` takes for the same reason. The
+    # counts beside it are unconditional facts about the votes and stay; this one
+    # is an answer to "what does converged rest on here?", and on a dry run that
+    # question has no subject. Arithmetically it would read ``true`` on every dry
+    # run, and 11 of 13 golden invocations are dry runs — so an operator counting
+    # degenerate verdicts across an archive would count runs that never reached
+    # one. Saying nothing is the honest value; the console is silent for the same
+    # reason, and both come off this one variable so they cannot disagree.
+    degenerate = d.degenerate
+    if converged:
+        print(_verdict_line(agreement, quorum=panel.effective_quorum,
+                            roster=len(personas)))
+        if degenerate:
+            print("  DEGENERATE VERDICT — at most one voice is known to have "
+                  "looked and agreed")
+    for f in review_run.open_uglies + review_run.open_blockers:
+        print(f"  [{f.severity.name}] ({f.persona}) {f.title} @ {f.file}:{f.line}")
+    # Claims the ledger refused to a collision (#119). An EXCEPTION section, like
+    # #24's and #26's below: it prints only when something was dropped, so on a
+    # healthy run its absence is itself a complete claim and no line about lost
+    # claims appears on a run that lost none.
+    #
+    # Two lines per claim — the one that was dropped, then the entry that displaced
+    # it — because a collision is only legible beside what it collided with: the
+    # pair agree on severity and line-bucket and differ exactly where the encoding
+    # let them merge, and a reader seeing one line alone cannot tell this from the
+    # coarse dedup working as designed.
+    #
+    # Locations and categories print through ``repr``, and the two have different
+    # reasons — stated separately, because one of them was written here as
+    # covering both and did not.
+    #
+    # The LOCATION, because of the second collision route: a persona writing the
+    # string ``"None"`` where another finding has no file at all. Rendered bare
+    # those are the same four characters, so the section would show two identical
+    # locations for findings that differ — reading as exactly the re-sighting it
+    # is not.
+    #
+    # The CATEGORY, because it is the field a collision is CRAFTED in and it is
+    # printed on the line that reports the crafting. ``claim_class`` is always a
+    # string (``contract.py`` coerces it), so the ``None`` route above cannot
+    # reach it; what reaches it is a newline, a carriage return or an escape
+    # sequence, each of which lets the persona being reported on forge an extra
+    # entry, overwrite this one, or recolour the section. ``repr`` escapes all
+    # three. The title and the persona name are NOT quoted here, and that is not
+    # an oversight: the same values print unquoted wherever this tool prints a
+    # finding, so quoting them here alone would imply a guarantee the report does
+    # not make. That whole class is filed separately.
+    #
+    # No ``evidence`` here: #112's console refusal stands. The artefact carries the
+    # persona's working, and the console carries the loss.
+    dropped = [(e.index, s) for e in review_run.epochs for s in e.suppressed]
+    if dropped:
+        print(f"\nsuppressed findings: {len(dropped)} — each hashed to a signature "
+              f"the ledger already held, so it was never recorded")
+        for index, s in dropped:
+            lost, held = s.finding, s.holder
+            # A ruin-class claim dropped is the one case where the loss can change
+            # what the run is FOR. On the two encoding routes the holder is an UGLY
+            # too, so the breaker latches anyway; on a truncated-digest collision it
+            # need not be, and then a run can halt without the circuit-breaker ever
+            # seeing this claim. #125 closes that route; this says so wherever it
+            # happens rather than leaving it to be inferred.
+            ruin = ""
+            if lost.severity is Severity.UGLY:
+                # What was lost, never a claim about what the run DID. On both
+                # encoding routes the holder carries the same severity — severity
+                # is the trailing component and contains no separator — so the
+                # breaker latched on it and only this claim went unseen. Saying
+                # "the breaker never saw this" there would be true of the claim
+                # and false of the run, which is the wrong half to leave an
+                # operator with. On the truncated-digest route (#125) the holder
+                # can be anything, and then nothing latched at all.
+                ruin = ("  — UGLY: the breaker latched on the entry that "
+                        "displaced it"
+                        if held.severity is Severity.UGLY else
+                        "  — UGLY: the breaker never saw this claim")
+            print(f"  (epoch {index}) [{lost.severity.name}] ({lost.persona}) "
+                  f"{lost.title} @ {lost.file!r}:{lost.line} "
+                  f"[{lost.claim_class!r}]{ruin}")
+            print(f"      signature already held by ({held.persona}) {held.title} "
+                  f"@ {held.file!r}:{held.line} [{held.claim_class!r}]")
+    # Severities the panel emitted that did not resolve to a level (#24). Reported
+    # rather than absorbed: the finding was escalated, not read, and the operator
+    # is the one who decides what the persona meant. Silent when there are none.
+    unresolved = d.unresolved
+    if unresolved:
+        print(f"\nunresolved severities: {len(unresolved)} — escalated to "
+              f"{UNRESOLVED_SEVERITY.name}, never downgraded")
+        for u in unresolved:
+            print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
+    # Verdicts that were not a vote (#26). The same doctrine one field along: a
+    # value that decides whether the run may report a good verdict is reported,
+    # never absorbed, so quorum falling short is legible rather than mysterious.
+    unread_verdicts = d.unread_verdicts
+    if unread_verdicts:
+        print(f"\nunresolved verdicts: {len(unread_verdicts)} — not counted "
+              f"toward quorum")
+        for u in unread_verdicts:
+            print(f"  (epoch {u['epoch']}) ({u['persona']}) {u['raw']!r}")
+    # What each epoch raised, and what happened at the gate after it (#117).
+    #
+    # The gate was the SOLE reporter of what an epoch turned up, and it never runs
+    # for the epoch a run halts on — so the epoch that decided the halt got no
+    # console account of itself at all, which under the default
+    # ``--stall-patience 1`` is precisely the epoch whose counts an operator most
+    # needs. This section is the answer, and it is deliberately NOT printed at the
+    # gate: a notice there would appear for some epochs and never for the halting
+    # one, with nothing telling a reader which (#119's refusal, one channel along).
+    # Printed after the loop, so — unlike the gate — it cannot claim what did not
+    # happen (#72); every line here is read back off a record the loop already set.
+    #
+    # Always-on and exhaustive, like ``panel participation:`` and unlike #24's and
+    # #26's exception sections: "the gate was reached and a human continued" is a
+    # claim no absent section can make, and the absence of a claim about the human
+    # gate is the defect itself.
+    #
+    # A section of its own rather than a column on the participation walk, which is
+    # per-persona-per-epoch: folding a run-level narrative into a roster listing
+    # would give one heading two denominators.
+    print(f"\nepoch account: {len(review_run.epochs)} epoch(s) — what each raised, "
+          f"and what happened at the gate after it")
+    for e in review_run.epochs:
+        # A dry run took NO MEASUREMENT; a real epoch that raised nothing took one
+        # and it came back zero (#133). `new findings: 0` makes those two
+        # indistinguishable, and 12 of the 15 golden invocations are dry runs — so
+        # an operator grepping an archive for epochs that turned nothing up would
+        # count runs that never looked. The precedent is the DRY-RUN CLAUSE IN THE
+        # PERMISSIONS WALK below, whose wording this borrows: it exists because "no
+        # tool call was refused" would have been *true* and read as its opposite.
+        # Named by site rather than by line, deliberately — this comment cited a
+        # line number and the commit that added it pushed the cited line 24 down.
+        #
+        # Keyed on ``--dry-run`` rather than on the counts being zero, which is the
+        # whole distinction: a panel that ran and found nothing must still report
+        # its zeros, and a test pins that so this cannot over-reach. The two in-file
+        # precedents key on different things each time — that clause on
+        # ``args.dry_run``, `degenerate` on ``converged`` — because the rule is not
+        # "one discriminator for dry runs" but *whatever makes this line's claim
+        # have a subject*.
+        #
+        # The gate clause is untouched on purpose: "the epoch halted, so the gate
+        # was never reached" is true on a dry run, and a fix that dropped the whole
+        # line would take a true statement with it.
+        #
+        # WHAT THIS DELIBERATELY DOES NOT REACH, because the justification above
+        # says "archive" and the artefact is half of one: ``raised`` keeps
+        # publishing four zeros for a dry run, unconditionally. The asymmetry is
+        # principled rather than an oversight. This line is PROSE read by a human,
+        # under a header saying "what each raised", with the disambiguating fact six
+        # lines away; ``raised`` is STRUCTURED and its siblings are a one-field join
+        # (``halt_reason``, ``participation[].status``). And the join is exactly
+        # knowable rather than a convention: every route in this backend that fails
+        # to review still emits a diagnosis finding (``session.py``'s agent-error
+        # path, ``contract.py``'s unreadable path), so in the artefact
+        # ``new_findings: 0`` with ``halt_reason`` other than ``no_review`` can only
+        # mean a real review that found nothing. An absent key would also make no
+        # claim, which is the artefact's own rule pointing the other way.
+        if args.dry_run:
+            counts = "nothing was spawned"
+        else:
+            counts = epoch_counts_line(
+                new_findings=len(e.new_findings),
+                material_new_clusters=len(e.material_new_clusters),
+                open_blockers=e.open_blockers, open_uglies=e.open_uglies)
+        print(f"  epoch {e.index}: {counts} — {_gate_outcome(e.gate)}")
+    # Whether the panel actually RAN (#30). Printed on every run, and this is the
+    # one place the pattern above is deliberately not copied: #24's and #26's
+    # sections report an exception, so their absence is itself a complete claim.
+    # "The panel ran in full" is the claim an operator most needs to trust and no
+    # absent section can make it — and absent data is precisely this defect. Every
+    # status is SET at the source; none is inferred from the ledger, because "zero
+    # findings" is the ambiguous signal that made this issue necessary.
+    # ``turns`` rides on the same records rather than opening a fourth always-on
+    # section (#70). A turn count is a fact about one spawn, which is exactly what
+    # a participation record is, and this section is already always-on — so the
+    # claim "the panel actually opened the source" is made where the claim "the
+    # panel ran" is, without a further block on every run. Measured on agent CLI
+    # 2.1.246, ONE turn means the reviewer answered from the prompt alone: see
+    # ``spawn.called_no_tool`` for the rule and why nothing finer is claimed.
+    # ``verdict`` rides on the same records, for the reason ``turns`` does (#33).
+    # Quorum is a conjunct of CONVERGED, so the artefact recorded the verdicts it
+    # REFUSED to read (#26) and nothing about the ones it read: an archived run
+    # could not be asked who voted YES. It belongs here rather than in a block
+    # beside ``unresolved_verdicts`` because a vote's meaning DEPENDS on the status
+    # printed next to it — ``PersonaReport.counted_vote`` is "not did_not_review
+    # AND the word" — so the two facts a reader must join are in one record, and a
+    # second per-persona-per-epoch array would be two sections about one thing.
+    #
+    # The NORMALISED vote, never the prose: ``normalise_verdict`` resolves exactly
+    # YES and NO (#26), so this is a closed vocabulary and ``null`` is the whole of
+    # the rest. That ``null`` means THREE different things, and this field does not
+    # collapse them — which of the three is read from the siblings, never from
+    # here: a status the run knows produced no review; a status that reviewed WITH
+    # a row in ``unresolved_verdicts``, i.e. the persona wrote something that was
+    # not a vote; or a status that reviewed with no such row, i.e. it claimed no
+    # verdict at all. Recovering a categorical fact by matching prose is what #24,
+    # #26 and #30 each refused one field along.
+    #
+    # ``counted_vote`` itself is NOT emitted: it is exactly ``verdict == "YES"``
+    # over a status that reviewed, so a reader holding this record already has it.
+    # Ship the fact, not the derivation.
+    #
+    # Appended rather than inserted beside ``status``, following the surface
+    # record's rule (#74): every key an earlier artefact carried stays in the same
+    # place, so an archive diffs purely additively.
+    #
+    # The record this describes is built in ``_derive``, with the artefact (#31).
+    # Always on, for the reason participation is (#30): "this is what the panel
+    # looked at" is a claim no absent section can make, exactly as "the panel ran
+    # in full" is. What the panel was GIVEN, then what it DID with it — so #69's
+    # mark rides here, on the line carrying the composition it qualifies, rather
+    # than on the participation line as well. Two sections about one thing is the
+    # failure this section exists to avoid.
+    if session.surface_states:
+        print(f"\n{_surface_header(session.surface_states[0])}")
+        for i, rec in enumerate(session.surface_states, 1):
+            print(_surface_epoch_line(i, rec))
+            for line in _surface_loss_lines(rec):
+                print(line)
+    print(f"\npanel participation: {len(personas)} persona(s) x "
+          f"{len(review_run.epochs)} epoch(s)")
+    for e in review_run.epochs:
+        tally = Counter(r.status.value for r in e.reports)
+        line = f"  epoch {e.index}: " + ", ".join(
+            f"{n} {name.replace('_', ' ')}" for name, n in sorted(tally.items()))
+        # Said once per epoch, in words, so a reader scanning a seven-persona
+        # three-epoch run does not have to reconstruct it from the marks below.
+        ungrounded = [r for r in e.reports
+                      if r.status.reviewed and called_no_tool(r.turns)]
+        if ungrounded:
+            line += (f" — {len(ungrounded)} CALLED NO TOOL "
+                     f"(answered from the prompt alone)")
+        # What they were GIVEN is one section up (#74), not repeated here. Still
+        # two marks and two failures: a surface the operator did not get and a
+        # reviewer that did not look have different causes, either can happen
+        # without the other, and neither may absorb the other — they are simply
+        # reported where each belongs.
+        print(line)
+        for r in e.reports:
+            # The count is findings EMITTED, meta findings included, so it agrees
+            # with what "canonical issues" counts rather than quietly disagreeing.
+            print(f"    [{r.status.value.replace('_', ' ')}] ({r.persona}) "
+                  f"— {len(r.findings)} finding(s){_turn_note(r)}")
+    # What the panel COVERED (#82), and it is not what the panel agreed. A voting
+    # quorum is a threshold over the votes cast by whoever ran; coverage is the
+    # prior question of whether the right lenses were there at all, and it is not
+    # a headcount — seven correctness lenses are not more complete than three
+    # covering correctness, ruin and completeness. Neither is derived from the
+    # other and no single number may stand for both, so they are reported in two
+    # places under two names.
+    #
+    # Always on, for the reason the surface section is (#74): this is known before
+    # any subprocess exists, so it is reported in a dry run too, where pre-flight
+    # confirmation is the whole job — "your ruin lens is a substring match on one
+    # persona" is the most useful thing a dry run can say about a panel, and it is
+    # the last moment an operator can act on it without having paid.
+    #
+    # The run-time half describes the FINAL epoch, which is the one a verdict rests
+    # on. Per-epoch participation is one section up and is not repeated here.
+    final_reports = {r.persona: r for r in final.reports}
+    print(f"\n{_coverage_header(coverage)}")
+    for c in coverage:
+        print(_coverage_line(c, final_reports.get(c.persona)))
+    # One persona suppressing every default is exactly how #82's panel of one
+    # happens, and it is exactly knowable — unlike which lens that persona really
+    # is. Said as counts so a third required lens needs no new wording.
+    # Over DISTINCT lenses and DISTINCT personas, since one lens may have several
+    # matchers and a record each: what makes a panel degenerate is lenses sharing
+    # a bearer, never a lens having more than one.
+    lens_bearers = {c.persona for c in coverage}
+    lenses = {c.lens for c in coverage}
+    if len(lens_bearers) < len(lenses):
+        print(f"  WARNING: {len(lenses)} required lens(es) rest on "
+              f"{len(lens_bearers)} persona(s) — the panel has no lens "
+              f"independent of any other")
+    # What the panel could actually DO (#67). Two facts, and they are not one fact
+    # reported twice. A tool the panel granted AND deny-listed was never in the
+    # reviewer's session — measured on agent CLI 2.1.246, the runtime removes it
+    # rather than refusing it, so ``permission_denials`` is empty and no envelope
+    # will ever report it. ``refusals`` is the other half: a tool that WAS in the
+    # session, whose use the agent attempted and was refused.
+    #
+    # Always on, for the reason participation is (#30): "the panel had the tools it
+    # says it had" is the claim an operator most needs to trust, and no absent
+    # section can make it. The two halves are reported differently on purpose — a
+    # deny-listed grant is OUR configuration contradicting itself and is a
+    # degradation; a refused call may be the deny-by-default policy working exactly
+    # as intended, so it is stated and not classified.
+    permission_personas = d.permission_personas
+    refusals = d.refusals
+    print(f"\npanel permissions: mode={args.permission_mode} | "
+          f"deny-list: {', '.join(disallowed) or 'none'}")
+    starved_records = [r for r in permission_personas if r["unavailable"]]
+    if starved_records:
+        print(f"  DEGRADED — {len(starved_records)} of {len(personas)} persona(s) "
+              f"were granted tools the deny-list removed:")
+        for r in starved_records:
+            print(f"    ({r['persona']}) granted {', '.join(r['granted'])} — "
+                  f"{', '.join(r['unavailable'])} not available")
+    else:
+        print("  every granted tool was available to every persona")
+    for e in review_run.epochs:
+        refused = [r for r in refusals if r["epoch"] == e.index]
+        if args.dry_run:
+            # "no tool call was refused" would be true and would mean the opposite
+            # of what an operator reads into it, so the dry run says which it is.
+            print(f"  epoch {e.index}: nothing was spawned")
+        elif refused:
+            for r in refused:
+                print(f"  epoch {e.index}: ({r['persona']}) refused: "
+                      f"{', '.join(r['tools'])}")
+        else:
+            print(f"  epoch {e.index}: no tool call was refused")
+    # Whether the reduce step ran (#30). Stated, never implied by a ratio: a dead
+    # clusterer and a live one that merged nothing used to differ only by the nine
+    # tokens the call itself cost. Two of the states are not degradations, and are
+    # not reported as such.
+    reduce_epochs = d.reduce_epochs
+    if not args.semantic_dedup:
+        state = ReduceState.NOT_REQUESTED.value.replace("_", " ")
+        print(f"\nsemantic reduce: {state} (--semantic-dedup off)")
+    else:
+        print("\nsemantic reduce:")
+        for entry in reduce_epochs:
+            state = entry["state"].replace("_", " ")
+            line = (f"DEGRADED — {state} (identity reduce used)"
+                    if entry["degraded"] else state)
+            print(f"  epoch {entry['epoch']}: {line}")
+    # Canonical issues: the semantic reduce/view over the raw ledger. Every raw
+    # finding stays visible above; this groups them (panel is raw material).
+    #
+    # Counted in two halves (#73). A tooling failure — ``agent error:`` (#29),
+    # ``persona failed:`` (#25), the contract parser's diagnoses — is a finding
+    # about the INSTRUMENT, and adding it to the count of defects in the change
+    # is the run reporting itself as part of its own results. Nothing is excluded
+    # to achieve it: both halves stay in the ledger and in the artefact, because a
+    # failed persona's diagnosis has to remain recoverable, and only the count is
+    # split. The flag is set where each finding is produced and is never matched
+    # out of ``claim_class``, which is model-controlled — see ``Finding``.
+    #
+    # Both numbers are printed even when one is zero: "0 about the run" is the
+    # claim an operator needs, and an absent clause cannot make it.
+    issues_in_change, issues_about_run = d.issues_in_change, d.issues_about_run
+    if args.semantic_dedup and review_run.clusters:
+        print(f"\ncanonical issues: {issues_in_change} in the change | "
+              f"{issues_about_run} about the run "
+              f"(reduced from {len(review_run.ledger)} raw findings)")
+        for c in sorted(review_run.clusters, key=lambda c: c.severity, reverse=True):
+            mark = " — about the run" if c.about_run else ""
+            print(f"  [{c.severity.name}] ({len(c.members)}x) {c.title}{mark}")
+    # Machine-readable output for the convening (synthesis) session to consume.
+    text = _render(_artefact(review_run, ctx, d))
+    # The durable copy first (#31), so it lands before the convenience copy. A failure
+    # is said HERE, above the delimiter: a line printed after the JSON block would make
+    # the run log unreadable to every reader that takes the last block (#123). The
+    # file then holds the last epoch's partial, which says ``halt_reason: null``.
+    if out is not None:
+        out.final(text)
+    print("\n--- JSON ---")
+    print(text, end="")
     # #32 owns what an exit code MEANS and this does not pre-empt it: a run whose
     # surface was lost returns the 2 this path has always returned, now with the
     # report beside it. Doing nothing would not be neutral — the run would fall
