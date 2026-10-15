@@ -375,7 +375,7 @@ def test_an_unwritable_directory_is_refused(changed_repo, out_dir, capsys, monke
     assert list(out_dir.iterdir()) == []
 
 
-@pytest.mark.parametrize("relative", ["run.json", "sub/../run.json"])
+@pytest.mark.parametrize("relative", ["run.json", "sub/../run.json", "sub/run.json"])
 def test_a_destination_inside_the_reviewed_repository_is_refused(
         changed_repo, capsys, monkeypatch, relative):
     """REGRESSION for #31: the artefact quotes the source and is not publishable (#121).
