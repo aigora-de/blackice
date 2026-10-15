@@ -221,7 +221,8 @@ def test_the_halting_epochs_checkpoint_is_not_a_recorded_failure(
 # --- no flag, no file; and the flag moves nothing on stdout --------------------------
 
 
-def test_no_file_is_written_without_the_flag(changed_repo, capsys, monkeypatch):
+def test_no_file_is_written_without_the_flag(changed_repo, capsys, monkeypatch,
+                                             tmp_path_factory):
     """GREEN ON MAIN, and kept as the opt-in's guard: kuang writes nothing unasked.
 
     The pair of the test below. It passes on main because nothing is written at all;
@@ -247,8 +248,10 @@ def test_no_file_is_written_without_the_flag(changed_repo, capsys, monkeypatch):
 
     monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
     monkeypatch.setattr(os, "replace", spy_replace)
-    # The whole pytest base directory: the repository and every sibling of it.
-    root = changed_repo.parent.parent
+    # This session's own base directory: the repository and every sibling of it.
+    # Never the per-user parent of it, which other pytest processes write into
+    # concurrently (a mutation run beside a version run made this red that way).
+    root = tmp_path_factory.getbasetemp()
     before = _files(root)
 
     main(_argv(changed_repo))
