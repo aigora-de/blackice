@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import tempfile
 
 import pytest
 
@@ -226,8 +227,26 @@ def test_no_file_is_written_without_the_flag(changed_repo, capsys, monkeypatch):
     The pair of the test below. It passes on main because nothing is written at all;
     it is here to go red if a default destination is ever introduced without a ruling
     (#146 owns that question).
+
+    Two instruments, because one is blind where the other is not. The directory walk
+    sees any file that lands near the repository; the spy sees a write ANYWHERE —
+    a default under a cache or home directory would pass the walk — through the two
+    calls an atomic write cannot avoid.
     """
     _stub(monkeypatch, changed_repo)
+    calls = []
+    real_mkstemp, real_replace = tempfile.mkstemp, os.replace
+
+    def spy_mkstemp(*a, **k):
+        calls.append("mkstemp")
+        return real_mkstemp(*a, **k)
+
+    def spy_replace(*a, **k):
+        calls.append("replace")
+        return real_replace(*a, **k)
+
+    monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
+    monkeypatch.setattr(os, "replace", spy_replace)
     # The whole pytest base directory: the repository and every sibling of it.
     root = changed_repo.parent.parent
     before = _files(root)
@@ -236,6 +255,7 @@ def test_no_file_is_written_without_the_flag(changed_repo, capsys, monkeypatch):
     capsys.readouterr()
 
     assert _files(root) == before
+    assert calls == []
 
 
 def test_the_flag_writes_a_file_and_moves_nothing_on_stdout(
@@ -390,6 +410,7 @@ def test_a_failed_write_is_said_once_and_the_run_continues(changed_repo, out_dir
     assert payload["halt_reason"] == "epoch"
     warnings = [ln for ln in console.splitlines() if ln.startswith("[out] WARNING")]
     assert len(warnings) == 1
+    assert warnings[0].startswith("[out] WARNING: could not write the artefact at epoch 1:")
     assert "not current" in warnings[0]
     assert [(r["epoch"], r["seam"]) for r in payload["seam_failures"]] == [
         (1, "checkpoint"), (2, "checkpoint"), (3, "checkpoint")]
@@ -467,3 +488,19 @@ def test_a_prior_context_failure_is_named_as_such(changed_repo, out_dir, capsys,
         assert "prior context" in d
         assert "memory went wrong" in d
         assert "artefact write" not in d
+
+
+def test_the_help_says_how_to_tell_a_partial_file(capsys):
+    """REGRESSION for #31: the partial marker is a convention, so it is stated.
+
+    ``halt_reason: null`` is exact, but a reader who does not know it sees a run with
+    no halt reason rather than one that did not finish. The help is where an operator
+    choosing ``--out`` meets the convention.
+    """
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    text = " ".join(capsys.readouterr().out.split())
+
+    assert "--out PATH" in text
+    assert "halt_reason is null is from a run that did not finish" in text
+    assert "without this flag nothing is written" in text
