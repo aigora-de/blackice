@@ -93,10 +93,12 @@ human. You are the *synthesiser, not the judge* — the human decides.
      from a complete one by **`halt_reason`**: `null` means the run did not finish,
      and the newest epoch's `gate`, its `gate_failures` row and its own `checkpoint`
      failure are not in it yet. A complete file is byte-identical to the stdout
-     artefact. The path must not exist yet and must be **outside the reviewed
-     repository**, because the artefact quotes the source and is not publishable by
-     default; both are refused before anything is spent. A failed write does not
-     stop the run: it is said once on the console and recorded in `seam_failures`.
+     artefact. The path must not exist yet, and must be **outside `--repo` and
+     outside every git working tree** (the reviewed one or any other), because the
+     artefact quotes the source and is not publishable by default, and anything in a
+     working tree is one `git add -A` from a commit. Both are refused before
+     anything is spent. A failed write does not stop the run: the console says so,
+     once for each spell of failures, and `seam_failures` records it.
      A partial file is accepted by `--prior-findings` as it stands, and nothing
      marks such a seed as coming from an unfinished run.
 

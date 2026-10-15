@@ -34,15 +34,15 @@ owner only, which suits an artefact that is not publishable by default (#121).
 
 **A failed write does not stop the run.** Against ``HaltReason``'s bar, a run whose
 file cannot be written can still do what it is for, and its stdout artefact still
-arrives. The operator is told once, above the report, that the file is not current
-until a later write succeeds.
+arrives. The operator is told above the report that the file is not current until a
+later write succeeds: once for each spell of failures, so a failure after a recovery
+is not read as the recovery.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
-import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -79,10 +79,10 @@ def check_destination(raw: str, repo: Path) -> Path:
 
     * Empty, or ending in a separator: no file name was given. An unset shell
       variable produces the first constantly (#106's case).
-    * Inside the reviewed repository: the artefact quotes the source and is not
-      publishable by default (#121), and a file there is one ``git add -A`` from a
-      public commit. See ``_forbidden_roots`` for what "the repository" covers and
-      ``_inside`` for how containment is decided.
+    * Inside any git working tree, or inside ``--repo``: the artefact quotes the
+      source and is not publishable by default (#121), and a file in a working tree
+      is one ``git add -A`` from a public commit. See ``_publishable_from`` for the
+      rule and why it is not "the reviewed repository" alone.
     * Already present, as a file, a directory or a link: a previous run's only durable
       record is never overwritten unasked, because that cannot be undone.
     * A directory that does not exist, or one this user cannot create a file in. The
@@ -101,10 +101,11 @@ def check_destination(raw: str, repo: Path) -> Path:
         raise DestinationError(
             f"--out {raw}: the directory it would be written in does not exist")
     resolved = target.parent.resolve() / target.name
-    if _inside(resolved.parent, _forbidden_roots(repo)):
+    if _publishable_from(resolved.parent, repo):
         raise DestinationError(
-            f"--out {raw} is inside the reviewed repository; the artefact quotes the "
-            f"source under review and must be written outside it")
+            f"--out {raw} is inside a git working tree or the reviewed directory; the "
+            f"artefact quotes the source under review and must be written where "
+            f"git add -A cannot publish it")
     if target.exists() or target.is_symlink():
         raise DestinationError(
             f"--out {raw} already exists; kuang does not overwrite it")
@@ -120,59 +121,45 @@ def check_destination(raw: str, repo: Path) -> Path:
     return resolved
 
 
-def _forbidden_roots(repo: Path) -> list[Path]:
-    """Every directory the artefact must not be written under: the reviewed repository.
+def _publishable_from(directory: Path, repo: Path) -> bool:
+    """Whether a file in ``directory`` could be committed: closed by default (#31).
 
-    One rule, stated once: the repository is ``--repo`` itself AND every working tree
-    git lists for the repository ``--repo`` belongs to. ``--repo`` alone is not
-    enough, and each way it falls short was measured on #31's diff:
+    Refused if ``directory`` or any directory above it holds a ``.git`` entry, or is
+    ``--repo`` itself. A ``.git`` DIRECTORY marks a checkout; a ``.git`` FILE marks a
+    linked worktree or a submodule; walking UP finds the checkout that holds a
+    worktree laid out inside it (``.claude/worktrees/``) and the superproject above a
+    submodule. ``--repo`` is compared by identity, for the review that is not in git
+    at all.
 
-    * ``--repo`` may be a subdirectory of a working tree (its default is ``.``), so a
-      destination beside it can still be inside the tree git commits from;
-    * a linked worktree's repository includes the main checkout and every other
-      linked tree, any of which ``git add -A`` can publish from.
+    WHY THIS RULE AND NOT "THE REVIEWED REPOSITORY". Two pre-merge passes broke two
+    attempts to name that repository: as ``--repo`` by string prefix (a subdirectory
+    ``--repo``, a case variant, a linked worktree), then as the working trees git
+    lists (a submodule, where git names the gitdir; a superproject; the operator's
+    ``GIT_DIR``; a non-UTF-8 locale). Each fix added a query and each query opened a
+    way round it. This asks git nothing, so no environment, locale, version or
+    missing ``git`` can change the answer. The ruled cost is that it refuses ANY git
+    working tree, an unrelated one included: any tracked tree is one ``git add -A``
+    from publishing a quotation of somebody's source, which is #121's ground.
 
-    ``git worktree list`` names all of them, from any of them. If git cannot answer
-    (not a repository, or no git), only ``--repo`` is known, and that is all that is
-    refused: what this under-reports is a non-git ``--repo`` nested inside a git tree.
+    Directories are compared by IDENTITY (``os.path.samestat``) and ``.git`` is
+    looked up through the filesystem, so a case variant on a case-insensitive
+    volume, or any second spelling of a directory, reaches the same answer.
+
+    What it under-reports: a working tree whose ``.git`` lives elsewhere and is
+    named only by ``core.worktree`` or ``GIT_WORK_TREE``, with no ``.git`` entry
+    inside the tree. Nothing in the tree marks it, so nothing here can see it.
     """
-    roots = [repo]
     try:
-        listed = subprocess.run(
-            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
-            capture_output=True, text=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return roots
-    # Line-split rather than ``-z``, which needs git 2.36: on an older git the
-    # fallback above would quietly narrow the rule, and a path with a newline in it
-    # is not a working tree anyone reviews.
-    roots += [Path(line[len("worktree "):]) for line in listed.splitlines()
-              if line.startswith("worktree ")]
-    return roots
-
-
-def _inside(directory: Path, roots: list[Path]) -> bool:
-    """Whether ``directory`` is one of ``roots`` or below one, decided by IDENTITY.
-
-    Each ancestor of ``directory`` is compared with each root by ``os.path.samestat``:
-    the same file on the same device, never the same spelling. A string comparison
-    is wrong on a case-insensitive volume (``REPO`` is ``repo``), through any link,
-    and wherever two spellings name one directory; identity is wrong in none of
-    them. A root that cannot be stat-ed cannot contain anything, and is skipped.
-    """
-    root_stats = []
-    for root in roots:
-        try:
-            root_stats.append(os.stat(root))
-        except OSError:
-            continue
+        repo_stat = os.stat(repo)
+    except OSError:
+        repo_stat = None
     for ancestor in (directory, *directory.parents):
-        try:
-            st = os.stat(ancestor)
-        except OSError:
-            continue
-        if any(os.path.samestat(st, r) for r in root_stats):
+        if os.path.lexists(ancestor / ".git"):
             return True
+        if repo_stat is not None:
+            with contextlib.suppress(OSError):
+                if os.path.samestat(os.stat(ancestor), repo_stat):
+                    return True
     return False
 
 
@@ -194,7 +181,10 @@ class ArtefactFile:
     def __init__(self, path: Path, *, say: Callable[[str], None]) -> None:
         self.path = path
         self._say = say
-        self._warned = False
+        # True while the last line said is still true: said on a failure, cleared
+        # by a success. So the console speaks once per spell of failures, and a
+        # failure after a recovery is said again rather than read as the recovery.
+        self._said_stale = False
 
     def persist(self, build: Callable[[], str], *, when: str,
                 consequence: str = _UNTIL_A_LATER_WRITE) -> None:
@@ -203,9 +193,12 @@ class ArtefactFile:
         The build is inside the guard: text that could not be rendered persisted
         nothing, exactly as a full disk did, and the operator is owed the same line.
 
-        The line is said once and never retracted, so what it says must stay true
-        whatever happens next: a later write can succeed (a full disk clears), and
-        then "not current" would be false. So it says what holds UNTIL then.
+        The line is said once per spell of failures and never retracted, so what it
+        says must stay true whatever happens next: a later write can succeed (a full
+        disk clears), and then "not current" would be false. So it says what holds
+        UNTIL then. A failure AFTER such a success is a new spell and is said again:
+        left unsaid, the console of "fail, succeed, fail" would be byte-identical to
+        "fail, succeed, succeed", and the earlier line would read as the recovery.
         ``Exception``, never ``BaseException``: a Ctrl-C mid-write still stops the run,
         and the temporary file is removed on the way out.
         """
@@ -213,11 +206,12 @@ class ArtefactFile:
             _replace(self.path, build())
         except Exception as exc:  # noqa: BLE001
             detail = failure_detail(exc)
-            if not self._warned:
-                self._warned = True
+            if not self._said_stale:
+                self._said_stale = True
                 self._say(f"[out] WARNING: could not write the artefact {when}: "
                           f"{detail}. {consequence}")
             raise ArtefactWriteError(detail) from None
+        self._said_stale = False
 
     def final(self, text: str) -> bool:
         """The end-of-run write: the stdout artefact, byte for byte."""

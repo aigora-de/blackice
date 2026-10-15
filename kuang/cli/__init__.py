@@ -1140,7 +1140,8 @@ def _report(argv: list[str] | None) -> int:
                          "after every epoch and once more at the end, so a run that "
                          "is stopped leaves what it completed (issue #31). A file "
                          "whose halt_reason is null is from a run that did not "
-                         "finish. Must not exist yet and must be outside --repo; "
+                         "finish. Must not exist yet, and must not be inside --repo "
+                         "or any git working tree; "
                          "without this flag nothing is written")
     ap.add_argument("--dry-run", action="store_true", help="print the wiring, spawn nothing")
     ap.add_argument("--no-parallel", action="store_true")

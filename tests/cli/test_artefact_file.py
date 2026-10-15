@@ -15,7 +15,9 @@ import os
 import pytest
 
 from kuang.cli import artefact_file
-from kuang.cli.artefact_file import ArtefactFile, ArtefactWriteError, failure_detail
+from kuang.cli.artefact_file import (ArtefactFile, ArtefactWriteError,
+                                     DestinationError, check_destination,
+                                     failure_detail)
 
 
 def _said():
@@ -180,3 +182,83 @@ def test_the_warning_stays_true_when_a_later_write_succeeds(tmp_path, monkeypatc
     assert (tmp_path / "run.json").read_text() == '{"epochs": 2}\n'
     assert len(lines) == 1
     assert "not current until a later write succeeds" in lines[0]
+
+
+def test_a_failure_after_a_recovery_is_said_again(tmp_path, monkeypatch):
+    """REGRESSION for #31's second review pass: a new spell of failures is a new line.
+
+    Said once and never again, "fail, succeed, fail" printed exactly what "fail,
+    succeed, succeed" printed, and the one line ("not current until a later write
+    succeeds") read as the recovery while the file was stale again. Paired with the
+    test above it, which pins that a single spell is said once.
+    """
+    lines, say = _said()
+    out = ArtefactFile(tmp_path / "run.json", say=say)
+    real = artefact_file._replace
+    outcomes = iter([False, True, False])
+
+    def scripted(path, text):  # noqa: ANN001
+        if not next(outcomes):
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+        return real(path, text)
+
+    monkeypatch.setattr(artefact_file, "_replace", scripted)
+    with pytest.raises(ArtefactWriteError):
+        out.persist(lambda: "{}\n", when="at epoch 1")
+    out.persist(lambda: "{}\n", when="at epoch 2")
+    assert out.final("{}\n") is False
+
+    assert [ln.split(":")[1].strip() for ln in lines] == [
+        "could not write the artefact at epoch 1",
+        "could not write the artefact at the end of the run"]
+
+
+def _tree(path, *, git_file: bool = False):
+    path.mkdir(parents=True)
+    if git_file:
+        (path / ".git").write_text("gitdir: /elsewhere/.git/modules/x\n")
+    else:
+        (path / ".git").mkdir()
+    return path
+
+
+@pytest.mark.parametrize("where", ["submodule top", "below the submodule",
+                                   "superproject", "linked worktree inside"])
+def test_any_git_entry_above_the_destination_refuses_it(tmp_path, where):
+    """REGRESSION for #31's second review pass: no git is asked, so none can mislead.
+
+    A ``.git`` FILE is what a submodule and a linked worktree carry; inside a
+    submodule ``git worktree list`` names the gitdir, which is how the git-listing
+    rule was broken. A ``.git`` directory above it is the superproject, or the
+    checkout a ``.claude/worktrees/`` tree lives in.
+    """
+    sup = _tree(tmp_path / "sup")
+    sub = _tree(sup / "lib", git_file=True)
+    (sub / "d").mkdir()
+    reviewed = sub / "d"
+    destination = {"submodule top": sub / "x.json",
+                   "below the submodule": sub / "d" / "x.json",
+                   "superproject": sup / "x.json",
+                   "linked worktree inside": _tree(sup / ".claude" / "w", git_file=True)
+                   / "x.json"}[where]
+
+    with pytest.raises(DestinationError, match="inside a git working tree"):
+        check_destination(str(destination), reviewed)
+
+
+def test_a_non_git_reviewed_directory_is_refused_by_identity(tmp_path):
+    """REGRESSION for #31: a review outside git still keeps its artefact out of it."""
+    reviewed = tmp_path / "plain"
+    (reviewed / "deep").mkdir(parents=True)
+
+    with pytest.raises(DestinationError, match="the reviewed directory"):
+        check_destination(str(reviewed / "deep" / "x.json"), reviewed)
+
+
+def test_a_destination_outside_every_tree_is_accepted(tmp_path):
+    """REGRESSION for #31, the pair of the refusals: a plain directory is usable."""
+    reviewed = _tree(tmp_path / "repo")
+    (tmp_path / "out").mkdir()
+
+    assert check_destination(str(tmp_path / "out" / "x.json"), reviewed) == (
+        tmp_path / "out").resolve() / "x.json"

@@ -389,7 +389,7 @@ def test_a_destination_inside_the_reviewed_repository_is_refused(
     rc = main(_argv(changed_repo, "--out", str(changed_repo / relative)))
 
     assert rc == 2
-    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert "inside a git working tree" in _refused(capsys, state)
     assert not (changed_repo / "run.json").exists()
 
 
@@ -406,7 +406,7 @@ def test_a_relative_destination_inside_the_repository_is_refused(
     rc = main(_argv(changed_repo, "--out", "run.json"))
 
     assert rc == 2
-    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert "inside a git working tree" in _refused(capsys, state)
     assert not (changed_repo / "run.json").exists()
 
 
@@ -421,7 +421,7 @@ def test_a_destination_reaching_the_repository_through_a_link_is_refused(
     rc = main(_argv(changed_repo, "--out", str(link / "run.json")))
 
     assert rc == 2
-    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert "inside a git working tree" in _refused(capsys, state)
     assert not (changed_repo / "run.json").exists()
 
 
@@ -441,7 +441,7 @@ def test_a_destination_in_the_working_tree_above_repo_is_refused(
     rc = main(_argv(changed_repo / "sub", "--out", str(changed_repo / "leak.json")))
 
     assert rc == 2
-    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert "inside a git working tree" in _refused(capsys, state)
     assert not (changed_repo / "leak.json").exists()
 
 
@@ -462,7 +462,7 @@ def test_a_destination_in_another_working_tree_of_the_repository_is_refused(
     rc = main(_argv(linked, "--out", str(changed_repo / "leak.json")))
 
     assert rc == 2
-    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert "inside a git working tree" in _refused(capsys, state)
     assert not (changed_repo / "leak.json").exists()
 
 
@@ -487,7 +487,7 @@ def test_a_destination_spelled_in_another_case_is_refused(changed_repo, capsys,
     rc = main(_argv(changed_repo, "--out", str(flipped / "x.json")))
 
     assert rc == 2
-    assert "inside the reviewed repository" in _refused(capsys, state)
+    assert "inside a git working tree" in _refused(capsys, state)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="needs a symbolic link")
@@ -496,7 +496,9 @@ def test_a_dangling_link_at_the_destination_is_refused(changed_repo, out_dir, ca
     """REGRESSION for #31: a link kuang did not create is not replaced.
 
     ``exists()`` follows the link and says False for a dangling one, so the check
-    also asks ``is_symlink()``. Without it ``os.replace`` would delete the operator's
+    also asks ``is_symlink()``. The guard predates #31's review repairs; this test is
+    red on main (no ``--out``) and was added when a review pass found nothing pinned
+    it. Without it ``os.replace`` would delete the operator's
     link and put a file in its place.
     """
     state = _stub(monkeypatch, changed_repo)
@@ -511,7 +513,8 @@ def test_a_dangling_link_at_the_destination_is_refused(changed_repo, out_dir, ca
 
 
 @pytest.mark.parametrize("raw", ["", "somewhere/"])
-def test_a_destination_naming_no_file_is_refused(changed_repo, capsys, monkeypatch, raw):
+def test_a_destination_naming_no_file_is_refused(changed_repo, capsys, monkeypatch, raw,
+                                                 tmp_path_factory):
     """REGRESSION for #31: an unset shell variable, or a trailing separator.
 
     ``Path`` drops a trailing slash, so ``x.json/`` — a directory to POSIX — would be
@@ -519,11 +522,35 @@ def test_a_destination_naming_no_file_is_refused(changed_repo, capsys, monkeypat
     an operator with an unset variable the wrong thing.
     """
     state = _stub(monkeypatch, changed_repo)
+    # A relative destination resolves against the working directory, and a mutant
+    # that accepted one once wrote an artefact into the developer's checkout: run
+    # from a directory of the test's own.
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
 
     rc = main(_argv(changed_repo, "--out", raw))
 
     assert rc == 2
     assert "names no file" in _refused(capsys, state)
+
+
+def test_a_destination_in_an_unrelated_git_tree_is_refused(changed_repo, out_dir, capsys,
+                                                          monkeypatch):
+    """REGRESSION for #31, the RULED cost of the closed-by-default rule.
+
+    Not the reviewed repository, and still refused: any tracked tree is one
+    ``git add -A`` from publishing a quotation of somebody's source (#121). Pinned
+    so the rule cannot narrow back to "the reviewed repository" unnoticed — the
+    narrower rule is the one two review passes broke.
+    """
+    state = _stub(monkeypatch, changed_repo)
+    other = out_dir / "notes"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", str(other)], check=True, capture_output=True)
+
+    rc = main(_argv(changed_repo, "--out", str(other / "run.json")))
+
+    assert rc == 2
+    assert "inside a git working tree" in _refused(capsys, state)
 
 
 def test_a_destination_beside_the_repository_is_accepted(changed_repo, capsys,
