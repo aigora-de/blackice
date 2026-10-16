@@ -232,15 +232,24 @@ def test_a_fifo_with_a_writer_still_seeds(changed_repo, seeds, capsys, monkeypat
 
     A FIFO from ``os.mkfifo``, fed by a thread. A FIFO with NO writer still blocks in
     ``read_text()`` — before any spend, ended by Ctrl-C — and is a stated under-report.
+
+    If the CLI never opens the FIFO — as a non-regular-file refusal would not — the
+    writer blocks in ``open()`` forever. The finally opens a reader to release it, and
+    the thread is a daemon besides, so a failure here fails and cannot hang the suite.
     """
     state = _stub(monkeypatch)
     fifo = seeds / "seed.fifo"
     os.mkfifo(fifo)
-    writer = threading.Thread(target=fifo.write_text, args=(json.dumps(_SEED),))
+    writer = threading.Thread(target=fifo.write_text, args=(json.dumps(_SEED),),
+                              daemon=True)
     writer.start()
     try:
         rc = main(_argv(changed_repo, "--dry-run", "--prior-findings", str(fifo)))
     finally:
+        if writer.is_alive():
+            reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+            writer.join(timeout=10)
+            os.close(reader)
         writer.join(timeout=10)
 
     assert rc == 0
