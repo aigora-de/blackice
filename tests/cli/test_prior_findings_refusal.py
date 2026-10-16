@@ -86,6 +86,11 @@ def seeds(tmp_path_factory, monkeypatch):
 
     Every relative path below resolves here and nowhere else: a mutant that accepts a
     path must not read the developer's checkout (#31's lesson).
+
+    The integer-digit limit is pinned to the interpreter's default for the test, so
+    ``bigint.json`` exercises the bare-ValueError path whatever
+    ``PYTHONINTMAXSTRDIGITS`` says (``0`` disables the limit, and the seed would then
+    parse and be refused for a different reason).
     """
     d = tmp_path_factory.mktemp("seeds")
     monkeypatch.chdir(d)
@@ -99,9 +104,14 @@ def seeds(tmp_path_factory, monkeypatch):
     # the integer-digit limit, and RecursionError for deep nesting, in a file and in
     # a run log's last block.
     (d / "bigint.json").write_text("[" + "1" * 5000 + "]")
-    (d / "deep.json").write_text("[" * 200_000)
-    (d / "deeplog.txt").write_text("a log\n--- JSON ---\n" + "[" * 200_000)
-    return d
+    # Measured: 3.14 bounds nesting by stack size and parses 50k-deep to a
+    # JSONDecodeError; 2M is a RecursionError on 3.11 to 3.14 alike.
+    (d / "deep.json").write_text("[" * 2_000_000)
+    (d / "deeplog.txt").write_text("a log\n--- JSON ---\n" + "[" * 2_000_000)
+    limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    yield d
+    sys.set_int_max_str_digits(limit)
 
 
 def _refused(capsys, state, rc) -> str:
