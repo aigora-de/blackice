@@ -36,6 +36,7 @@ import os
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +45,8 @@ from kuang.backends.claude_code import memory as memory_module
 from kuang.backends.claude_code import session as session_module
 from kuang.backends.claude_code.spawn import CallResult
 from kuang.cli import main
+
+_ROOT = Path(__file__).resolve().parents[2]
 
 _SEED = {"findings": [{"persona": "correctness", "severity": "BLOCKER",
                        "title": "an earlier run's finding", "file": "a.py", "line": 1,
@@ -168,9 +171,12 @@ def test_the_real_process_prints_no_traceback(changed_repo, seeds, raw):
 
     In-process, a traceback is only an exception escaping ``main``; this is what the
     operator actually sees. ``PYTHONUNBUFFERED`` is stripped so stdout is measured as
-    an operator's shell would buffer it.
+    an operator's shell would buffer it, and ``PYTHONPATH`` names this working tree, as
+    ``test_console_faults`` does: the process runs from the seeds directory, where an
+    installed copy of kuang — or none — would be imported instead.
     """
     env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    env["PYTHONPATH"] = str(_ROOT)
     proc = subprocess.run(
         [sys.executable, "-m", "kuang", *_argv(changed_repo, "--dry-run",
                                                "--prior-findings", raw)],
