@@ -16,6 +16,7 @@ to a sibling issue.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -23,6 +24,13 @@ from kuang.engine import Finding, PersonaReport, ReviewRun
 from kuang.report import ledger_line
 
 from .spawn import called_no_tool
+
+# What ``json.loads`` raises for text it cannot parse: ``JSONDecodeError`` (itself a
+# ValueError) for malformed text, a bare ValueError past the interpreter's
+# integer-digit limit, and RecursionError for deep nesting. All three mean "this is
+# not parseable JSON", and the loader treats them alike. Caught around the two parse
+# calls only, so a ValueError raised anywhere else still propagates (#59).
+_UNPARSEABLE = (ValueError, RecursionError)
 
 
 class PriorFindingsError(ValueError):
@@ -59,7 +67,7 @@ def load_prior_findings(path: str | Path) -> str:
             working one, which is the failure mode issue #11 already recorded for
             the surface cap.
     """
-    given = str(path)
+    given = os.fspath(path)
     if not given.strip():
         raise PriorFindingsError(
             "--prior-findings: no path was given — an empty argument is usually an "
@@ -82,14 +90,14 @@ def load_prior_findings(path: str | Path) -> str:
     payload = None
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
+    except _UNPARSEABLE:
         # A raw run log: take the LAST --- JSON --- block, which is the run's own
         # (an earlier one could be quoted inside a --why).
         blocks = text.split("--- JSON ---")
         if len(blocks) > 1:
             try:
                 payload = json.loads(blocks[-1].strip())
-            except json.JSONDecodeError:
+            except _UNPARSEABLE:
                 payload = None
     findings = payload.get("findings") if isinstance(payload, dict) else payload
     if not isinstance(findings, list) or not findings:

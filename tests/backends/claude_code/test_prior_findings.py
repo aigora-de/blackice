@@ -24,7 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kuang.backends.claude_code import PanelSession, load_prior_findings
+from kuang.backends.claude_code import (PanelSession, PriorFindingsError,
+                                        load_prior_findings)
 from kuang.backends.claude_code.contract import build_prompt
 from kuang.cli import main
 from kuang.engine import Finding, ReviewSpec, Severity
@@ -91,7 +92,7 @@ def test_carries_the_open_closed_state(tmp_path):
 
 
 def test_a_missing_file_fails_loudly(tmp_path):
-    with pytest.raises((FileNotFoundError, ValueError)):
+    with pytest.raises(PriorFindingsError, match="the file does not exist"):
         load_prior_findings(tmp_path / "nope.json")
 
 
@@ -210,3 +211,23 @@ def test_a_finding_with_a_file_but_no_line_renders_instead_of_raising(tmp_path):
                               "title": "t", "file": "a.py"}]))
 
     assert load_prior_findings(p) == "- [NOTE/open] (P) t @ a.py:None"
+
+
+def test_a_path_like_seed_is_read_through_its_fspath(tmp_path):
+    """Green on main (#59): the loader reads ``os.fspath(path)``, as ``Path(path)`` did.
+
+    ``str()`` of an ``os.PathLike`` need not be its path. Taking the argument "as
+    given" for the empty-argument check must not change which file a programmatic
+    caller's path-like object names.
+    """
+    p = tmp_path / "findings.json"
+    p.write_text(json.dumps(_LEDGER))
+
+    class _Named:
+        def __fspath__(self) -> str:
+            return str(p)
+
+        def __str__(self) -> str:
+            return "not a path"
+
+    assert "unbounded retry loop" in load_prior_findings(_Named())

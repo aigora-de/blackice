@@ -31,6 +31,7 @@ own docstring.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -94,6 +95,12 @@ def seeds(tmp_path_factory, monkeypatch):
     (d / "nokey.json").write_text(json.dumps({"other": []}))
     (d / "unreadable.json").write_text(json.dumps({"findings": [1, "x", None]}))
     (d / "adir").mkdir()
+    # What ``json.loads`` raises other than JSONDecodeError: a bare ValueError past
+    # the integer-digit limit, and RecursionError for deep nesting, in a file and in
+    # a run log's last block.
+    (d / "bigint.json").write_text("[" + "1" * 5000 + "]")
+    (d / "deep.json").write_text("[" * 200_000)
+    (d / "deeplog.txt").write_text("a log\n--- JSON ---\n" + "[" * 200_000)
     return d
 
 
@@ -113,12 +120,16 @@ def _refused(capsys, state, rc) -> str:
 
 @pytest.mark.parametrize(("seed", "expected"), [
     ("missing.json", "--prior-findings missing.json: the file does not exist"),
-    ("adir", "--prior-findings adir: IsADirectoryError [errno"),
+    ("adir", f"--prior-findings adir: IsADirectoryError [errno {errno.EISDIR}]: "
+             f"{os.strerror(errno.EISDIR)}"),
     ("undecodable.json", "--prior-findings undecodable.json: the file is not"),
     ("empty.json", "--prior-findings empty.json: no findings to seed. Expected"),
     ("nokey.json", "--prior-findings nokey.json: no findings to seed. Expected"),
     ("unreadable.json",
      "--prior-findings unreadable.json: findings present but none were readable"),
+    ("bigint.json", "--prior-findings bigint.json: no findings to seed. Expected"),
+    ("deep.json", "--prior-findings deep.json: no findings to seed. Expected"),
+    ("deeplog.txt", "--prior-findings deeplog.txt: no findings to seed. Expected"),
 ])
 def test_an_unusable_seed_is_refused_before_anything_is_spent(
         changed_repo, seeds, capsys, monkeypatch, seed, expected):
@@ -143,8 +154,8 @@ def test_an_unreadable_seed_is_refused_before_anything_is_spent(
     finally:
         (seeds / "noperm.json").chmod(0o600)
 
-    assert ("--prior-findings noperm.json: PermissionError [errno"
-            in _refused(capsys, state, rc))
+    assert (f"--prior-findings noperm.json: PermissionError [errno {errno.EACCES}]: "
+            f"{os.strerror(errno.EACCES)}" in _refused(capsys, state, rc))
 
 
 @pytest.mark.parametrize("raw", ["", "   "])
