@@ -25,6 +25,18 @@ from kuang.report import ledger_line
 from .spawn import called_no_tool
 
 
+class PriorFindingsError(ValueError):
+    """``--prior-findings`` names a seed that cannot be used. An operator error (#59).
+
+    Raised only for the faults ``load_prior_findings`` can name: no path, a path the
+    one read cannot open or decode, and a file carrying no readable findings. Any
+    other exception from the loader is a bug and is left to propagate, so that the
+    CLI's catch is closed by default and never reports a bug as a bad seed. A
+    ``ValueError`` so that the loader's documented contract still holds. What the
+    resulting exit code MEANS is #32's.
+    """
+
+
 def load_prior_findings(path: str | Path) -> str:
     """Render a previous run's ledger as a seed summary (issue #13).
 
@@ -34,13 +46,39 @@ def load_prior_findings(path: str | Path) -> str:
     archive actually holds; making an operator carve the JSON out by hand is how a
     seeded re-run quietly gets nothing.
 
+    It takes the operator's argument **as given**, for ``--panel``'s reason: an
+    empty argument is its own refusal, and ``Path("")`` is an existing directory
+    that would lose the fact (#106). Messages quote the path as the operator gave
+    it; they go to stderr, never to the artefact.
+
     Raises:
-        FileNotFoundError: The path does not exist.
-        ValueError: The file carries no recognisable findings.  Loud by design — a
-            silently empty seed is indistinguishable from a working one, which is
-            the failure mode issue #11 already recorded for the surface cap.
+        PriorFindingsError: No path was given; the path could not be read (it does
+            not exist, or the ``OSError`` its read raised, named by errno), or
+            could not be decoded; or the file carries no recognisable findings.
+            Loud by design — a silently empty seed is indistinguishable from a
+            working one, which is the failure mode issue #11 already recorded for
+            the surface cap.
     """
-    text = Path(path).read_text()
+    given = str(path)
+    if not given.strip():
+        raise PriorFindingsError(
+            "--prior-findings: no path was given — an empty argument is usually an "
+            "unset shell variable, and a seed that cannot be named is not silently "
+            "replaced with no seed")
+    try:
+        text = Path(given).read_text()
+    except FileNotFoundError:
+        raise PriorFindingsError(
+            f"--prior-findings {given}: the file does not exist") from None
+    except OSError as exc:
+        # The errno and its text, as #31's ``failure_detail`` renders them; written
+        # out here because a backend does not import the CLI.
+        raise PriorFindingsError(
+            f"--prior-findings {given}: {type(exc).__name__} [errno {exc.errno}]: "
+            f"{exc.strerror}") from None
+    except UnicodeDecodeError as exc:
+        raise PriorFindingsError(
+            f"--prior-findings {given}: the file is not {exc.encoding} text") from None
     payload = None
     try:
         payload = json.loads(text)
@@ -55,10 +93,10 @@ def load_prior_findings(path: str | Path) -> str:
                 payload = None
     findings = payload.get("findings") if isinstance(payload, dict) else payload
     if not isinstance(findings, list) or not findings:
-        raise ValueError(
-            f"{path}: no findings to seed. Expected a kuang run's JSON output "
-            "(the object under '--- JSON ---', or its 'findings' array), or a raw "
-            "run log containing that block.")
+        raise PriorFindingsError(
+            f"--prior-findings {given}: no findings to seed. Expected a kuang run's "
+            "JSON output (the object under '--- JSON ---', or its 'findings' array), "
+            "or a raw run log containing that block.")
     lines = []
     for f in findings:
         if not isinstance(f, dict):
@@ -76,7 +114,8 @@ def load_prior_findings(path: str | Path) -> str:
             about_run=bool(f.get("about_run")),
             ungrounded=bool(f.get("ungrounded"))))
     if not lines:
-        raise ValueError(f"{path}: findings present but none were readable.")
+        raise PriorFindingsError(
+            f"--prior-findings {given}: findings present but none were readable.")
     return "\n".join(lines)
 
 

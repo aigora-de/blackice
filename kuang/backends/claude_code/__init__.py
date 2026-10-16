@@ -10,7 +10,7 @@ engine's seams. This is the backend's public surface.
 
 from .cluster import ReduceState
 from .contract import UNRESOLVED_SEVERITY
-from .memory import load_prior_findings, ungrounded_keys
+from .memory import PriorFindingsError, load_prior_findings, ungrounded_keys
 from .permissions import (DEFAULT_ALLOWED_TOOLS, DEFAULT_DISALLOWED_TOOLS,
                           unavailable_tools)
 from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, DISCARD_ORIGINS,
@@ -27,7 +27,7 @@ __all__ = [
     "COMPLETENESS_CRITIC", "DEFAULT_ALLOWED_TOOLS", "DEFAULT_DISALLOWED_TOOLS",
     "DEFAULT_PERSONAS", "DISCARD_ORIGINS", "DISCARD_REASONS", "Discarded",
     "LensCoverage", "PANEL_LABELS", "PanelError", "PanelSession", "PanelSource",
-    "Persona", "ReduceState",
+    "Persona", "PriorFindingsError", "ReduceState",
     "REQUIRED_LENSES", "SURVIVABILITY", "SurfaceError", "SurfaceRecord",
     "UNRESOLVED_SEVERITY", "build_path_surface", "called_no_tool",
     "discard_note", "gather_diff",
