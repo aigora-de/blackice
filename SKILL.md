@@ -84,7 +84,9 @@ human. You are the *synthesiser, not the judge* — the human decides.
      personas adjudicate against current source. Prior-run and this-run findings
      arrive as separately labelled blocks, so a persona can tell "found before the
      fixes" from "found now". Fails loudly on an unreadable seed rather than
-     starting silently cold.
+     starting silently cold: an unusable seed, or an empty argument (an unset
+     shell variable), is refused as `error: --prior-findings …` before anything is
+     spent.
    - **`--out <path>`** also writes the `--- JSON ---` artefact to a file. It is
      replaced atomically after **every epoch** and once more at the end, so a run
      that is interrupted, killed or rate-limited leaves what it completed. Without

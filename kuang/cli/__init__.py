@@ -33,7 +33,7 @@ from pathlib import Path
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
                                           UNRESOLVED_SEVERITY, LensCoverage,
                                           PanelError, PanelSession, PanelSource,
-                                          Persona,
+                                          Persona, PriorFindingsError,
                                           ReduceState, SurfaceError,
                                           SurfaceRecord, called_no_tool,
                                           discard_note, load_personas,
@@ -1184,6 +1184,20 @@ def _report(argv: list[str] | None) -> int:
         except DestinationError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+    # The cross-run seed (#13), refused here for the panel's reason (#59): before the
+    # first epoch and before the first ``[panel]`` line, through the same operator-
+    # error path. `is not None`, never truthiness, for the reason given at
+    # ``--panel`` above: `--prior-findings ""` is a seed asked for and not named, not
+    # a run that asked for none. Only the faults the loader names are caught; any
+    # other exception is a bug and stays loud. The echo stays below with the other
+    # ``[panel]`` lines, so a seeded run's stdout is where it always was.
+    seeded = ""
+    if args.prior_findings is not None:
+        try:
+            seeded = load_prior_findings(args.prior_findings)
+        except PriorFindingsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     if args.allow_tools:  # override the read-only default for ALL personas
         for p in personas:
             p.tools = list(args.allow_tools)
@@ -1232,12 +1246,10 @@ def _report(argv: list[str] | None) -> int:
               f"available to them: "
               f"{', '.join(sorted({t for v in cancelled.values() for t in v}))}")
 
-    # Cross-run memory (issue #13). Loaded BEFORE the session so a bad path fails
-    # here, not three epochs into a paid run, and echoed so a seed that loaded
-    # nothing cannot be mistaken for one that worked.
-    seeded = ""
-    if args.prior_findings:
-        seeded = load_prior_findings(args.prior_findings)
+    # Cross-run memory (issue #13), loaded above so a bad seed is refused before
+    # anything is spent, and echoed here so a seed that loaded nothing cannot be
+    # mistaken for one that worked.
+    if args.prior_findings is not None:
         print(f"[panel] prior findings: {len(seeded.splitlines())} carried in from "
               f"{args.prior_findings} (locations advisory)")
 
