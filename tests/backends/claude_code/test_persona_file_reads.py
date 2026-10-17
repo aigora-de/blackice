@@ -213,6 +213,73 @@ def test_a_latin1_claude_md_is_a_discard_whatever_the_locale(tmp_path):
         ("CLAUDE.md", "malformed", "UnicodeDecodeError at byte 38: not utf-8 text")]
 
 
+# --- a byte-order mark (found while implementing; folded in by ruling) ----------------
+
+_BOM = "﻿"
+_HEADING_FIRST = "# Resident Experts\n\n## Auditor — Constraints\n\nRules for Café.\n"
+
+
+@pytest.mark.parametrize("tier", ["CLAUDE.md", "panel.md"])
+def test_a_byte_order_mark_does_not_hide_a_line_one_heading(tmp_path, tier):
+    """REGRESSION for #104 (the BOM rows, ruled in): a declared panel was lost.
+
+    The heading regex anchors at the start of a line, and a decoded UTF-8 byte-order
+    mark is U+FEFF, so line 1 began with the mark and not ``#``. On main a
+    ``CLAUDE.md`` saved with one sourced the default panel with nothing discarded and
+    no warning; a ``panel.md`` was reported as naming nobody.
+    """
+    _write(tmp_path, tier, _BOM + _HEADING_FIRST)
+
+    roster, source, _ = load_personas(tmp_path)
+
+    assert roster[0].name == "Auditor"
+    assert source.discarded == ()
+
+
+def test_a_byte_order_mark_does_not_hide_an_explicit_panel(tmp_path):
+    """REGRESSION for #104 (the BOM rows): ``--panel`` refused it as naming nobody."""
+    path = _write(tmp_path, "x.md", _BOM + _HEADING_FIRST)
+
+    roster, source, _ = load_personas(tmp_path, panel_path=path)
+
+    assert source.label == "--panel"
+    assert roster[0].name == "Auditor"
+
+
+def test_a_file_with_a_byte_order_mark_sources_what_one_without_does(tmp_path):
+    """PAIR, red on main: the mark is removed and nothing else is. The roster, names
+    and groundings byte for byte, are the BOM-less file's — so a strip that ate the
+    first character, or the whole first line, fails here, and so does one that removed
+    a U+FEFF from the body, where it is a character of the file and not a mark."""
+    with_bom, without = tmp_path / "with", tmp_path / "without"
+    with_bom.mkdir()
+    without.mkdir()
+    body = _HEADING_FIRST + "Zero\ufeffwidth.\n"
+    _write(with_bom, "CLAUDE.md", _BOM + body)
+    _write(without, "CLAUDE.md", body)
+
+    def _sourced(repo):
+        roster, source, _ = load_personas(repo)
+        return source, [(p.name, p.grounding) for p in roster]
+
+    assert _sourced(with_bom) == _sourced(without)
+
+
+def test_a_decode_offset_counts_the_byte_order_mark(tmp_path):
+    """REGRESSION for #104 on main; guards the REJECTED ``utf-8-sig`` decode.
+
+    ``utf-8-sig`` reports a decode error's offset after the mark it consumed, so the
+    operator would be sent three bytes short. The mark is stripped after a plain UTF-8
+    decode, and the offset is the file's own.
+    """
+    _write(tmp_path, "panel.md", b"\xef\xbb\xbf" + _UNDECODABLE)
+
+    source = load_personas(tmp_path)[1]
+
+    assert _discards(source) == [
+        ("panel.md", "malformed", "UnicodeDecodeError at byte 6: not utf-8 text")]
+
+
 # --- A11, and its pair: precedence is otherwise untouched ----------------------------
 
 def test_a_broken_claude_md_does_not_stop_a_good_panel_md(tmp_path):

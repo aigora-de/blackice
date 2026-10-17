@@ -233,7 +233,8 @@ A declaration that was **reached and yielded no persona** is reported on the
 console before the spend and recorded in the artefact's `panel.discarded`, so a
 run whose declared panel was thrown away does not read like one that declared
 none. A repo that declared nothing is not warned at all.
-Every panel file is read as **UTF-8**, whatever the locale. One that cannot be read,
+Every panel file is read as **UTF-8**, whatever the locale (a leading byte-order mark
+is ignored). One that cannot be read,
 is not UTF-8, or (found rather than named) is not a regular file is reported as
 `malformed`, with the byte offset where decoding failed. That includes a `CLAUDE.md`,
 which cannot show that it declared nothing if it cannot be read; sourcing then carries

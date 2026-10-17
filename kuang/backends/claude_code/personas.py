@@ -349,11 +349,19 @@ def _read_declaration(path: Path, *, regular_only: bool) -> tuple[str | None, st
     persona file either. ``--panel`` passes ``False`` and keeps #59's rule: an
     explicit non-regular file is read, so ``--panel <(…)`` works, and one with no
     writer blocks before any spend. The check follows symlinks, as the read does.
+
+    One leading byte-order mark is removed (ruled on #104). A decoded UTF-8 BOM is
+    U+FEFF, so a file saved with one began line 1 with the mark rather than ``#``,
+    and a ``CLAUDE.md`` whose heading was its first line sourced the default panel
+    with nothing reported. It is stripped AFTER a plain UTF-8 decode, not by the
+    ``utf-8-sig`` codec, which reports a decode error's offset after the mark and so
+    would send the operator three bytes short.
     """
     try:
         if regular_only and not stat.S_ISREG(path.stat().st_mode):
             return None, "not a regular file"
-        return path.read_text(encoding=_PERSONA_FILE_ENCODING), ""
+        text = path.read_text(encoding=_PERSONA_FILE_ENCODING)
+        return text.removeprefix("\ufeff"), ""
     except (OSError, UnicodeDecodeError) as exc:
         return None, _diagnosis(exc)
 
