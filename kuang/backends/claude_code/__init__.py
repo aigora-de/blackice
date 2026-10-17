@@ -19,12 +19,13 @@ from .personas import (COMPLETENESS_CRITIC, DEFAULT_PERSONAS, DISCARD_ORIGINS,
                        PanelSource, Persona, discard_note, load_personas,
                        mandateless, parse_claude_md_experts)
 from .session import PanelSession
-from .spawn import called_no_tool
+from .spawn import ClaudeBinError, called_no_tool, resolve_claude_bin
 from .surface import (SurfaceError, SurfaceRecord, build_path_surface,
                       gather_diff)
 
 __all__ = [
-    "COMPLETENESS_CRITIC", "DEFAULT_ALLOWED_TOOLS", "DEFAULT_DISALLOWED_TOOLS",
+    "COMPLETENESS_CRITIC", "ClaudeBinError", "DEFAULT_ALLOWED_TOOLS",
+    "DEFAULT_DISALLOWED_TOOLS",
     "DEFAULT_PERSONAS", "DISCARD_ORIGINS", "DISCARD_REASONS", "Discarded",
     "LensCoverage", "PANEL_LABELS", "PanelError", "PanelSession", "PanelSource",
     "Persona", "PriorFindingsError", "ReduceState",
@@ -32,6 +33,6 @@ __all__ = [
     "UNRESOLVED_SEVERITY", "build_path_surface", "called_no_tool",
     "discard_note", "gather_diff",
     "load_personas", "load_prior_findings", "mandateless",
-    "parse_claude_md_experts",
+    "parse_claude_md_experts", "resolve_claude_bin",
     "unavailable_tools", "ungrounded_keys",
 ]

@@ -16,6 +16,33 @@ import subprocess
 import pytest
 
 
+@pytest.fixture(scope="session")
+def fake_claude(tmp_path_factory):
+    """An executable file that stands in for ``claude``, and is never run.
+
+    Exits 97 if anything does run it, so a spawn that escaped the ``_run_claude``
+    stubs reads as a failure rather than as a review.
+    """
+    path = tmp_path_factory.mktemp("fake-claude") / "claude"
+    path.write_text("#!/bin/sh\nexit 97\n")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _claude_bin(monkeypatch, fake_claude):
+    """Every test resolves ``claude`` to the fake, never to whatever is installed (#51).
+
+    A live run is refused before its first ``[panel]`` line unless a usable binary
+    resolves, and CI has none, so without this the many tests that drive the live
+    path with ``_run_claude`` stubbed would pass on a developer's machine and be
+    refused on CI. An explicit ``$CLAUDE_BIN`` is never searched past, so neither
+    ``PATH`` nor the developer's ``~/.local/bin/claude`` is consulted. The
+    resolver's own tests set the environment themselves, over this.
+    """
+    monkeypatch.setenv("CLAUDE_BIN", str(fake_claude))
+
+
 def _git(repo, *args) -> None:
     subprocess.run(["git", "-C", str(repo), *args],
                    check=True, capture_output=True, text=True)

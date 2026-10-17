@@ -55,7 +55,7 @@ from .contract import (FINDINGS_CONTRACT, UNRESOLVED_SEVERITY,
 from .memory import epoch_summary, ungrounded_keys
 from .permissions import DEFAULT_DISALLOWED_TOOLS
 from .personas import Persona
-from .spawn import CallResult, _resolve_claude_bin, build_argv, run_claude
+from .spawn import CallResult, build_argv, resolve_claude_bin, run_claude
 from .surface import SurfaceRecord, build_path_surface, gather_diff
 
 # How many times the gate READS its prompt before it gives up on the answer —
@@ -136,7 +136,10 @@ class PanelSession:
     default_model: str | None = None
     cluster_model: str | None = None    # model for the semantic reduce (cheap; None -> default)
     dry_run: bool = False
-    claude_bin: str = field(default_factory=_resolve_claude_bin)
+    # Resolved ONCE per run, by the CLI, which passes it in (#51): a second
+    # resolution here could disagree with the binary the CLI checked. The default
+    # is the same strict resolution, for a session built directly.
+    claude_bin: str = field(default_factory=resolve_claude_bin)
     disallowed_tools: list[str] = field(
         default_factory=lambda: list(DEFAULT_DISALLOWED_TOOLS))
     permission_mode: str = "plan"
