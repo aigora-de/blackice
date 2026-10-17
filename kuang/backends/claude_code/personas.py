@@ -14,6 +14,7 @@ would lead the witness.
 from __future__ import annotations
 
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -147,6 +148,12 @@ class PanelSource:
     * only tiers the precedence chain actually **reached** can be discarded, so a
       good ``CLAUDE.md`` beside a broken ``panel.yaml`` is clean. Recording it
       would be a claim about a file this run never opened.
+
+    One case the first bullet cannot settle: a ``CLAUDE.md`` that cannot be read or
+    decoded cannot show whether it carries the heading. It is recorded as
+    ``malformed`` (ruled on #104), so a non-UTF-8 ``CLAUDE.md`` warns even where it
+    declared nothing. That is the stated cost; reading it as clean could hide a real
+    declaration, which is #16's own defect.
     """
 
     label: str                                # one of PANEL_LABELS
@@ -272,7 +279,16 @@ def _diagnosis(exc: Exception) -> str:
     an enum member was nearly added for a state the code refuses to enter. An
     exception with no mark degrades to its type alone, which is still a
     diagnosis.
+
+    A decode failure's coordinate is its **byte offset**, and the codec is ours —
+    every persona file is read as UTF-8 by ruling (#104) — so both are named, which
+    is #59's wording (*not <encoding> text*) and tells an operator to re-save the
+    file. The codec's own ``reason`` ("invalid start byte") is left out: it is not
+    content, but it is the codec's rendering rather than a name or a coordinate, and
+    the byte offset already says where to look.
     """
+    if isinstance(exc, UnicodeDecodeError):
+        return f"{type(exc).__name__} at byte {exc.start}: not {exc.encoding} text"
     mark = getattr(exc, "problem_mark", None)
     line, column = getattr(mark, "line", None), getattr(mark, "column", None)
     where = (f" at line {line + 1}, column {column + 1}"
@@ -307,7 +323,43 @@ def _declared_persona(entry: dict) -> Persona:
                    model=entry.get("model"))
 
 
-def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
+# What a persona file is decoded as, whatever the locale (#104). ``read_text()``
+# with no encoding decodes with the LOCALE's, so a valid UTF-8 panel sourced as
+# mojibake under a Latin-1 locale with nothing said, and tracebacked under ASCII.
+_PERSONA_FILE_ENCODING = "utf-8"
+
+
+def _read_declaration(path: Path, *, regular_only: bool) -> tuple[str | None, str]:
+    """Read one persona file. Returns ``(text, "")``, or ``(None, detail)``.
+
+    The one read every sourcing path shares, so the paths cannot differ again: before
+    #104 ``CLAUDE.md`` was read with no guard, the markdown branch caught only
+    ``OSError`` and the YAML branch caught everything, so three of four crashed on a
+    file that was not UTF-8.
+
+    **Closed by default.** It catches exactly the two faults a read can name —
+    ``OSError`` from the open or the read, and ``UnicodeDecodeError`` from the
+    decode — and nothing else. ``(OSError, ValueError)`` was rejected, as at #59 and
+    #51: ``UnicodeDecodeError`` is a ``ValueError``, so it would cover every case
+    here and would also record a bug as the operator's malformed file.
+
+    ``regular_only`` is for the implicit tiers, by ruling. A FIFO named
+    ``CLAUDE.md`` or ``panel.md`` in a repository is never process substitution, and
+    with no writer it blocked the run in ``open()``; a directory or a device is no
+    persona file either. ``--panel`` passes ``False`` and keeps #59's rule: an
+    explicit non-regular file is read, so ``--panel <(…)`` works, and one with no
+    writer blocks before any spend. The check follows symlinks, as the read does.
+    """
+    try:
+        if regular_only and not stat.S_ISREG(path.stat().st_mode):
+            return None, "not a regular file"
+        return path.read_text(encoding=_PERSONA_FILE_ENCODING), ""
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, _diagnosis(exc)
+
+
+def _load_declared(path: Path, *,
+                   regular_only: bool) -> tuple[list[Persona], str, str]:
     """Load one declared panel file. Returns ``(personas, reason, detail)``.
 
     ``reason`` is ``""`` where personas came out, and otherwise one of
@@ -319,23 +371,32 @@ def _load_declared(path: Path) -> tuple[list[Persona], str, str]:
     landed in one ``except Exception``, so a missing optional extra and a broken
     file were the same event — and they are not: one says *install the extra*, the
     other says *fix the file*. Collapsing them is this issue's own conflation, one
-    field along.
+    field along. For the same reason a ``panel.yaml`` is not read until the extra is
+    known to be there: a file that could never have been parsed is ``unsupported``.
+
+    The read is ``_read_declaration``'s, on both branches (#104), so a file that
+    cannot be read or decoded is ``malformed`` the same way whichever loader it was
+    bound for. What the YAML branch's broad ``except`` still covers is the PARSE,
+    where it can report a bug in ``_declared_persona`` as a malformed file; that
+    residual is #115's, which owns the type faults it catches.
     """
-    if path.suffix.lower() in (".yaml", ".yml"):
+    is_yaml = path.suffix.lower() in (".yaml", ".yml")
+    if is_yaml:
         try:
             import yaml  # optional dependency: the `yaml` extra
         except ImportError as exc:
             return [], "unsupported", _diagnosis(exc)
+    text, detail = _read_declaration(path, regular_only=regular_only)
+    if text is None:
+        return [], "malformed", detail
+    if is_yaml:
         try:
-            data = yaml.safe_load(path.read_text()) or {}
+            data = yaml.safe_load(text) or {}
             personas = [_declared_persona(p) for p in data.get("personas", [])]
         except Exception as exc:  # noqa: BLE001
             return [], "malformed", _diagnosis(exc)
     else:
-        try:
-            personas = parse_claude_md_experts(path.read_text())
-        except OSError as exc:
-            return [], "malformed", _diagnosis(exc)
+        personas = parse_claude_md_experts(text)
     return (personas, "", "") if personas else ([], "empty", "")
 
 
@@ -355,7 +416,7 @@ def _load_panel_file(repo_root: Path) -> tuple[list[Persona], tuple[Discarded, .
     discarded: list[Discarded] = []
     yml = repo_root / "panel.yaml"
     if yml.exists():
-        personas, reason, detail = _load_declared(yml)
+        personas, reason, detail = _load_declared(yml, regular_only=True)
         if personas:
             return personas, ()
         discarded.append(Discarded("panel.yaml", reason, detail))
@@ -363,7 +424,7 @@ def _load_panel_file(repo_root: Path) -> tuple[list[Persona], tuple[Discarded, .
             return [], tuple(discarded)
     md = repo_root / "panel.md"
     if md.exists():
-        personas, reason, detail = _load_declared(md)
+        personas, reason, detail = _load_declared(md, regular_only=True)
         if personas:
             return personas, tuple(discarded)
         discarded.append(Discarded("panel.md", reason, detail))
@@ -416,7 +477,7 @@ def _load_explicit_panel(
     path = Path(text)
     if not path.exists():
         raise PanelError(f"--panel {path}: the file does not exist")
-    personas, reason, detail = _load_declared(path)
+    personas, reason, detail = _load_declared(path, regular_only=False)
     if not personas:
         said = f" ({detail})" if detail else ""
         raise PanelError(f"--panel {path}: {discard_note(reason)}{said}")
@@ -453,9 +514,13 @@ def load_personas(
     discarded: list[Discarded] = []
     claude_md = repo_root / "CLAUDE.md"
     if claude_md.exists():
-        text = claude_md.read_text()
-        experts = parse_claude_md_experts(text)
-        if experts:
+        text, detail = _read_declaration(claude_md, regular_only=True)
+        if text is None:
+            # A file that cannot be read or decoded cannot say whether it carries
+            # the heading, so it is not read as clean: it is recorded, and sourcing
+            # carries on to panel.md, which before #104 it never reached.
+            discarded.append(Discarded("CLAUDE.md", "malformed", detail))
+        elif experts := parse_claude_md_experts(text):
             roster, coverage = _ensure_specialists(experts)
             return roster, PanelSource("CLAUDE.md"), coverage
         # A CLAUDE.md is a project-instructions file that exists for other
@@ -464,7 +529,7 @@ def load_personas(
         # the run is clean, and with a heading yielding nobody a declaration was
         # thrown away. Two plausible slips reach the second state — `###` instead
         # of `##`, and a colon instead of ` — `.
-        if _experts_section_present(text):
+        elif _experts_section_present(text):
             discarded.append(Discarded("CLAUDE.md", "empty"))
 
     panel, panel_discards = _load_panel_file(repo_root)

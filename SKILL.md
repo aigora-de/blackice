@@ -233,6 +233,11 @@ A declaration that was **reached and yielded no persona** is reported on the
 console before the spend and recorded in the artefact's `panel.discarded`, so a
 run whose declared panel was thrown away does not read like one that declared
 none. A repo that declared nothing is not warned at all.
+Every panel file is read as **UTF-8**, whatever the locale. One that cannot be read,
+is not UTF-8, or (found rather than named) is not a regular file is reported as
+`malformed`, with the byte offset where decoding failed. That includes a `CLAUDE.md`,
+which cannot show that it declared nothing if it cannot be read; sourcing then carries
+on down the precedence chain. Under `--panel` the same file is an error.
 A persona that was convened with **no mandate at all** — a `panel.yaml` entry
 whose `grounding` is absent, null or empty — is reported the same way, in
 `panel.no_mandate`. It is a *different* fact from a discard: the declaration
