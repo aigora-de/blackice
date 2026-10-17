@@ -72,14 +72,21 @@ Each persona is a real `claude -p` subprocess, so the Claude Code CLI has to be 
 the machine; it is not a Python package and cannot be declared as a dependency.
 It is looked for in this order:
 
-1. `$CLAUDE_BIN`, if set and the path exists
+1. `$CLAUDE_BIN`, if set — used as given, or refused, and never searched past
 2. `claude` on `PATH`
 3. `~/.local/bin/claude`
 
-If none resolve, a live run currently fails with a `FileNotFoundError` traceback
-at the first spawn rather than a diagnosis ([#51](https://github.com/aigora-de/blackice/issues/51)).
+A usable binary is an executable file (a symlink to one is fine). A
+live run with none is refused before anything is printed or spent: one `error:`
+line on stderr naming each place looked, and exit `2`. So is a `$CLAUDE_BIN` that
+is empty or names something unusable, even when a working `claude` is on `PATH` —
+a binary you named is not silently replaced by another; unset it to search
+([#51](https://github.com/aigora-de/blackice/issues/51)). The binary is never run
+to check it, so a file that runs but is not `claude` passes, and the run then halts
+`no_review` with every persona `unreadable`.
 `--dry-run` spawns nothing, so it works without `claude` installed and is the
-cheapest way to confirm the rest of the wiring. Because it reviews nothing, it
+cheapest way to confirm the rest of the wiring; where a live run would be refused
+it says so in a `[panel] WARNING` line. Because it reviews nothing, it
 reports no verdict: it halts `no_review`, never `converged`. It still exits `0` —
 the pre-flight check succeeded; there was simply no review to have an outcome.
 

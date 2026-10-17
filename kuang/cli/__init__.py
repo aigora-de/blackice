@@ -31,14 +31,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kuang.backends.claude_code import (DEFAULT_DISALLOWED_TOOLS,
-                                          UNRESOLVED_SEVERITY, LensCoverage,
+                                          UNRESOLVED_SEVERITY, ClaudeBinError,
+                                          LensCoverage,
                                           PanelError, PanelSession, PanelSource,
                                           Persona, PriorFindingsError,
                                           ReduceState, SurfaceError,
                                           SurfaceRecord, called_no_tool,
                                           discard_note, load_personas,
                                           load_prior_findings, mandateless,
-                                          unavailable_tools, ungrounded_keys)
+                                          resolve_claude_bin, unavailable_tools,
+                                          ungrounded_keys)
 from kuang.cli.artefact_file import (ArtefactFile, ArtefactWriteError,
                                      DestinationError, check_destination)
 from kuang.cli.console import ConsoleStream, release
@@ -1174,6 +1176,22 @@ def _report(argv: list[str] | None) -> int:
     except PanelError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    # The ``claude`` binary (#51), resolved ONCE and passed to the session, so the
+    # binary spawned is the binary checked. A live run with none usable is refused
+    # here for the panel's reason: before the first ``[panel]`` line, and so before
+    # anything is spent — it used to run a whole epoch of failed spawns and exit 0.
+    # Only the faults the resolver names are caught; any other exception is a bug
+    # and stays loud. A dry run spawns nothing and needs no ``claude``, so it is
+    # never refused: it says, below, that a live run would be, and its ``argv=``
+    # lines name the bare ``claude`` rather than a binary nothing resolved.
+    would_refuse = None
+    try:
+        claude_bin = resolve_claude_bin()
+    except ClaudeBinError as exc:
+        if not args.dry_run:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        claude_bin, would_refuse = "claude", exc
     # Where the durable artefact goes (#31), refused here for the panel's reason:
     # before the first epoch, and so before anything is spent. ``None`` without the
     # flag, and then nothing is written anywhere.
@@ -1245,6 +1263,12 @@ def _report(argv: list[str] | None) -> int:
               f"granted tools the deny-list removed, so those tools were NOT "
               f"available to them: "
               f"{', '.join(sorted({t for v in cancelled.values() for t in v}))}")
+    # A dry run in an environment a live run would be refused in (#51), said with
+    # the other warnings because a dry run is how an operator checks the wiring
+    # before spending. Silent when a binary resolves, so a healthy dry run's output
+    # has not moved.
+    if would_refuse is not None:
+        print(f"[panel] WARNING: a live run would be refused: {would_refuse}")
 
     # Cross-run memory (issue #13), loaded above so a bad seed is refused before
     # anything is spent, and echoed here so a seed that loaded nothing cannot be
@@ -1259,7 +1283,7 @@ def _report(argv: list[str] | None) -> int:
         paths=args.paths, max_surface_bytes=args.max_surface_bytes,
         personas={p.name: p for p in personas},
         default_model=args.model, cluster_model=args.cluster_model,
-        dry_run=args.dry_run, seeded_summary=seeded,
+        dry_run=args.dry_run, seeded_summary=seeded, claude_bin=claude_bin,
         disallowed_tools=disallowed,
         permission_mode=args.permission_mode)
     panel = PanelConfig(personas=[(p.name, p.grounding) for p in personas])

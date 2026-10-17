@@ -167,5 +167,5 @@ Transferable lessons:
 - **Weak models stray beyond their lens.** Use a stronger model for real runs
   and/or a "stay strictly in your lens" mandate clause.
 - **Fixed startup gotcha:** the child process may not find the agent CLI on its
-  `PATH` — `_resolve_claude_bin()` resolves `$CLAUDE_BIN` → `which` → a common
+  `PATH` — `resolve_claude_bin()` resolves `$CLAUDE_BIN` → `which` → a common
   install path.

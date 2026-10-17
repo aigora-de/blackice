@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,17 +94,97 @@ def called_no_tool(turns: int) -> bool:
     return turns == UNGROUNDED_TURNS
 
 
-def _resolve_claude_bin() -> str:
-    """Locate the ``claude`` executable robustly (child PATH may differ).
+class ClaudeBinError(ValueError):
+    """No usable ``claude`` binary resolves. An operator error (#51).
 
-    Order: ``$CLAUDE_BIN`` -> ``PATH`` -> ``~/.local/bin/claude``. Falls back to
-    the bare name so the failure, if any, is a clear FileNotFoundError.
+    Raised only for the faults ``resolve_claude_bin`` can name: an explicit
+    ``$CLAUDE_BIN`` that is empty or cannot be used, or nothing usable in any place
+    searched. Any other exception from the resolver is a bug and is left to
+    propagate, so the CLI's catch is closed by default and never reports a bug as a
+    bad binary (#59's hand-off). A ``ValueError``, as ``PriorFindingsError`` is. What
+    the resulting exit code MEANS is #32's.
     """
-    for cand in (os.environ.get("CLAUDE_BIN"), shutil.which("claude"),
-                 os.path.expanduser("~/.local/bin/claude")):
-        if cand and os.path.exists(cand):
-            return cand
-    return "claude"
+
+
+# Written the short way in every message, never expanded: a home directory is a
+# person's name on most installs (#148, #121). The messages go to stderr only.
+_LOCAL_INSTALL = "~/.local/bin/claude"
+
+
+def _unusable(path: str) -> str | None:
+    """Why ``path`` cannot be spawned as ``claude``, or ``None`` when it can.
+
+    Usable means a regular file this process may execute, following symlinks — the
+    installer's ``~/.local/bin/claude`` is a symlink to a versioned file. Stricter
+    than ``shutil.which``, which admits anything executable that is not a
+    directory. The binary is never RUN to check it: that would be a new call
+    nobody has measured, a spawn per run, and one that ``replay`` cannot serve
+    (#160). So a file that runs but is not ``claude`` passes, and is reported by
+    the spawn as ``unreadable``.
+    """
+    try:
+        mode = os.stat(path).st_mode
+    except FileNotFoundError:
+        return "does not exist"
+    except OSError as exc:
+        # The errno and its text, as #31's ``failure_detail`` renders them; written
+        # out here because a backend does not import the CLI.
+        return f"{type(exc).__name__} [errno {exc.errno}]: {exc.strerror}"
+    if stat.S_ISDIR(mode):
+        return "is a directory, not an executable file"
+    if not stat.S_ISREG(mode):
+        return "is not a regular file"
+    if not os.access(path, os.X_OK):
+        return "is not executable"
+    return None
+
+
+def resolve_claude_bin() -> str:
+    """The ``claude`` binary to spawn, as an absolute path, or a named refusal.
+
+    Order: ``$CLAUDE_BIN``, then ``claude`` on ``PATH``, then
+    ``~/.local/bin/claude``. An explicit ``$CLAUDE_BIN`` is the operator's
+    instruction, so it is used or refused and never searched past (#16's rule): the
+    resolver this replaces skipped a missing or empty one and spent the run on
+    whatever ``PATH`` found, saying nothing (#51). An empty one is refused rather
+    than read as unset, by #106's rule, although ``export CLAUDE_BIN=`` is a common
+    way to clear a variable — the refusal says to unset it instead.
+
+    The path returned is absolute. The spawn runs with ``cwd`` the repository, where
+    a relative path would name a different file from the one checked here.
+
+    Called once per run, by the CLI, before anything is printed. A binary removed
+    after this check still fails at the spawn, contained there as ``spawn failed``.
+
+    Raises:
+        ClaudeBinError: ``$CLAUDE_BIN`` is empty or names something unusable, or
+            neither later place holds a usable binary.
+    """
+    explicit = os.environ.get("CLAUDE_BIN")
+    if explicit is not None:
+        if explicit == "":
+            raise ClaudeBinError(
+                "$CLAUDE_BIN: set but empty — a binary that was named and not given "
+                "is not replaced by a search; unset it to search PATH and then "
+                f"{_LOCAL_INSTALL}")
+        fault = _unusable(explicit)
+        if fault is not None:
+            raise ClaudeBinError(
+                f"$CLAUDE_BIN {explicit}: {fault} — a binary named explicitly is "
+                f"not replaced by a search of PATH or {_LOCAL_INSTALL}; correct it, "
+                f"or unset it to search")
+        return os.path.abspath(explicit)
+    on_path = shutil.which("claude")
+    if on_path is not None:
+        return os.path.abspath(on_path)
+    local = os.path.expanduser(_LOCAL_INSTALL)
+    fault = _unusable(local)
+    if fault is None:
+        return local
+    raise ClaudeBinError(
+        f"claude: no usable binary was found — $CLAUDE_BIN is unset, no `claude` on "
+        f"PATH, and {_LOCAL_INSTALL} {fault}; install the Claude Code CLI, or set "
+        f"$CLAUDE_BIN to its path")
 
 
 def build_argv(*, claude_bin: str, prompt: str, mandate: str, tools: list[str],
