@@ -111,15 +111,18 @@ class Discarded:
     sees. Before #16 the ``panel.yaml`` case went to stderr and the other three
     went nowhere at all.
 
-    ``detail`` is **built by** ``_diagnosis``, never taken from the exception's
-    own rendering: that rendering can quote the file, and this record is
-    published (#105). It names the exception type and a line/column where there
-    is one, which is a name and a coordinate rather than content.
+    ``detail`` is **built by** ``_diagnosis`` or is one of our own constants, never
+    taken from the exception's own rendering: that rendering can quote the file, and
+    this record is published (#105). It names the exception type and a line/column
+    where there is one, which is a name and a coordinate rather than content. A
+    decode failure's coordinate is a byte offset with our own codec name, and an
+    implicit tier that is not a regular file records the constant ``"not a regular
+    file"`` (#104): neither carries anything the file said.
     """
 
     origin: str          # one of DISCARD_ORIGINS
     reason: str          # one of DISCARD_REASONS
-    detail: str = ""     # from _diagnosis: a type and a coordinate, never content
+    detail: str = ""     # a type and a coordinate, or our constant; never content
 
 
 @dataclass(frozen=True)

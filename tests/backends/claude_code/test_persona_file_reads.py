@@ -263,6 +263,9 @@ def test_a_file_with_a_byte_order_mark_sources_what_one_without_does(tmp_path):
         return source, [(p.name, p.grounding) for p in roster]
 
     assert _sourced(with_bom) == _sourced(without)
+    # Equality alone cannot see a strip that removed the body's U+FEFF from BOTH
+    # files (found by mutation: that row survived), so the body is asserted too.
+    assert "Zero﻿width." in _sourced(with_bom)[1][0][1]
 
 
 def test_a_decode_offset_counts_the_byte_order_mark(tmp_path):
