@@ -42,6 +42,8 @@ human. You are the *synthesiser, not the judge* — the human decides.
    Worth doing the first time on a repo; skip it thereafter. It halts
    **`no_review`** and never `converged`: nothing was reviewed, so there is no
    verdict to report, and a pre-flight check must not be readable as a pass.
+   It needs no `claude` installed; where a live run would be refused for want of
+   a usable one, it says so in a `[panel] WARNING` line.
    ```
    kuang \
      --repo <root> --base <base> --head <head> --dry-run
@@ -57,6 +59,10 @@ human. You are the *synthesiser, not the judge* — the human decides.
    (continue/stop) between epochs, and finally emits a `--- JSON ---` block for
    you to consume (with a `clusters` array alongside the raw `findings`). Exit
    code `3` means an UGLY circuit-break.
+   - A live run with no usable `claude` binary is refused as `error: …` (exit `2`)
+     before anything is printed or spent. So is a `$CLAUDE_BIN` that is empty or
+     names something unusable: a binary named explicitly is never replaced by
+     whatever `PATH` finds.
    - The surface is re-assembled at the **start of every epoch**, so a fix applied
      at the gate can remove it — a named path deleted or renamed, a base ref that
      stops resolving. The run then halts **`surface_lost`**, still reports every

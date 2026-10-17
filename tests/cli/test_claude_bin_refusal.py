@@ -263,8 +263,10 @@ def test_the_binary_is_resolved_once_and_the_session_spawns_what_was_checked(
         changed_repo, env, capsys, monkeypatch):
     """The CLI's check and the session's spawn cannot disagree, because there is one.
 
-    The resolver answers differently on each call. A session that resolved again for
-    itself would spawn the second answer, which nothing checked.
+    The CLI's resolver answers differently on each call, so a second call by the CLI
+    shows up as a second answer. A session left to resolve for itself does not reach
+    this stub — its ``default_factory`` bound the real resolver when the class was
+    made — and the real one, with nothing usable in this environment, refuses.
     """
     state = _stub(monkeypatch)
     first = _exe(env["root"] / "first" / "claude")
@@ -276,8 +278,6 @@ def test_the_binary_is_resolved_once_and_the_session_spawns_what_was_checked(
         calls.append(1)
         return next(answers)
 
-    monkeypatch.setattr(spawn_module, "resolve_claude_bin", _resolve)
-    monkeypatch.setattr(session_module, "resolve_claude_bin", _resolve)
     import kuang.cli as cli_module
     monkeypatch.setattr(cli_module, "resolve_claude_bin", _resolve)
 

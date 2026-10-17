@@ -107,7 +107,8 @@ class ClaudeBinError(ValueError):
 
 
 # Written the short way in every message, never expanded: a home directory is a
-# person's name on most installs (#148, #121). The messages go to stderr only.
+# person's name on most installs (#148, #121). The messages go to stderr, or in a
+# dry run to stdout as a warning, and never into the artefact.
 _LOCAL_INSTALL = "~/.local/bin/claude"
 
 
@@ -125,6 +126,10 @@ def _unusable(path: str) -> str | None:
     try:
         mode = os.stat(path).st_mode
     except FileNotFoundError:
+        # A symlink whose target has gone — the installer's link, once the version
+        # it named is removed — is there to ``ls``, so it is not said to be absent.
+        if os.path.islink(path):
+            return "is a symlink to a file that does not exist"
         return "does not exist"
     except OSError as exc:
         # The errno and its text, as #31's ``failure_detail`` renders them; written
@@ -176,6 +181,13 @@ def resolve_claude_bin() -> str:
         return os.path.abspath(explicit)
     on_path = shutil.which("claude")
     if on_path is not None:
+        # ``which`` admits anything executable that is not a directory, a FIFO
+        # among them; the same test applies here as to the other two places.
+        fault = _unusable(on_path)
+        if fault is not None:
+            raise ClaudeBinError(
+                f"claude on PATH {on_path}: {fault} — the first `claude` on PATH "
+                f"is not replaced by a later one; remove it, or set $CLAUDE_BIN")
         return os.path.abspath(on_path)
     local = os.path.expanduser(_LOCAL_INSTALL)
     fault = _unusable(local)

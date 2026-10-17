@@ -178,7 +178,8 @@ def test_an_explicit_missing_binary_is_refused_not_searched_past(both_tiers_work
     monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude")
     message = _refusal()
     assert message.startswith("$CLAUDE_BIN /nonexistent/claude: does not exist")
-    assert "is not replaced by a search of PATH or ~/.local/bin/claude" in message
+    assert ("is not replaced by a search of PATH or ~/.local/bin/claude; correct it, "
+            "or unset it to search") in message
 
 
 def test_an_empty_explicit_binary_is_refused(both_tiers_work, monkeypatch):
@@ -216,6 +217,34 @@ def test_an_explicit_fifo_is_refused(both_tiers_work, monkeypatch):
     os.mkfifo(fifo, 0o755)
     monkeypatch.setenv("CLAUDE_BIN", str(fifo))
     assert f"$CLAUDE_BIN {fifo}: is not a regular file" in _refusal()
+
+
+def test_an_explicit_dangling_symlink_is_named_as_one(both_tiers_work, monkeypatch):
+    """The installer's link outlives the version it named: it is there, unlike a typo."""
+    link = both_tiers_work["root"] / "dangling"
+    link.symlink_to(both_tiers_work["root"] / "removed-version")
+    monkeypatch.setenv("CLAUDE_BIN", str(link))
+    assert (f"$CLAUDE_BIN {link}: is a symlink to a file that does not exist"
+            in _refusal())
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO")
+def test_a_fifo_first_on_path_is_refused_not_searched_past(env, monkeypatch):
+    """``shutil.which`` returns an executable FIFO; the spawn could not run it.
+
+    Refused rather than skipped: a later ``claude`` on PATH, or the local install,
+    would be a binary other than the one the shell would run.
+    """
+    fifo_dir = env["root"] / "fifo-dir"
+    fifo_dir.mkdir()
+    os.mkfifo(fifo_dir / "claude", 0o755)
+    _exe(env["path"] / "claude")
+    _exe(env["local"])
+    monkeypatch.setenv("PATH", f"{fifo_dir}{os.pathsep}{env['path']}")
+    message = _refusal()
+    assert message.startswith(f"claude on PATH {fifo_dir / 'claude'}: is not a "
+                              f"regular file — the first `claude` on PATH is not "
+                              f"replaced by a later one; remove it, or set $CLAUDE_BIN")
 
 
 def test_an_explicit_symlink_loop_is_refused_by_errno(both_tiers_work, monkeypatch):
