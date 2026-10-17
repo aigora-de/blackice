@@ -242,3 +242,28 @@ def test_a_fault_the_resolver_does_not_name_stays_loud(env, monkeypatch, fault):
     with pytest.raises(type(fault)) as info:
         resolve_claude_bin()
     assert not isinstance(info.value, ClaudeBinError)
+
+
+# --- a session built directly ----------------------------------------------------
+
+def test_a_session_built_without_a_binary_resolves_it_the_same_strict_way(
+        both_tiers_work, monkeypatch):
+    """The CLI passes the binary in; a session built directly must not be laxer.
+
+    A default of the bare ``claude``, or of the old resolver, would reproduce the
+    silent replacement in library form: ``$CLAUDE_BIN`` ignored, ``PATH`` used.
+    """
+    from kuang.backends.claude_code import PanelSession, Persona
+    from kuang.engine import ReviewSpec
+
+    def _session():
+        return PanelSession(repo_root=both_tiers_work["root"],
+                            spec=ReviewSpec(why="w", what="x"),
+                            personas={"p": Persona("p", "be adversarial")}, base="main")
+
+    monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude")
+    with pytest.raises(ClaudeBinError):
+        _session()
+    pinned = _exe(both_tiers_work["root"] / "pinned" / "claude")
+    monkeypatch.setenv("CLAUDE_BIN", str(pinned))
+    assert _session().claude_bin == str(pinned)
