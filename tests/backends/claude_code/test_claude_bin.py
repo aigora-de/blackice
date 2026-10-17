@@ -41,9 +41,10 @@ from pathlib import Path
 
 import pytest
 
-from kuang.backends.claude_code import ClaudeBinError
+from kuang.backends.claude_code import ClaudeBinError, PanelSession, Persona
 from kuang.backends.claude_code import spawn as spawn_module
 from kuang.backends.claude_code.spawn import resolve_claude_bin
+from kuang.engine import ReviewSpec
 
 
 def _exe(path: Path) -> Path:
@@ -253,9 +254,6 @@ def test_a_session_built_without_a_binary_resolves_it_the_same_strict_way(
     A default of the bare ``claude``, or of the old resolver, would reproduce the
     silent replacement in library form: ``$CLAUDE_BIN`` ignored, ``PATH`` used.
     """
-    from kuang.backends.claude_code import PanelSession, Persona
-    from kuang.engine import ReviewSpec
-
     def _session():
         return PanelSession(repo_root=both_tiers_work["root"],
                             spec=ReviewSpec(why="w", what="x"),
