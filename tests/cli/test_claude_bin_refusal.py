@@ -247,6 +247,21 @@ def test_an_explicit_usable_binary_is_the_one_spawned(
     assert state["bins"] and set(state["bins"]) == {str(pinned)}
 
 
+def test_an_explicit_command_name_spawns_the_path_binary(
+        changed_repo, claude_on_path, env, capsys, monkeypatch):
+    """PAIR, green on main (by accident — see the resolver's test): a healthy setup.
+
+    ``CLAUDE_BIN=claude`` names a command, not a file in the working directory, and
+    must not be refused while that command is on PATH.
+    """
+    state = _stub(monkeypatch)
+    _exe(env["home"] / ".local" / "bin" / "claude")
+    monkeypatch.setenv("CLAUDE_BIN", "claude")
+
+    assert main(_argv(changed_repo)) == 0
+    assert set(state["bins"]) == {str(claude_on_path)}
+
+
 def test_unset_the_path_binary_is_the_one_spawned(
         changed_repo, claude_on_path, env, capsys, monkeypatch):
     """PAIR, green on main: with nothing pinned, the search order still holds."""

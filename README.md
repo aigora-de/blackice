@@ -72,7 +72,8 @@ Each persona is a real `claude -p` subprocess, so the Claude Code CLI has to be 
 the machine; it is not a Python package and cannot be declared as a dependency.
 It is looked for in this order:
 
-1. `$CLAUDE_BIN`, if set — used as given, or refused, and never searched past
+1. `$CLAUDE_BIN`, if set — used as given, or refused, and never searched past (a
+   name with no `/`, such as `claude`, is looked up on `PATH`)
 2. `claude` on `PATH`
 3. `~/.local/bin/claude`
 

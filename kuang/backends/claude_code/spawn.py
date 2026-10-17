@@ -155,6 +155,10 @@ def resolve_claude_bin() -> str:
     than read as unset, by #106's rule, although ``export CLAUDE_BIN=`` is a common
     way to clear a variable — the refusal says to unset it instead.
 
+    A ``$CLAUDE_BIN`` with no ``/`` is a command name, and is looked up on ``PATH``
+    as the spawn itself would look up its ``argv[0]`` — found and usable, or refused,
+    and never replaced by ``claude`` or the local install. Any other value is a path.
+
     The path returned is absolute. The spawn runs with ``cwd`` the repository, where
     a relative path would name a different file from the one checked here.
 
@@ -172,6 +176,17 @@ def resolve_claude_bin() -> str:
                 "$CLAUDE_BIN: set but empty — a binary that was named and not given "
                 "is not replaced by a search; unset it to search PATH and then "
                 f"{_LOCAL_INSTALL}")
+        if os.sep not in explicit and (os.altsep is None or os.altsep not in explicit):
+            named = shutil.which(explicit)
+            fault = ("is not a command on PATH" if named is None
+                     else _unusable(named))
+            if fault is not None:
+                where = "" if named is None else f" (found at {named})"
+                raise ClaudeBinError(
+                    f"$CLAUDE_BIN {explicit}: {fault}{where} — a command named "
+                    f"explicitly is not replaced by `claude` or {_LOCAL_INSTALL}; "
+                    f"correct it, or unset it to search")
+            return os.path.abspath(named)
         fault = _unusable(explicit)
         if fault is not None:
             raise ClaudeBinError(

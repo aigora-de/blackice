@@ -191,11 +191,44 @@ def test_an_empty_explicit_binary_is_refused(both_tiers_work, monkeypatch):
 
 
 @pytest.mark.parametrize("value", [" ", "\t"])
-def test_a_blank_explicit_binary_is_refused_as_missing(both_tiers_work, monkeypatch,
-                                                       value):
-    """Not "empty": it names a file, ``" "``, that does not exist, and says so."""
+def test_a_blank_explicit_binary_is_refused_as_no_such_command(both_tiers_work,
+                                                               monkeypatch, value):
+    """Not "empty": it names a command, ``" "``, that is not on PATH, and says so."""
     monkeypatch.setenv("CLAUDE_BIN", value)
-    assert f"$CLAUDE_BIN {value}: does not exist" in _refusal()
+    assert f"$CLAUDE_BIN {value}: is not a command on PATH — " in _refusal()
+
+
+def test_an_explicit_command_name_is_looked_up_on_path(both_tiers_work, monkeypatch):
+    """PAIR, green on main: ``CLAUDE_BIN=claude`` is the ``claude`` on PATH.
+
+    Green on main only by accident: the old resolver found no file ``claude`` in
+    the working directory and fell through to PATH, which happens to agree.
+    """
+    monkeypatch.setenv("CLAUDE_BIN", "claude")
+    assert resolve_claude_bin() == str(both_tiers_work["path"] / "claude")
+
+
+def test_an_explicit_command_name_is_not_the_local_install_when_off_path(
+        both_tiers_work, monkeypatch):
+    """REGRESSION: on main a name not on PATH fell through to whatever came next."""
+    monkeypatch.setenv("CLAUDE_BIN", "claude-beta")
+    message = _refusal()
+    assert message.startswith("$CLAUDE_BIN claude-beta: is not a command on PATH — a "
+                              "command named explicitly is not replaced by `claude` "
+                              "or ~/.local/bin/claude; correct it, or unset it to "
+                              "search")
+
+
+def test_an_explicit_command_name_that_is_unusable_is_refused(both_tiers_work,
+                                                             monkeypatch):
+    """A FIFO by that name on PATH: named, with where it was found."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("needs a FIFO")
+    os.mkfifo(both_tiers_work["path"] / "claude-fifo", 0o755)
+    monkeypatch.setenv("CLAUDE_BIN", "claude-fifo")
+    fifo = both_tiers_work["path"] / "claude-fifo"
+    assert (f"$CLAUDE_BIN claude-fifo: is not a regular file (found at {fifo}) — "
+            in _refusal())
 
 
 def test_an_explicit_directory_is_refused(both_tiers_work, monkeypatch):
