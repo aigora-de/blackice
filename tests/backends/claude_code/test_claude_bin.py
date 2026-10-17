@@ -93,12 +93,13 @@ def test_the_refusal_says_what_to_do(env):
 
 
 def test_claude_on_path_is_found(env):
+    """PAIR, green on main: the refusal does not fire when ``PATH`` holds one."""
     found = _exe(env["path"] / "claude")
     assert resolve_claude_bin() == str(found)
 
 
 def test_the_installer_symlink_is_found(env):
-    """The installer's shape: ``~/.local/bin/claude`` is a symlink to a versioned file."""
+    """PAIR, green on main: the installer's shape, a symlink to a versioned file."""
     target = _exe(env["home"] / ".local" / "share" / "claude" / "versions" / "9.9.9")
     env["local"].parent.mkdir(parents=True)
     env["local"].symlink_to(target)
@@ -106,6 +107,7 @@ def test_the_installer_symlink_is_found(env):
 
 
 def test_path_is_searched_before_the_local_install(env):
+    """PAIR, green on main: the search order has not moved."""
     _exe(env["local"])
     on_path = _exe(env["path"] / "claude")
     assert resolve_claude_bin() == str(on_path)
@@ -147,12 +149,14 @@ def both_tiers_work(env):
 
 
 def test_an_explicit_usable_binary_is_the_one_returned(both_tiers_work, monkeypatch):
+    """PAIR, green on main: an explicit binary still wins over both later tiers."""
     pinned = _exe(both_tiers_work["root"] / "pinned" / "claude")
     monkeypatch.setenv("CLAUDE_BIN", str(pinned))
     assert resolve_claude_bin() == str(pinned)
 
 
 def test_an_explicit_symlink_passes(both_tiers_work, monkeypatch):
+    """PAIR, green on main: the usability check follows a symlink."""
     target = _exe(both_tiers_work["root"] / "versions" / "9.9.9")
     link = both_tiers_work["root"] / "link"
     link.symlink_to(target)
@@ -225,7 +229,9 @@ def test_an_explicit_symlink_loop_is_refused_by_errno(both_tiers_work, monkeypat
 
 @pytest.mark.parametrize("fault", [ValueError("a bug"), PermissionError(13, "a bug")])
 def test_a_fault_the_resolver_does_not_name_stays_loud(env, monkeypatch, fault):
-    """Only the faults it can name become a refusal; a bug is never "your binary".
+    """Green on main, which caught nothing: guards the REJECTED wider catch.
+
+    Only the faults it can name become a refusal; a bug is never "your binary".
 
     ``PermissionError`` is an ``OSError``, so this is also red against the rejected
     design of turning every ``OSError`` into an operator error.
