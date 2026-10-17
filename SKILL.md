@@ -61,8 +61,9 @@ human. You are the *synthesiser, not the judge* — the human decides.
    code `3` means an UGLY circuit-break.
    - A live run with no usable `claude` binary is refused as `error: …` (exit `2`)
      before anything is printed or spent. So is a `$CLAUDE_BIN` that is empty or
-     names something unusable: a binary named explicitly is never replaced by
-     whatever `PATH` finds.
+     names something unusable: a binary named explicitly is used or refused, never
+     replaced by another (a name with no `/`, such as `claude`, is looked up on
+     `PATH`).
    - The surface is re-assembled at the **start of every epoch**, so a fix applied
      at the gate can remove it — a named path deleted or renamed, a base ref that
      stops resolving. The run then halts **`surface_lost`**, still reports every

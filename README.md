@@ -77,12 +77,15 @@ It is looked for in this order:
 2. `claude` on `PATH`
 3. `~/.local/bin/claude`
 
-A usable binary is an executable file (a symlink to one is fine). A
-live run with none is refused before anything is printed or spent: one `error:`
-line on stderr naming each place looked, and exit `2`. So is a `$CLAUDE_BIN` that
-is empty or names something unusable, even when a working `claude` is on `PATH` —
-a binary you named is not silently replaced by another; unset it to search
-([#51](https://github.com/aigora-de/blackice/issues/51)). The binary is never run
+Each place is consulted only if the one before it holds nothing. What a place
+holds must be usable — an executable regular file (a symlink to one is fine) —
+or the run is refused rather than moved on to the next place: a binary you named,
+or the one your shell would run, is not silently replaced by another
+([#51](https://github.com/aigora-de/blackice/issues/51)). So a `$CLAUDE_BIN` that
+is empty or names something unusable is refused even when a working `claude` is
+on `PATH`; unset it to search. A refused live run stops before anything is
+printed or spent, with one `error:` line on stderr saying what was found where
+(or naming all three places, when nothing was), and exit `2`. The binary is never run
 to check it, so a file that runs but is not `claude` passes, and the run then halts
 `no_review` with every persona `unreadable`.
 `--dry-run` spawns nothing, so it works without `claude` installed and is the

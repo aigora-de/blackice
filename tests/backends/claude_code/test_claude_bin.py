@@ -208,6 +208,19 @@ def test_an_explicit_command_name_is_looked_up_on_path(both_tiers_work, monkeypa
     assert resolve_claude_bin() == str(both_tiers_work["path"] / "claude")
 
 
+def test_an_explicit_command_name_found_on_a_relative_path_entry_is_absolute(
+        env, monkeypatch):
+    """What is checked is what is spawned, for a command name as for ``PATH``.
+
+    Found through a relative ``PATH`` entry, the hit is relative; the spawn would
+    look it up again relative to the repository, its ``cwd``.
+    """
+    _exe(env["root"] / "rel" / "claude-beta")
+    monkeypatch.setenv("PATH", "rel")
+    monkeypatch.setenv("CLAUDE_BIN", "claude-beta")
+    assert resolve_claude_bin() == str(env["root"] / "rel" / "claude-beta")
+
+
 def test_an_explicit_command_name_is_not_the_local_install_when_off_path(
         both_tiers_work, monkeypatch):
     """REGRESSION: on main a name not on PATH fell through to whatever came next."""

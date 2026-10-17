@@ -98,8 +98,9 @@ class ClaudeBinError(ValueError):
     """No usable ``claude`` binary resolves. An operator error (#51).
 
     Raised only for the faults ``resolve_claude_bin`` can name: an explicit
-    ``$CLAUDE_BIN`` that is empty or cannot be used, or nothing usable in any place
-    searched. Any other exception from the resolver is a bug and is left to
+    ``$CLAUDE_BIN`` that is empty or cannot be used; a first ``claude`` on ``PATH``
+    that cannot be used; or, with neither of those, an unusable or absent
+    ``~/.local/bin/claude``. Any other exception from the resolver is a bug and is left to
     propagate, so the CLI's catch is closed by default and never reports a bug as a
     bad binary (#59's hand-off). A ``ValueError``, as ``PriorFindingsError`` is. What
     the resulting exit code MEANS is #32's.
@@ -166,8 +167,10 @@ def resolve_claude_bin() -> str:
     after this check still fails at the spawn, contained there as ``spawn failed``.
 
     Raises:
-        ClaudeBinError: ``$CLAUDE_BIN`` is empty or names something unusable, or
-            neither later place holds a usable binary.
+        ClaudeBinError: ``$CLAUDE_BIN`` is empty or names something unusable; the
+            first ``claude`` on ``PATH`` is unusable (it is refused, not searched
+            past); or there is none on ``PATH`` and ``~/.local/bin/claude`` is
+            unusable or absent.
     """
     explicit = os.environ.get("CLAUDE_BIN")
     if explicit is not None:
