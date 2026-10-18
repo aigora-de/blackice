@@ -220,11 +220,10 @@ def test_a_structural_shape_stays_malformed_and_says_where(tmp_path, row, text, 
     """Each was ``malformed`` on main ONLY because of the broad ``except Exception``.
 
     S1–S5, S8 and S14 are green on main in their REASON and red in their DETAIL, which
-    was a bare exception type. They are here because narrowing the catch to
-    ``yaml.YAMLError`` alone turns every one of them into a traceback. S9 is GREEN on
-    main — its detail was and is the bare type — and is why the catch names
-    ``RecursionError`` (#59 hit the same one in ``json.loads``). S10/S11 are pyyaml's
-    own errors and are GREEN on main. The three green rows guard the narrowing.
+    was a bare exception type: each raised inside main's broad catch, and the
+    validator now names it instead. S9 (pyyaml's composer raising ``RecursionError``,
+    #59's trap in ``json.loads``), S10 and S11 are GREEN on main: they come from the
+    parse, whose catch stays broad, and they guard it against being narrowed again.
 
     S15 (a top level of ``[]``) was ``empty`` on main, through ``or {}``: an empty list
     is falsy. Only a null top level, which is what an empty or comment-only file parses
@@ -263,6 +262,9 @@ _PARSER_FAULTS = [
     ("bad-int-tag", "junk: !!int abc\n", "ValueError"),
     ("bad-bool-tag", "junk: !!bool abc\n", "KeyError"),
     ("bad-timestamp-tag", "junk: !!timestamp abc\n", "AttributeError"),
+    # Found by the second pre-merge pass: outside every list the first draft could
+    # have enumerated, which is why the catch enumerates nothing.
+    ("sexagesimal-float-overflow", "junk: " + "1:" * 3000 + "1.5\n", "OverflowError"),
 ]
 
 
