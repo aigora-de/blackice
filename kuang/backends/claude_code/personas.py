@@ -514,13 +514,20 @@ def _load_declared(path: Path, *,
     cannot be read or decoded is ``malformed`` the same way whichever loader it was
     bound for.
 
-    The YAML branch catches only what it can name (#115): pyyaml's own
-    ``YAMLError``, the ``RecursionError`` a deeply nested file raises from its
-    composer (measured; #59 met the same one in ``json.loads``), and the validator's
-    ``_DeclarationError``. Anything else is a bug and escapes. The broad ``except
-    Exception`` this replaced reported a bug in ``_declared_persona`` as the operator's
-    malformed file, with the traceback that would have found it gone. The validator's
-    clause comes first so that it is matched without evaluating ``yaml.YAMLError``.
+    The YAML branch has two catches, one per owner (#115). The PARSE is pyyaml's,
+    handed nothing but the operator's text, so whatever it raises is the file's fault
+    and is ``malformed``. That is broad on purpose, and it was MEASURED broad: besides
+    ``YAMLError``, pyyaml's constructors raise a bare ``ValueError`` (``2024-02-30``,
+    ``!!int abc``, an int past the digit limit), ``KeyError`` (``!!bool abc``) and
+    ``AttributeError`` (``!!timestamp abc``), and its composer ``RecursionError`` for
+    deep nesting. A narrower list would be a claim about a library's internals, and the
+    first draft of this fix made exactly that claim and turned all of them into
+    tracebacks — #59's trap in ``json.loads``, met again.
+
+    The VALIDATION is ours, so its catch names only ``_DeclarationError``: a bug in
+    ``_declared_entries``, ``_declared_persona`` or ``_unique`` escapes. The single
+    ``except Exception`` this replaced covered both, and reported such a bug as the
+    operator's malformed file with the traceback that would have found it gone.
     """
     is_yaml = path.suffix.lower() in (".yaml", ".yml")
     if is_yaml:
@@ -533,12 +540,14 @@ def _load_declared(path: Path, *,
         return [], "malformed", detail
     if is_yaml:
         try:
-            entries = _declared_entries(yaml.safe_load(text))
+            data = yaml.safe_load(text)
+        except Exception as exc:  # noqa: BLE001
+            return [], "malformed", _diagnosis(exc)
+        try:
+            entries = _declared_entries(data)
             personas = _unique([_declared_persona(entry, index)
                                 for index, entry in enumerate(entries)])
         except _DeclarationError as exc:
-            return [], "malformed", _diagnosis(exc)
-        except (yaml.YAMLError, RecursionError) as exc:
             return [], "malformed", _diagnosis(exc)
     else:
         personas = parse_claude_md_experts(text)

@@ -256,21 +256,58 @@ def test_an_unknown_key_is_still_ignored(tmp_path):
     assert personas[0].name == "A"
 
 
+_PARSER_FAULTS = [
+    ("date-out-of-range", "junk: 2024-02-30\n", "ValueError"),
+    ("month-out-of-range", "personas:\n  - name: A\n    model: 2024-13-01\n", "ValueError"),
+    ("int-past-digit-limit", "junk: " + "9" * 5000 + "\n", "ValueError"),
+    ("bad-int-tag", "junk: !!int abc\n", "ValueError"),
+    ("bad-bool-tag", "junk: !!bool abc\n", "KeyError"),
+    ("bad-timestamp-tag", "junk: !!timestamp abc\n", "AttributeError"),
+]
+
+
+@pytest.mark.parametrize(("text", "detail"), [r[1:] for r in _PARSER_FAULTS],
+                         ids=[r[0] for r in _PARSER_FAULTS])
+def test_a_fault_inside_the_parser_is_malformed_whatever_it_raises(
+        tmp_path, text, detail):
+    """GREEN on main, and RED on this fix's first draft: it guards the parse's catch.
+
+    pyyaml does not raise only ``YAMLError``. Its constructors raise a bare
+    ``ValueError``, ``KeyError`` or ``AttributeError`` for a scalar they cannot build,
+    anywhere in the file — even under a key nothing reads. The first draft narrowed
+    the parse's catch to ``(yaml.YAMLError, RecursionError)``, and every row here
+    became a traceback on both tiers; the pre-merge panel found it by measuring, and
+    the stub tests that should have caught it had been rewritten to raise a fake
+    ``YAMLError``. The parse is the library's, handed only the operator's text, so
+    whatever it raises is the file's fault.
+    """
+    _, source, _ = _implicit(tmp_path, text)
+    with pytest.raises(PanelError) as caught:
+        _explicit(tmp_path, text)
+
+    assert [(d.reason, d.detail) for d in source.discarded] == [("malformed", detail)]
+    assert str(caught.value).endswith(f"({detail})")
+
+
 # --- closed by default --------------------------------------------------------------
 
+@pytest.mark.parametrize("where", ["_declared_entries", "_declared_persona", "_unique"])
 @pytest.mark.parametrize("raised", [RuntimeError, ValueError, TypeError, KeyError])
-def test_a_bug_in_the_entry_builder_stays_loud(tmp_path, monkeypatch, raised):
+def test_a_bug_in_the_validation_stays_loud(tmp_path, monkeypatch, where, raised):
     """A fault the validator does not NAME is a bug, and a bug escapes (#59, #51).
 
-    Green on main for none of these: main's ``except Exception`` recorded every one as
-    the operator's malformed file, with the traceback that would have found it gone.
-    ``ValueError`` kills the rejected catch of the error's base class, and ``TypeError``
-    and ``KeyError`` the catch of what main's faults happened to raise.
+    Not reachable on main, whose validation was none: its ``except Exception`` wrapped
+    the parse and the build together and recorded every fault as the operator's
+    malformed file, with the traceback that would have found it gone. The validation
+    is OURS, so its catch names only ``_DeclarationError``. ``ValueError`` kills the
+    rejected catch of that error's base class, and ``TypeError`` and ``KeyError`` a
+    catch of what main's faults happened to raise. All three functions sharing the
+    catch are covered, not only the one most likely to hold a bug.
     """
     def _broken(*_a, **_k):
         raise raised("a bug, not the operator's file")
 
-    monkeypatch.setattr(personas_module, "_declared_persona", _broken)
+    monkeypatch.setattr(personas_module, where, _broken)
 
     with pytest.raises(raised):
         _implicit(tmp_path, "personas:\n  - name: A\n")

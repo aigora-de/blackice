@@ -168,9 +168,29 @@ def test_the_console_lists_each_persona_grant_when_they_differ(
                for r in _artefact("\n".join(lines))["permissions"]["personas"]]
     at = lines.index("[panel] tools differ by persona; mode=plan")
     assert lines[at + 1:at + 1 + len(granted)] == [
-        f"[panel]   {name}: tools={tools}" for name, tools in granted]
+        f"[panel]   {name!r}: tools={tools}" for name, tools in granted]
     assert granted[:2] == [("Auditor", ["Read"]), ("Adversary", ["Grep"])]
     assert not any(line.startswith("[panel] tools=") for line in lines)
+
+
+def test_a_persona_name_cannot_forge_a_grant_line(
+        changed_repo, tmp_path, capsys, monkeypatch):
+    """The per-persona line puts operator text beside a grant claim, so it is quoted.
+
+    Found by the pre-merge panel on this fix's first draft: a name ending in
+    ``: tools=['Read'] mode=default`` printed a line that read as a Read grant for a
+    persona granted Bash. Not a regression against main, which had no such line.
+    """
+    _stub(monkeypatch)
+    panel = tmp_path / "x.yaml"
+    forged = "B: tools=['Read'] mode=default"
+    panel.write_text(f"personas:\n  - name: \"{forged}\"\n    tools: [Bash]\n")
+
+    main(_argv(changed_repo, "--panel", str(panel)))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert f"[panel]   {forged!r}: tools=['Bash']" in lines
+    assert not any(line.startswith(f"[panel]   {forged}") for line in lines)
 
 
 def test_a_uniform_panel_prints_the_line_it_always_did(
