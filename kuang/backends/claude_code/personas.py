@@ -289,9 +289,17 @@ def _diagnosis(exc: Exception) -> str:
     file. The codec's own ``reason`` ("invalid start byte") is left out: it is not
     content, but it is the codec's rendering rather than a name or a coordinate, and
     the byte offset already says where to look.
+
+    A ``panel.yaml`` that parsed but does not follow the declaration's contract
+    (#115) is the one exception whose rendering IS ours: ``_DeclarationError`` is
+    raised only by the validator, which builds its ``detail`` from a coordinate and
+    our own type names and never from the value. So that detail is recorded whole,
+    because it is already the name and the coordinate this rule asks for.
     """
     if isinstance(exc, UnicodeDecodeError):
         return f"{type(exc).__name__} at byte {exc.start}: not {exc.encoding} text"
+    if isinstance(exc, _DeclarationError):
+        return exc.detail
     mark = getattr(exc, "problem_mark", None)
     line, column = getattr(mark, "line", None), getattr(mark, "column", None)
     where = (f" at line {line + 1}, column {column + 1}"
@@ -299,31 +307,143 @@ def _diagnosis(exc: Exception) -> str:
     return f"{type(exc).__name__}{where}"
 
 
-def _declared_persona(entry: dict) -> Persona:
-    """Build one persona from a ``panel.yaml`` entry.
+class _DeclarationError(ValueError):
+    """A ``panel.yaml`` that parsed but is not a panel declaration (#115).
 
-    **Absent and null are one statement** — the operator wrote no mandate — so
-    both become ``""`` here and are reported by ``mandateless`` rather than
-    convened silently (#103). ``entry.get("grounding", "")`` alone does not do
-    it: a ``dict`` default fires only for an absent *key*, so ``grounding:``
-    with nothing after it kept ``pyyaml``'s ``None``, survived ``_load_declared``'s
-    ``try``, and died in ``_ensure_specialists`` outside it with an unhandled
-    ``TypeError``.
+    Raised only by the validator below, and only for the faults it can NAME, so the
+    parse's ``except`` can catch exactly these and let anything else escape: a bug in
+    this module is not the operator's malformed file. #59's ``PriorFindingsError`` and
+    #51's ``ClaudeBinError`` are the same pattern, and for the same reason it derives
+    from ``ValueError`` while nothing catches ``ValueError``.
 
-    A ``grounding`` that is present and of the **wrong type** — an int, a list —
-    still does, as does a null ``name``. That is a different defect — an operator
-    input fault that tracebacks rather than refusing, #59's class — filed as #115
-    rather than fixed here by an ``or ""``, which would swallow the list and miss
-    the int: a patched table where one rule is wanted.
-
-    ``name`` stays required. A missing one raises ``KeyError`` inside the
-    caller's ``try`` and is reported ``malformed``, which is #16's and unchanged.
+    ``detail`` is a coordinate plus our own type names, such as ``personas[1].tools:
+    str, not a list of strings`` — never the value, because a ``name`` is operator text
+    and #105's rule is that a record carries names and coordinates, never content.
     """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+def _kind(value: object) -> str:
+    """The type a declared value has, in our words: ``null`` for YAML's null.
+
+    Python's own type name otherwise, so ``2024-01-01`` reads ``date``. It names the
+    type and never quotes the value.
+    """
+    return "null" if value is None else type(value).__name__
+
+
+def _declared_entries(data: object) -> list:
+    """The ``personas`` list of a parsed ``panel.yaml``, or the structural fault in it.
+
+    An empty or comment-only file parses to ``None`` and declares nothing. Any other
+    top level must be a mapping. ``or {}`` read every falsy top level, a ``[]`` among
+    them, as an empty file; an empty explicit value is not an absent one (#106). An
+    absent ``personas`` key declares nothing, while a present one must be a list —
+    ``personas:`` null included, which is a statement of the key with no list.
+    Each entry must be a mapping. On main every one of these shapes reached
+    ``malformed`` only by raising inside the broad catch, so narrowing that catch
+    has to name them here or they become tracebacks.
+    """
+    if data is None:
+        return []
+    if type(data) is not dict:
+        raise _DeclarationError(f"top level: {_kind(data)}, not a mapping")
+    if "personas" not in data:
+        return []
+    entries = data["personas"]
+    if type(entries) is not list:
+        raise _DeclarationError(f"personas: {_kind(entries)}, not a list")
+    for index, entry in enumerate(entries):
+        if type(entry) is not dict:
+            raise _DeclarationError(f"personas[{index}]: {_kind(entry)}, not a mapping")
+    return entries
+
+
+def _declared_persona(entry: dict, index: int) -> Persona:
+    """Build one persona from a ``panel.yaml`` entry, or name the field at fault (#115).
+
+    Every field is checked before anything is built, against the contract ruled on
+    #115:
+
+    * ``name`` is a string, non-empty after stripping, and printable. It is the
+      session's key and what every report attributes to, so a newline in it breaks the
+      console's roster line. A comma is allowed: "Analyst, correctness" is a plausible
+      name, and the ambiguity of a comma-joined list is the rendering's.
+    * ``grounding`` is a string. **Absent and null are one statement** — the operator
+      wrote no mandate — so both become ``""`` and are reported by ``mandateless``
+      rather than convened silently (#103).
+    * ``tools`` absent is the default grant, and otherwise a list of strings, where
+      ``[]`` is an explicit grant of none. A string is NOT split: ``*tools`` turned
+      ``tools: Read`` into ``--allowedTools R e a d``, and a mapping into its keys,
+      with nothing said. Null is refused rather than guessed at, because for ``tools``
+      absent means "the default" and null could mean that or "none" (#106).
+    * ``model`` absent or null is the default, and otherwise a non-empty string. A
+      non-string reached argv and was reported as a SPAWN failure every epoch, and
+      ``""`` fell back to the default silently: an empty explicit value is not an
+      absent one (#106).
+
+    Types are compared exactly (``type(x) is str``), not with ``isinstance``: pyyaml's
+    safe loader builds plain types, and a subclass admitted here would carry whatever
+    it overrides past the check (#129).
+    """
+    at = f"personas[{index}]"
+    if "name" not in entry:
+        raise _DeclarationError(f"{at}.name: missing")
+    name = entry["name"]
+    if type(name) is not str:
+        raise _DeclarationError(f"{at}.name: {_kind(name)}, not a string")
+    if not name.strip():
+        raise _DeclarationError(f"{at}.name: empty")
+    if not name.isprintable():
+        raise _DeclarationError(f"{at}.name: a non-printable character")
     grounding = entry.get("grounding")
-    return Persona(name=entry["name"],
-                   grounding="" if grounding is None else grounding,
-                   tools=entry.get("tools", list(DEFAULT_ALLOWED_TOOLS)),
-                   model=entry.get("model"))
+    if grounding is not None and type(grounding) is not str:
+        raise _DeclarationError(f"{at}.grounding: {_kind(grounding)}, not a string")
+    if "tools" in entry:
+        tools = entry["tools"]
+        if type(tools) is not list:
+            raise _DeclarationError(
+                f"{at}.tools: {_kind(tools)}, not a list of strings")
+        for i, tool in enumerate(tools):
+            if type(tool) is not str:
+                raise _DeclarationError(f"{at}.tools[{i}]: {_kind(tool)}, not a string")
+        tools = list(tools)
+    else:
+        tools = list(DEFAULT_ALLOWED_TOOLS)
+    model = entry.get("model")
+    if model is not None:
+        if type(model) is not str:
+            raise _DeclarationError(f"{at}.model: {_kind(model)}, not a string")
+        if not model:
+            raise _DeclarationError(f"{at}.model: empty")
+    return Persona(name=name, grounding="" if grounding is None else grounding,
+                   tools=tools, model=model)
+
+
+def _unique(personas: list[Persona]) -> list[Persona]:
+    """The personas, or the first duplicated name as a ``_DeclarationError`` (#115).
+
+    Names are the session's keys (``{p.name: p}``), so a duplicate kept the LAST entry
+    under that name: the first persona was spawned with the second's tools and model,
+    while the console and the artefact reported the first's. Mandates survived only
+    because the engine passes them separately. Exact equality, because that is the
+    collision; names differing only in case or spacing are distinct keys.
+
+    The YAML tier only, by ruling. A ``CLAUDE.md`` or ``panel.md`` can repeat a
+    heading too, but there tools and model are the defaults and identical, so the
+    collapse costs attribution only, and refusing would discard a file that sources
+    today. That is under-reported, and said so.
+    """
+    first: dict[str, int] = {}
+    for index, p in enumerate(personas):
+        if p.name in first:
+            raise _DeclarationError(
+                f"personas[{index}].name: duplicates personas[{first[p.name]}].name")
+        first[p.name] = index
+    return personas
 
 
 # What a persona file is decoded as, whatever the locale (#104). ``read_text()``
@@ -390,9 +510,15 @@ def _load_declared(path: Path, *,
 
     The read is ``_read_declaration``'s, on both branches (#104), so a file that
     cannot be read or decoded is ``malformed`` the same way whichever loader it was
-    bound for. What the YAML branch's broad ``except`` still covers is the PARSE,
-    where it can report a bug in ``_declared_persona`` as a malformed file; that
-    residual is #115's, which owns the type faults it catches.
+    bound for.
+
+    The YAML branch catches only what it can name (#115): pyyaml's own
+    ``YAMLError``, the ``RecursionError`` a deeply nested file raises from its
+    composer (measured; #59 met the same one in ``json.loads``), and the validator's
+    ``_DeclarationError``. Anything else is a bug and escapes. The broad ``except
+    Exception`` this replaced reported a bug in ``_declared_persona`` as the operator's
+    malformed file, with the traceback that would have found it gone. The validator's
+    clause comes first so that it is matched without evaluating ``yaml.YAMLError``.
     """
     is_yaml = path.suffix.lower() in (".yaml", ".yml")
     if is_yaml:
@@ -405,9 +531,12 @@ def _load_declared(path: Path, *,
         return [], "malformed", detail
     if is_yaml:
         try:
-            data = yaml.safe_load(text) or {}
-            personas = [_declared_persona(p) for p in data.get("personas", [])]
-        except Exception as exc:  # noqa: BLE001
+            entries = _declared_entries(yaml.safe_load(text))
+            personas = _unique([_declared_persona(entry, index)
+                                for index, entry in enumerate(entries)])
+        except _DeclarationError as exc:
+            return [], "malformed", _diagnosis(exc)
+        except (yaml.YAMLError, RecursionError) as exc:
             return [], "malformed", _diagnosis(exc)
     else:
         personas = parse_claude_md_experts(text)

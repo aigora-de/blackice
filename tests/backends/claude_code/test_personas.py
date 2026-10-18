@@ -222,9 +222,13 @@ def test_the_missing_optional_extra_is_not_reported_as_a_malformed_file(
     _no_pyyaml(monkeypatch)
     absent = load_personas(_repo(tmp_path / "a", **{"panel.yaml": "personas: []\n"}))[1]
 
+    # A parse error the stub's own ``YAMLError`` names, as pyyaml's all are: since
+    # #115 the parse catches only the faults it can name.
+    yaml_error = type("YAMLError", (Exception,), {})
     _stub_yaml(monkeypatch, None)
+    monkeypatch.setattr(sys.modules["yaml"], "YAMLError", yaml_error, raising=False)
     monkeypatch.setattr(sys.modules["yaml"], "safe_load",
-                        lambda _t: (_ for _ in ()).throw(ValueError("bad token")))
+                        lambda _t: (_ for _ in ()).throw(yaml_error("bad token")))
     broken = load_personas(_repo(tmp_path / "b", **{"panel.yaml": "{{\n"}))[1]
 
     assert absent.discarded[0].reason == "unsupported"
@@ -232,7 +236,7 @@ def test_the_missing_optional_extra_is_not_reported_as_a_malformed_file(
     # The exception's TYPE, not its rendering: the rendering can quote the file
     # and this record is published (#105). The distinction the reasons draw is
     # unaffected, which is what this test is actually about.
-    assert broken.discarded[0].detail == "ValueError"
+    assert broken.discarded[0].detail == "YAMLError"
 
 
 def test_a_panel_yaml_that_names_nobody_answers_its_tier(tmp_path, monkeypatch):
@@ -273,19 +277,26 @@ def test_a_parse_failure_does_not_quote_the_file_it_failed_on(
     until #105, every CI job. The stub raises an exception that renders like a
     real one, so what is asserted is **our** rule (we never record the
     rendering) rather than any particular library's wording.
+
+    Since #115 the parse catches only the faults it names, so the stub's error
+    derives from the stub's own ``YAMLError``, as every pyyaml parse error does.
     """
     secret = "INTERNAL-ONLY acme-billing reconciliation, ticket PROJ-4471"
 
     class _Mark:
         line, column = 2, 10
 
-    class _MarkedError(Exception):
+    class _YAMLError(Exception):
+        pass
+
+    class _MarkedError(_YAMLError):
         problem_mark = _Mark()
 
         def __str__(self):
             return f"while scanning\n  in \"<unicode string>\":\n    {secret}\n    ^"
 
     stub = types.ModuleType("yaml")
+    stub.YAMLError = _YAMLError
     stub.safe_load = lambda _t: (_ for _ in ()).throw(_MarkedError())
     monkeypatch.setitem(sys.modules, "yaml", stub)
 
@@ -337,13 +348,17 @@ def test_a_diagnosis_is_recorded_even_with_no_location_to_give(
     empty string has discarded the diagnosis rather than narrowed it — which is
     the doctrine's own failure mode, not a fix for it.
     """
+    class YAMLError(Exception):
+        pass
+
     stub = types.ModuleType("yaml")
-    stub.safe_load = lambda _t: (_ for _ in ()).throw(ValueError("boom"))
+    stub.YAMLError = YAMLError
+    stub.safe_load = lambda _t: (_ for _ in ()).throw(YAMLError("boom"))
     monkeypatch.setitem(sys.modules, "yaml", stub)
 
     _, source, _ = load_personas(_repo(tmp_path, **{"panel.yaml": "x\n"}))
 
-    assert source.discarded[0].detail == "ValueError"
+    assert source.discarded[0].detail == "YAMLError"
 
 
 def test_a_real_pyyaml_parse_error_does_not_quote_the_file(tmp_path):

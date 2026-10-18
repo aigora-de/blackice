@@ -144,6 +144,16 @@ anything and recorded in the artefact, rather than falling back to the default s
 silence. A panel named with `--panel` is never substituted at all: it is an error. Panel
 files are read as **UTF-8** whatever the locale. See [`SKILL.md`](SKILL.md).
 
+A `panel.yaml` is a mapping with a `personas` list, and each entry takes four keys:
+`name` (required: a printable, non-blank string, unique in the file), `grounding` (the
+mandate: a string, or absent), `tools` (a list of tool names; absent for the default
+read-only three, `[]` for none) and `model` (a non-empty string, or absent for
+`--model`). One entry of the wrong type makes the whole file `malformed`, reported with
+the field at fault (`personas[1].tools: str, not a list of strings`) and never its
+value. **`tools` is set by whichever repository holds the file**, which is the
+repository under review: it becomes that persona's `--allowedTools`, the deny-list
+removes only the tools it names, and none of this is a sandbox (#171, #79).
+
 ## Permission model
 **Deny-by-default, read-only** with respect to the repo (`Read`/`Grep`/`Glob`;
 no shell or edits) — because headless `claude -p` runs any *allowed* tool
