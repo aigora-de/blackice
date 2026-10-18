@@ -187,6 +187,12 @@ def _discard_lines(source: PanelSource) -> list[str]:
     a discarded CLAUDE.md beside a working panel.md leaves both facts true at
     once. What it claims is exactly what is known — the roster is not the one
     those declarations named.
+
+    One discard breaks both claims, by ruling (#104): a ``CLAUDE.md`` that cannot
+    be read or decoded is reported as ``malformed`` whether or not it declared a
+    panel, because what it declared cannot be known. Such a repo may have asked
+    for nothing and still gets these lines, and "declared panel(s)" then claims
+    a declaration nobody has seen. The header's wording is #168.
     """
     if not source.degraded:
         return []

@@ -138,10 +138,11 @@ completeness-critic and a survivability (ruin) lens are always ensured. Mandates
 open-ended (the persona's role is its lens; we don't lead the witness).
 
 A panel that was **declared and could not be used** — an experts heading yielding no
-persona, a `panel.md` naming nobody, a `panel.yaml` needing the optional `yaml` extra
-— is reported before the run spends anything and recorded in the artefact, rather than
-falling back to the default set in silence. A panel named with `--panel` is never
-substituted at all: it is an error. See [`SKILL.md`](SKILL.md).
+persona, a `panel.md` naming nobody, a `panel.yaml` needing the optional `yaml` extra,
+a panel file that cannot be read or is not UTF-8 — is reported before the run spends
+anything and recorded in the artefact, rather than falling back to the default set in
+silence. A panel named with `--panel` is never substituted at all: it is an error. Panel
+files are read as **UTF-8** whatever the locale. See [`SKILL.md`](SKILL.md).
 
 ## Permission model
 **Deny-by-default, read-only** with respect to the repo (`Read`/`Grep`/`Glob`;

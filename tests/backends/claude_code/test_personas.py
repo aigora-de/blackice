@@ -299,8 +299,8 @@ def test_a_parse_failure_does_not_quote_the_file_it_failed_on(
 
 @pytest.mark.parametrize(("files", "yaml_absent", "expected"), [
     ({"panel.yaml": "personas:\n  - name: A\n"}, True, "ModuleNotFoundError"),
-    ({}, False, "IsADirectoryError"),
-], ids=["the-missing-optional-extra", "a-markdown-file-that-is-a-directory"])
+    ({}, False, "UnicodeDecodeError at byte 0: not utf-8 text"),
+], ids=["the-missing-optional-extra", "a-markdown-file-that-cannot-be-decoded"])
 def test_every_call_site_narrows_not_only_the_dangerous_one(
         tmp_path, monkeypatch, files, yaml_absent, expected):
     """The rule is uniform, and uniformity is the thing worth testing.
@@ -313,12 +313,16 @@ def test_every_call_site_narrows_not_only_the_dangerous_one(
 
     Found by mutation: both call sites survived the first matrix, because every
     assertion about ``detail`` was aimed at the YAML branch where the hazard is.
+
+    The markdown case was a directory until #104, which made the implicit tiers
+    require a regular file before reading, so a directory no longer reaches
+    ``_diagnosis``. An undecodable file does, and its rendering quotes a byte.
     """
     if yaml_absent:
         _no_pyyaml(monkeypatch)
     repo = _repo(tmp_path, **files)
     if not yaml_absent:
-        (repo / "panel.md").mkdir()
+        (repo / "panel.md").write_bytes(b"\xff not utf-8\n")
 
     _, source, _ = load_personas(repo)
 
