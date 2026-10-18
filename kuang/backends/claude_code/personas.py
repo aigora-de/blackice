@@ -353,18 +353,21 @@ def _read_declaration(path: Path, *, regular_only: bool) -> tuple[str | None, st
     explicit non-regular file is read, so ``--panel <(…)`` works, and one with no
     writer blocks before any spend. The check follows symlinks, as the read does.
 
-    One leading byte-order mark is removed (ruled on #104). A decoded UTF-8 BOM is
+    Leading byte-order marks are removed (ruled on #104). A decoded UTF-8 BOM is
     U+FEFF, so a file saved with one began line 1 with the mark rather than ``#``,
     and a ``CLAUDE.md`` whose heading was its first line sourced the default panel
-    with nothing reported. It is stripped AFTER a plain UTF-8 decode, not by the
-    ``utf-8-sig`` codec, which reports a decode error's offset after the mark and so
-    would send the operator three bytes short.
+    with nothing reported. Every leading mark goes, not only the first: a file run
+    through two tools that each added one carries two, and stripping one would
+    leave the second hiding the heading exactly as before. A U+FEFF after the first
+    other character is content and is kept. The marks are stripped AFTER a plain
+    UTF-8 decode, not by the ``utf-8-sig`` codec, which reports a decode error's
+    offset after the mark and so would send the operator three bytes short.
     """
     try:
         if regular_only and not stat.S_ISREG(path.stat().st_mode):
             return None, "not a regular file"
         text = path.read_text(encoding=_PERSONA_FILE_ENCODING)
-        return text.removeprefix("\ufeff"), ""
+        return text.lstrip("\ufeff"), ""
     except (OSError, UnicodeDecodeError) as exc:
         return None, _diagnosis(exc)
 

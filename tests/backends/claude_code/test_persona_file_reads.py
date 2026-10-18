@@ -268,6 +268,19 @@ def test_a_file_with_a_byte_order_mark_sources_what_one_without_does(tmp_path):
     assert "Zero﻿width." in _sourced(with_bom)[1][0][1]
 
 
+def test_every_leading_byte_order_mark_is_removed_not_only_the_first(tmp_path):
+    """REGRESSION for #104 (the doubled-BOM ruling). A file that two tools each saved
+    with a mark carries two, and removing only the first left the second hiding the
+    line-1 heading, so the declared panel was lost exactly as with one. Kills a
+    one-mark ``removeprefix``; the pair above forbids a strip that reaches the body."""
+    _write(tmp_path, "CLAUDE.md", _BOM + _BOM + _HEADING_FIRST)
+
+    roster, source, _ = load_personas(tmp_path)
+
+    assert roster[0].name == "Auditor"
+    assert source.discarded == ()
+
+
 def test_a_decode_offset_counts_the_byte_order_mark(tmp_path):
     """REGRESSION for #104 on main; guards the REJECTED ``utf-8-sig`` decode.
 
