@@ -385,9 +385,11 @@ def _declared_persona(entry: dict, index: int) -> Persona:
       ``""`` fell back to the default silently: an empty explicit value is not an
       absent one (#106).
 
-    Types are compared exactly (``type(x) is str``), not with ``isinstance``: pyyaml's
-    safe loader builds plain types, and a subclass admitted here would carry whatever
-    it overrides past the check (#129).
+    Types are compared exactly (``type(x) is str``), not with ``isinstance``, so the
+    check states the contract (#129: a subclass carries whatever it overrides past an
+    ``isinstance``). It is not load-bearing today and no test can make it so: pyyaml's
+    safe loader builds only plain types, so the two spellings agree on every input a
+    file can produce, and the mutation to ``isinstance`` survives for that reason.
     """
     at = f"personas[{index}]"
     if "name" not in entry:
