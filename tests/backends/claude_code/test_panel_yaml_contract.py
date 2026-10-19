@@ -82,6 +82,24 @@ _ILL_TYPED = [
     ("M2", _entry("    model: [a]\n"), "personas[1].model: list, not a string"),
     ("M5", _entry("    model: true\n"), "personas[1].model: bool, not a string"),
     ("M3", _entry('    model: ""\n'), "personas[1].model: empty"),
+    # A character argv cannot carry, from a YAML escape: each sourced on main and then
+    # failed that persona's spawn at rc 0 (X1-X6), or split the grant line (X7).
+    ("X1", _entry('    model: "m\\0x"\n'),
+     "personas[1].model: a non-printable character"),
+    ("X2", _entry('    model: "m\\ud800"\n'),
+     "personas[1].model: a non-printable character"),
+    ("X3", _entry('    tools: [Read, "Re\\0ad"]\n'),
+     "personas[1].tools[1]: a non-printable character"),
+    ("X4", _entry('    tools: ["\\udfff"]\n'),
+     "personas[1].tools[0]: a non-printable character"),
+    ("X7", _entry('    tools: ["Read\\nBash"]\n'),
+     "personas[1].tools[0]: a non-printable character"),
+    ("X5", _entry('  - name: Critic\n    grounding: "real\\0mandate"\n'),
+     "personas[2].grounding: a character a command line cannot carry"),
+    ("X6", _entry('  - name: Critic\n    grounding: "real \\ud800 mandate"\n'),
+     "personas[2].grounding: a character a command line cannot carry"),
+    ("X6b", _entry('  - name: Critic\n    grounding: "\\udfff"\n'),
+     "personas[2].grounding: a character a command line cannot carry"),
     ("S13", "personas:\n  - name: Auditor\n    tools: [Read]\n"
             f"{_GOOD}  - name: Auditor\n    tools: [Grep]\n",
      "personas[2].name: duplicates personas[0].name"),
@@ -179,6 +197,27 @@ def test_a_well_typed_explicit_file_is_not_refused(tmp_path):
     assert source.label == "--panel"
     assert [p.name for p in personas][:3] == [
         "Analyst", "Sentinel", "Critic, completeness"]
+
+
+def test_text_argv_can_carry_still_sources(tmp_path):
+    """PAIR to X1-X7, green on main: the character rules must not refuse real text.
+
+    A mandate is multi-line prose, so a newline and a tab in ``grounding`` are kept,
+    and so are the code points either side of the surrogate block (U+D7FF, U+E000)
+    and an astral one, which a range test off by one would refuse. A tool pattern with
+    brackets, a colon and a space, and a model id with dots, are printable.
+    """
+    personas, source, _ = _implicit(tmp_path, (
+        "personas:\n  - name: Analyst\n"
+        '    grounding: "Line one.\\n\\tLine two: caf\\u00e9 \\ud7ff\\ue000 \\U0001F600"\n'
+        '    tools: ["Bash(git diff:*)", Read]\n'
+        "    model: some-model-1.5\n"))
+
+    assert source.discarded == ()
+    analyst = personas[0]
+    assert analyst.grounding == "Line one.\n\tLine two: caf\u00e9 \ud7ff\ue000 \U0001F600"
+    assert analyst.tools == ["Bash(git diff:*)", "Read"]
+    assert analyst.model == "some-model-1.5"
 
 
 def test_two_distinct_names_with_distinct_grants_each_keep_their_own(tmp_path):

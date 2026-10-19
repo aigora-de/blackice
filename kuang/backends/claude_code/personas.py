@@ -335,6 +335,20 @@ def _kind(value: object) -> str:
     return "null" if value is None else type(value).__name__
 
 
+def _argv_cannot_carry(text: str) -> bool:
+    """Whether ``text`` holds a character no command-line argument can carry (#115).
+
+    A NUL ends a C string, so ``exec`` refuses it (``ValueError: embedded null byte``),
+    and a lone surrogate has no UTF-8 encoding (``UnicodeEncodeError``). A YAML escape
+    produces either (``"\\0"``, ``"\\ud800"``), and each was measured on main sourcing
+    cleanly and then failing that persona's SPAWN, at rc 0, while a live run paid for
+    the rest of the panel — the shape ``model: 42`` had. The surrogate's failure also
+    quoted the mandate into the artefact's ``evidence``. So both are the operator's,
+    refused here with a coordinate, never the value.
+    """
+    return "\0" in text or any("\ud800" <= c <= "\udfff" for c in text)
+
+
 def _declared_entries(data: object) -> list:
     """The ``personas`` list of a parsed ``panel.yaml``, or the structural fault in it.
 
@@ -374,16 +388,23 @@ def _declared_persona(entry: dict, index: int) -> Persona:
       name, and the ambiguity of a comma-joined list is the rendering's.
     * ``grounding`` is a string. **Absent and null are one statement** — the operator
       wrote no mandate — so both become ``""`` and are reported by ``mandateless``
-      rather than convened silently (#103).
-    * ``tools`` absent is the default grant, and otherwise a list of strings, where
-      ``[]`` is an explicit grant of none. A string is NOT split: ``*tools`` turned
-      ``tools: Read`` into ``--allowedTools R e a d``, and a mapping into its keys,
-      with nothing said. Null is refused rather than guessed at, because for ``tools``
-      absent means "the default" and null could mean that or "none" (#106).
-    * ``model`` absent or null is the default, and otherwise a non-empty string. A
-      non-string reached argv and was reported as a SPAWN failure every epoch, and
-      ``""`` fell back to the default silently: an empty explicit value is not an
-      absent one (#106).
+      rather than convened silently (#103). A mandate is multi-line prose, so it is
+      NOT held to ``isprintable``; it is refused only for a character argv cannot
+      carry at all (``_argv_cannot_carry``).
+    * ``tools`` absent is the default grant, and otherwise a list of printable
+      strings, where ``[]`` is an explicit grant of none. A string is NOT split:
+      ``*tools`` turned ``tools: Read`` into ``--allowedTools R e a d``, and a mapping
+      into its keys, with nothing said. Null is refused rather than guessed at,
+      because for ``tools`` absent means "the default" and null could mean that or
+      "none" (#106).
+    * ``model`` absent or null is the default, and otherwise a non-empty, printable
+      string. A non-string reached argv and was reported as a SPAWN failure every
+      epoch, and ``""`` fell back to the default silently: an empty explicit value is
+      not an absent one (#106).
+
+    A tool name or a model id has no use for a control character, so both are held to
+    ``name``'s ``isprintable``: that refuses the NUL and the lone surrogate argv cannot
+    carry, and a newline that would split the console's grant line.
 
     Types are compared exactly (``type(x) is str``), not with ``isinstance``, so the
     check states the contract (#129: a subclass carries whatever it overrides past an
@@ -404,6 +425,9 @@ def _declared_persona(entry: dict, index: int) -> Persona:
     grounding = entry.get("grounding")
     if grounding is not None and type(grounding) is not str:
         raise _DeclarationError(f"{at}.grounding: {_kind(grounding)}, not a string")
+    if grounding is not None and _argv_cannot_carry(grounding):
+        raise _DeclarationError(
+            f"{at}.grounding: a character a command line cannot carry")
     if "tools" in entry:
         tools = entry["tools"]
         if type(tools) is not list:
@@ -412,6 +436,8 @@ def _declared_persona(entry: dict, index: int) -> Persona:
         for i, tool in enumerate(tools):
             if type(tool) is not str:
                 raise _DeclarationError(f"{at}.tools[{i}]: {_kind(tool)}, not a string")
+            if not tool.isprintable():
+                raise _DeclarationError(f"{at}.tools[{i}]: a non-printable character")
         tools = list(tools)
     else:
         tools = list(DEFAULT_ALLOWED_TOOLS)
@@ -421,6 +447,8 @@ def _declared_persona(entry: dict, index: int) -> Persona:
             raise _DeclarationError(f"{at}.model: {_kind(model)}, not a string")
         if not model:
             raise _DeclarationError(f"{at}.model: empty")
+        if not model.isprintable():
+            raise _DeclarationError(f"{at}.model: a non-printable character")
     return Persona(name=name, grounding="" if grounding is None else grounding,
                    tools=tools, model=model)
 
