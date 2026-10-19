@@ -241,10 +241,12 @@ which cannot show that it declared nothing if it cannot be read; sourcing then c
 on down the precedence chain. Under `--panel` the same file is an error.
 A **`panel.yaml`** is a mapping whose `personas` key is a list of entries, each with:
 - `name` — required; a string, non-blank, printable, and unique within the file;
-- `grounding` — the persona's mandate; a string, or absent/null (no mandate, below);
-- `tools` — a list of strings: absent gives the default read-only grant, `[]` grants
-  none, and a single string is refused rather than split into letters;
-- `model` — a non-empty string, or absent/null for `--model`.
+- `grounding` — the persona's mandate; a string, or absent/null (no mandate, below).
+  It may span lines, but a NUL or a lone surrogate is refused: no command line can
+  carry either;
+- `tools` — a list of printable strings: absent gives the default read-only grant,
+  `[]` grants none, and a single string is refused rather than split into letters;
+- `model` — a non-empty, printable string, or absent/null for `--model`.
 
 An entry that breaks this, a duplicated name, or a shape that is not a list of
 mappings makes the **whole file** `malformed` — no partial panel is convened — and the
