@@ -1254,7 +1254,19 @@ def _report(argv: list[str] | None) -> int:
         print(f"[panel] WARNING: {len(no_mandate)} of {len(personas)} persona(s) "
               f"were convened with NO MANDATE — an empty brief is not a lens"
               f"{shared}: {', '.join(no_mandate)}")
-    print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
+    # Each persona's grant, from the same ``p.tools`` the artefact's ``granted`` reads
+    # (#115, O2). This printed ``personas[0].tools`` alone, so a panel whose personas
+    # differed reported the first one's grant for all of them — measured hiding a
+    # declared Bash behind the default three. One shared grant is one true line, and
+    # is the line it always was, so a uniform panel's console has not moved. The name
+    # is quoted (``!r``) because it is operator text sitting beside a grant claim: a
+    # name ending ``: tools=['Read']`` would otherwise forge the line it heads.
+    if len({tuple(p.tools) for p in personas}) == 1:
+        print(f"[panel] tools={personas[0].tools} mode={args.permission_mode}")
+    else:
+        print(f"[panel] tools differ by persona; mode={args.permission_mode}")
+        for p in personas:
+            print(f"[panel]   {p.name!r}: tools={p.tools}")
     disallowed = (list(args.disallow_tools) if args.disallow_tools is not None
                   else list(DEFAULT_DISALLOWED_TOOLS))
     # Tools the panel granted AND deny-listed (#67). Such a tool is not refused when

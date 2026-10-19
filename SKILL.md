@@ -239,6 +239,23 @@ is not UTF-8, or (found rather than named) is not a regular file is reported as
 `malformed`, with the byte offset where decoding failed. That includes a `CLAUDE.md`,
 which cannot show that it declared nothing if it cannot be read; sourcing then carries
 on down the precedence chain. Under `--panel` the same file is an error.
+A **`panel.yaml`** is a mapping whose `personas` key is a list of entries, each with:
+- `name` — required; a string, non-blank, printable, and unique within the file;
+- `grounding` — the persona's mandate; a string, or absent/null (no mandate, below).
+  It may span lines, but a NUL or a lone surrogate is refused: neither reaches the
+  reviewer's command line intact;
+- `tools` — a list of printable strings: absent gives the default read-only grant,
+  `[]` grants none, and a single string is refused rather than split into letters;
+- `model` — a non-empty, printable string, or absent/null for `--model`.
+
+An entry that breaks this, a duplicated name, or a shape that is not a list of
+mappings makes the **whole file** `malformed` — no partial panel is convened — and the
+detail names the field and its type (`personas[1].tools: str, not a list of
+strings`), never the value. Under `--panel` it is an error. Unknown keys are ignored,
+and tool names are not checked against any list. **`tools` is the reviewed
+repository's choice**: the file is read from the repo under review, its grant becomes
+`--allowedTools`, and the deny-list removes only the tools it names. A change under
+review can therefore widen its own reviewers' grant (#171). This is not a sandbox (#79).
 A persona that was convened with **no mandate at all** — a `panel.yaml` entry
 whose `grounding` is absent, null or empty — is reported the same way, in
 `panel.no_mandate`. It is a *different* fact from a discard: the declaration

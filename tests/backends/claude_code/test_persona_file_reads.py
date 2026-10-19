@@ -497,8 +497,8 @@ def test_a_bug_in_the_markdown_parser_stays_loud(tmp_path, monkeypatch):
     """PAIR, green on main: the catch covers the READ, not the parse after it.
 
     The markdown branch's parse is ours; an exception from it is a bug, never a
-    ``malformed`` file. (The YAML branch's broad ``except`` around its parse is a
-    stated residual, #115's.)
+    ``malformed`` file. (The YAML branch's validation is ours too and is closed the
+    same way since #115; only pyyaml's own parse is caught broadly.)
     """
     _write(tmp_path, "panel.md", _GOOD_PANEL_MD)
 
