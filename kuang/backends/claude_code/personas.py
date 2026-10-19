@@ -336,15 +336,18 @@ def _kind(value: object) -> str:
 
 
 def _argv_cannot_carry(text: str) -> bool:
-    """Whether ``text`` holds a character no command-line argument can carry (#115).
+    """Whether ``text`` holds a character a command-line argument cannot carry (#115).
 
     A NUL ends a C string, so ``exec`` refuses it (``ValueError: embedded null byte``),
-    and a lone surrogate has no UTF-8 encoding (``UnicodeEncodeError``). A YAML escape
-    produces either (``"\\0"``, ``"\\ud800"``), and each was measured on main sourcing
-    cleanly and then failing that persona's SPAWN, at rc 0, while a live run paid for
-    the rest of the panel — the shape ``model: 42`` had. The surrogate's failure also
-    quoted the mandate into the artefact's ``evidence``. So both are the operator's,
-    refused here with a coordinate, never the value.
+    and a lone surrogate has no UTF-8 encoding. Python encodes argv with
+    ``surrogateescape``, so most of them raise ``UnicodeEncodeError``, while
+    U+DC80–U+DCFF are sent as the single raw byte they escape: invalid UTF-8, delivered
+    silently. A YAML escape produces any of them (``"\\0"``, ``"\\ud800"``), and each
+    raising case was measured on main sourcing cleanly and then failing that persona's
+    SPAWN, at rc 0, while a live run paid for the rest of the panel — the shape
+    ``model: 42`` had. The surrogate's failure also quoted the mandate into the
+    artefact's ``evidence``. So the whole block is the operator's, refused here with a
+    coordinate, never the value.
     """
     return "\0" in text or any("\ud800" <= c <= "\udfff" for c in text)
 
@@ -404,7 +407,8 @@ def _declared_persona(entry: dict, index: int) -> Persona:
 
     A tool name or a model id has no use for a control character, so both are held to
     ``name``'s ``isprintable``: that refuses the NUL and the lone surrogate argv cannot
-    carry, and a newline that would split the console's grant line.
+    carry, and a newline, which would split the dry run's ``model=`` and ``argv=``
+    lines (both print the value raw).
 
     Types are compared exactly (``type(x) is str``), not with ``isinstance``, so the
     check states the contract (#129: a subclass carries whatever it overrides past an

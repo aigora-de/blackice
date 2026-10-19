@@ -146,7 +146,7 @@ files are read as **UTF-8** whatever the locale. See [`SKILL.md`](SKILL.md).
 
 A `panel.yaml` is a mapping with a `personas` list, and each entry takes four keys:
 `name` (required: a printable, non-blank string, unique in the file), `grounding` (the
-mandate: a string with no NUL or lone surrogate, which no command line can carry, or
+mandate: a string with no NUL or lone surrogate, which argv cannot carry intact, or
 absent), `tools` (a list of printable tool names; absent for the default read-only
 three, `[]` for none) and `model` (a non-empty, printable string, or absent for
 `--model`). One entry of the wrong type makes the whole file `malformed`, reported with

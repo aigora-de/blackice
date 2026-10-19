@@ -83,11 +83,13 @@ _ILL_TYPED = [
     ("M5", _entry("    model: true\n"), "personas[1].model: bool, not a string"),
     ("M3", _entry('    model: ""\n'), "personas[1].model: empty"),
     # A character argv cannot carry, from a YAML escape: each sourced on main and then
-    # failed that persona's spawn at rc 0 (X1-X6), or split the grant line (X7).
+    # failed that persona's spawn at rc 0 (X1-X6), or split the dry run's argv line (X7,
+    # X8).
     ("X1", _entry('    model: "m\\0x"\n'),
      "personas[1].model: a non-printable character"),
     ("X2", _entry('    model: "m\\ud800"\n'),
      "personas[1].model: a non-printable character"),
+    ("X8", _entry('    model: "m\\nx"\n'), "personas[1].model: a non-printable character"),
     ("X3", _entry('    tools: [Read, "Re\\0ad"]\n'),
      "personas[1].tools[1]: a non-printable character"),
     ("X4", _entry('    tools: ["\\udfff"]\n'),

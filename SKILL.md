@@ -242,8 +242,8 @@ on down the precedence chain. Under `--panel` the same file is an error.
 A **`panel.yaml`** is a mapping whose `personas` key is a list of entries, each with:
 - `name` — required; a string, non-blank, printable, and unique within the file;
 - `grounding` — the persona's mandate; a string, or absent/null (no mandate, below).
-  It may span lines, but a NUL or a lone surrogate is refused: no command line can
-  carry either;
+  It may span lines, but a NUL or a lone surrogate is refused: neither reaches the
+  reviewer's command line intact;
 - `tools` — a list of printable strings: absent gives the default read-only grant,
   `[]` grants none, and a single string is refused rather than split into letters;
 - `model` — a non-empty, printable string, or absent/null for `--model`.
